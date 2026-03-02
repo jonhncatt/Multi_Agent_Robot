@@ -45,6 +45,7 @@ class AgentPanel(BaseModel):
 class AnswerCitation(BaseModel):
     id: str
     source_type: Literal["web", "document", "codebase", "table", "tool", "other"] = "other"
+    kind: Literal["evidence", "candidate"] = "evidence"
     tool: str = ""
     label: str = ""
     path: str | None = None

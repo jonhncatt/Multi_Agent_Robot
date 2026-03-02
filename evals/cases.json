@@ -145,6 +145,31 @@
     }
   },
   {
+    "name": "tool_read_text_file_atom_feed",
+    "kind": "tool",
+    "tool": "read_text_file",
+    "args": {
+      "path": "evals/fixtures/generated/sample.atom",
+      "max_chars": 4000
+    },
+    "prepare": {
+      "fixture": "sample_atom"
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "source_format": "xml_text_extracted"
+      },
+      "contains": {
+        "content": [
+          "Atom Feed 解析",
+          "Atom-Powered Robots Run Amok",
+          "Some text about robots."
+        ]
+      }
+    }
+  },
+  {
     "name": "helper_validation_context_web_tools_success",
     "kind": "helper",
     "helper": "_summarize_validation_context",
@@ -178,6 +203,226 @@
           "search_web",
           "fetch_web"
         ]
+      }
+    }
+  },
+  {
+    "name": "helper_finalize_citations_prefers_fetched_web_evidence",
+    "kind": "helper",
+    "helper": "_finalize_citation_candidates",
+    "args": {
+      "citations": [
+        {
+          "source_type": "web",
+          "tool": "search_web",
+          "label": "Candidate result",
+          "url": "https://search.example/candidate",
+          "locator": "query=shohei ohtani japan",
+          "excerpt": "Search snippet only",
+          "confidence": "low"
+        },
+        {
+          "source_type": "web",
+          "tool": "fetch_web",
+          "label": "Fetched article",
+          "url": "https://news.example/story",
+          "locator": "https://news.example/story",
+          "excerpt": "Shohei Ohtani arrived in Japan this week.",
+          "confidence": "high"
+        }
+      ]
+    },
+    "assert": {
+      "equals": {
+        "result.0.tool": "fetch_web",
+        "result.0.id": "c1"
+      }
+    }
+  },
+  {
+    "name": "helper_normalize_claim_record_downgrades_search_candidates",
+    "kind": "helper",
+    "helper": "_normalize_claim_record",
+    "args": {
+      "statement": "大谷翔平最近在日本国内。",
+      "citation_ids": [
+        "c1"
+      ],
+      "confidence": "high",
+      "status": "supported",
+      "citations_by_id": {
+        "c1": {
+          "id": "c1",
+          "kind": "candidate",
+          "tool": "search_web",
+          "confidence": "low"
+        }
+      }
+    },
+    "assert": {
+      "equals": {
+        "status": "needs_review",
+        "confidence": "low"
+      }
+    }
+  },
+  {
+    "name": "helper_attachment_summary_not_forced_into_evidence_mode",
+    "kind": "helper",
+    "helper": "_requires_evidence_mode",
+    "args": {
+      "user_message": "请解读这个 Atom 文件的内容，不要只是复述。",
+      "attachment_metas": [
+        {
+          "original_name": "sample.atom",
+          "suffix": ".atom",
+          "kind": "document",
+          "size": 1024
+        }
+      ]
+    },
+    "assert": {
+      "equals": {
+        "result": false
+      }
+    }
+  },
+  {
+    "name": "helper_small_atom_attachment_does_not_force_tools",
+    "kind": "helper",
+    "helper": "_request_likely_requires_tools",
+    "args": {
+      "user_message": "请解读这个 Atom 文件的内容，不要只是复述。",
+      "attachment_metas": [
+        {
+          "original_name": "sample.atom",
+          "suffix": ".atom",
+          "kind": "document",
+          "size": 1024
+        }
+      ]
+    },
+    "assert": {
+      "equals": {
+        "result": false
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_simple_understanding",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "请解读这个 Atom 文件，并总结重点。",
+      "attachment_metas": [
+        {
+          "original_name": "sample.atom",
+          "suffix": ".atom",
+          "kind": "document",
+          "size": 1024
+        }
+      ],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "simple_understanding",
+        "use_planner": false,
+        "use_worker_tools": false,
+        "use_reviewer": false,
+        "use_structurer": false
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_web_research",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "查一下大谷翔平最近在不在日本国内",
+      "attachment_metas": [],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "web_research",
+        "use_worker_tools": true,
+        "use_reviewer": true,
+        "use_web_prefetch": true
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_evidence_lookup",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "请根据原文定位 15h，并给出出处。",
+      "attachment_metas": [
+        {
+          "original_name": "spec_excerpt.txt",
+          "suffix": ".txt",
+          "kind": "document",
+          "size": 4096
+        }
+      ],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "evidence_lookup",
+        "use_planner": true,
+        "use_worker_tools": true,
+        "use_reviewer": true,
+        "use_structurer": true
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_simple_qa",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "HTTP 404 是什么？",
+      "attachment_metas": [],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "simple_qa",
+        "use_planner": false,
+        "use_worker_tools": false,
+        "use_reviewer": false,
+        "use_structurer": false
+      }
+    }
+  },
+  {
+    "name": "helper_no_citations_no_answer_bundle",
+    "kind": "helper",
+    "helper": "_should_emit_answer_bundle",
+    "args": {
+      "citations": []
+    },
+    "assert": {
+      "equals": {
+        "result": false
       }
     }
   },

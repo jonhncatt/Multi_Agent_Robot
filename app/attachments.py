@@ -4,6 +4,7 @@ import base64
 import io
 import re
 import zipfile
+import xml.etree.ElementTree as ET
 from html import unescape
 from pathlib import Path
 
@@ -131,6 +132,107 @@ def _html_to_text(html: str) -> str:
         if normalized:
             lines.append(normalized)
     return "\n".join(lines)
+
+
+def _xml_local_name(tag: str) -> str:
+    raw = str(tag or "").strip()
+    if "}" in raw:
+        raw = raw.rsplit("}", 1)[-1]
+    return raw.lower()
+
+
+def _find_first_child_text(node: ET.Element, *names: str) -> str:
+    wanted = {name.lower() for name in names if name}
+    for child in list(node):
+        if _xml_local_name(child.tag) not in wanted:
+            continue
+        text = "".join(child.itertext()).strip()
+        if text:
+            return text
+    return ""
+
+
+def _extract_xml_feed(path: Path, max_chars: int) -> str:
+    raw_text = path.read_text(encoding="utf-8", errors="ignore")
+    if not raw_text.strip():
+        return ""
+
+    try:
+        root = ET.fromstring(raw_text)
+    except Exception:
+        return truncate_text(raw_text, max_chars)
+
+    lines: list[str] = []
+    root_name = _xml_local_name(root.tag)
+
+    if root_name == "feed":
+        lines.append("[Atom Feed 解析]")
+        title = _find_first_child_text(root, "title")
+        subtitle = _find_first_child_text(root, "subtitle", "tagline")
+        updated = _find_first_child_text(root, "updated")
+        feed_id = _find_first_child_text(root, "id")
+        author_name = ""
+        for child in list(root):
+            if _xml_local_name(child.tag) == "author":
+                author_name = _find_first_child_text(child, "name") or "".join(child.itertext()).strip()
+                if author_name:
+                    break
+
+        if title:
+            lines.append(f"标题: {title}")
+        if subtitle:
+            lines.append(f"副标题: {subtitle}")
+        if updated:
+            lines.append(f"更新时间: {updated}")
+        if author_name:
+            lines.append(f"作者: {author_name}")
+        if feed_id:
+            lines.append(f"Feed ID: {feed_id}")
+
+        entries = [child for child in list(root) if _xml_local_name(child.tag) == "entry"]
+        if entries:
+            lines.append("条目:")
+        for idx, entry in enumerate(entries, start=1):
+            entry_title = _find_first_child_text(entry, "title") or f"entry_{idx}"
+            entry_updated = _find_first_child_text(entry, "updated", "published")
+            entry_summary = _find_first_child_text(entry, "summary", "content")
+            lines.append(f"{idx}. {entry_title}")
+            if entry_updated:
+                lines.append(f"   更新时间: {entry_updated}")
+            if entry_summary:
+                entry_summary_clean = re.sub(r"\s+", " ", entry_summary).strip()
+                lines.append(f"   摘要: {entry_summary_clean}")
+    elif root_name == "rss":
+        lines.append("[RSS Feed 解析]")
+        channel = next((child for child in list(root) if _xml_local_name(child.tag) == "channel"), None)
+        channel_node = channel or root
+        title = _find_first_child_text(channel_node, "title")
+        description = _find_first_child_text(channel_node, "description")
+        updated = _find_first_child_text(channel_node, "lastbuilddate", "pubdate")
+        if title:
+            lines.append(f"标题: {title}")
+        if description:
+            lines.append(f"描述: {description}")
+        if updated:
+            lines.append(f"更新时间: {updated}")
+
+        items = [child for child in list(channel_node) if _xml_local_name(child.tag) == "item"]
+        if items:
+            lines.append("条目:")
+        for idx, item in enumerate(items, start=1):
+            item_title = _find_first_child_text(item, "title") or f"item_{idx}"
+            item_date = _find_first_child_text(item, "pubdate")
+            item_desc = _find_first_child_text(item, "description", "summary")
+            lines.append(f"{idx}. {item_title}")
+            if item_date:
+                lines.append(f"   时间: {item_date}")
+            if item_desc:
+                item_desc_clean = re.sub(r"\s+", " ", item_desc).strip()
+                lines.append(f"   摘要: {item_desc_clean}")
+    else:
+        return truncate_text(raw_text, max_chars)
+
+    return truncate_text("\n".join(lines).strip(), max_chars)
 
 
 def _decode_bytes_best_effort(raw: bytes) -> str:
@@ -326,6 +428,7 @@ def extract_document_text(path: str, max_chars: int) -> str | None:
     suffix = file_path.suffix.lower()
 
     plain_suffixes = {
+        ".atom",
         ".txt",
         ".md",
         ".csv",
@@ -340,9 +443,12 @@ def extract_document_text(path: str, max_chars: int) -> str | None:
         ".yaml",
         ".yml",
         ".xml",
+        ".rss",
     }
 
     try:
+        if suffix in {".atom", ".rss", ".xml"}:
+            return _extract_xml_feed(file_path, max_chars)
         if suffix in plain_suffixes:
             return _read_plain_text(file_path, max_chars)
         if suffix == ".pdf":

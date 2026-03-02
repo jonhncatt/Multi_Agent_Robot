@@ -126,6 +126,94 @@ function hasAnswerBundleContent(bundle) {
   );
 }
 
+function partitionAnswerCitations(citations) {
+  const evidence = [];
+  const candidates = [];
+  (Array.isArray(citations) ? citations : []).forEach((citation) => {
+    const kind = String(citation?.kind || "").trim().toLowerCase();
+    if (kind === "candidate") {
+      candidates.push(citation);
+    } else {
+      evidence.push(citation);
+    }
+  });
+  return { evidence, candidates };
+}
+
+function appendCitationSection(wrap, titleText, citations, noteText = "") {
+  if (!Array.isArray(citations) || !citations.length) return;
+  const section = document.createElement("div");
+  section.className = "answer-bundle-section";
+  const title = document.createElement("div");
+  title.className = "answer-bundle-title";
+  title.textContent = titleText;
+  section.appendChild(title);
+
+  if (noteText) {
+    const note = document.createElement("div");
+    note.className = "answer-bundle-meta";
+    note.textContent = noteText;
+    section.appendChild(note);
+  }
+
+  citations.slice(0, 8).forEach((citation) => {
+    const item = document.createElement("div");
+    item.className = "answer-bundle-item";
+    const heading = document.createElement("div");
+    heading.className = "answer-bundle-statement";
+    const label = String(citation?.label || citation?.title || citation?.url || citation?.path || citation?.id || "source").trim();
+    heading.textContent = `${String(citation?.id || "").trim() || "-"} · ${label}`;
+    item.appendChild(heading);
+
+    const meta = [];
+    if (citation?.tool) meta.push(`tool: ${citation.tool}`);
+    if (citation?.domain) meta.push(`domain: ${citation.domain}`);
+    if (citation?.locator) meta.push(`locator: ${citation.locator}`);
+    if (citation?.published_at) meta.push(`published: ${citation.published_at}`);
+    if (meta.length) {
+      const metaNode = document.createElement("div");
+      metaNode.className = "answer-bundle-meta";
+      metaNode.textContent = meta.join(" | ");
+      item.appendChild(metaNode);
+    }
+
+    const excerpt = String(citation?.excerpt || "").trim();
+    if (excerpt) {
+      const excerptNode = document.createElement("div");
+      excerptNode.className = "answer-bundle-excerpt";
+      excerptNode.textContent = excerpt;
+      item.appendChild(excerptNode);
+    }
+
+    const link = String(citation?.url || "").trim();
+    if (link) {
+      const linkNode = document.createElement("a");
+      linkNode.className = "answer-bundle-link";
+      linkNode.href = link;
+      linkNode.target = "_blank";
+      linkNode.rel = "noreferrer noopener";
+      linkNode.textContent = link;
+      item.appendChild(linkNode);
+    } else if (citation?.path) {
+      const pathNode = document.createElement("div");
+      pathNode.className = "answer-bundle-meta";
+      pathNode.textContent = `path: ${citation.path}`;
+      item.appendChild(pathNode);
+    }
+
+    const warning = String(citation?.warning || "").trim();
+    if (warning) {
+      const warningNode = document.createElement("div");
+      warningNode.className = "answer-bundle-warning";
+      warningNode.textContent = `warning: ${warning}`;
+      item.appendChild(warningNode);
+    }
+    section.appendChild(item);
+  });
+
+  wrap.appendChild(section);
+}
+
 function buildAnswerBundleNode(bundle) {
   const wrap = document.createElement("div");
   wrap.className = "answer-bundle";
@@ -171,69 +259,9 @@ function buildAnswerBundleNode(bundle) {
   }
 
   const citations = Array.isArray(bundle?.citations) ? bundle.citations : [];
-  if (citations.length) {
-    const section = document.createElement("div");
-    section.className = "answer-bundle-section";
-    const title = document.createElement("div");
-    title.className = "answer-bundle-title";
-    title.textContent = "Sources";
-    section.appendChild(title);
-    citations.slice(0, 8).forEach((citation) => {
-      const item = document.createElement("div");
-      item.className = "answer-bundle-item";
-      const heading = document.createElement("div");
-      heading.className = "answer-bundle-statement";
-      const label = String(citation?.label || citation?.title || citation?.url || citation?.path || citation?.id || "source").trim();
-      heading.textContent = `${String(citation?.id || "").trim() || "-"} · ${label}`;
-      item.appendChild(heading);
-
-      const meta = [];
-      if (citation?.tool) meta.push(`tool: ${citation.tool}`);
-      if (citation?.domain) meta.push(`domain: ${citation.domain}`);
-      if (citation?.locator) meta.push(`locator: ${citation.locator}`);
-      if (citation?.published_at) meta.push(`published: ${citation.published_at}`);
-      if (meta.length) {
-        const metaNode = document.createElement("div");
-        metaNode.className = "answer-bundle-meta";
-        metaNode.textContent = meta.join(" | ");
-        item.appendChild(metaNode);
-      }
-
-      const excerpt = String(citation?.excerpt || "").trim();
-      if (excerpt) {
-        const excerptNode = document.createElement("div");
-        excerptNode.className = "answer-bundle-excerpt";
-        excerptNode.textContent = excerpt;
-        item.appendChild(excerptNode);
-      }
-
-      const link = String(citation?.url || "").trim();
-      if (link) {
-        const linkNode = document.createElement("a");
-        linkNode.className = "answer-bundle-link";
-        linkNode.href = link;
-        linkNode.target = "_blank";
-        linkNode.rel = "noreferrer noopener";
-        linkNode.textContent = link;
-        item.appendChild(linkNode);
-      } else if (citation?.path) {
-        const pathNode = document.createElement("div");
-        pathNode.className = "answer-bundle-meta";
-        pathNode.textContent = `path: ${citation.path}`;
-        item.appendChild(pathNode);
-      }
-
-      const warning = String(citation?.warning || "").trim();
-      if (warning) {
-        const warningNode = document.createElement("div");
-        warningNode.className = "answer-bundle-warning";
-        warningNode.textContent = `warning: ${warning}`;
-        item.appendChild(warningNode);
-      }
-      section.appendChild(item);
-    });
-    wrap.appendChild(section);
-  }
+  const { evidence, candidates } = partitionAnswerCitations(citations);
+  appendCitationSection(wrap, evidence.length ? "Evidence" : "Sources", evidence);
+  appendCitationSection(wrap, "Search Candidates", candidates, "这些链接仅是搜索候选，尚未抓取正文。");
 
   const warnings = Array.isArray(bundle?.warnings) ? bundle.warnings : [];
   if (warnings.length) {
@@ -895,9 +923,12 @@ function renderAnswerBundle(bundle = {}) {
   }
 
   const citations = Array.isArray(bundle?.citations) ? bundle.citations : [];
-  if (citations.length) {
-    lines.push("citations:");
-    citations.slice(0, 8).forEach((citation) => {
+  const { evidence, candidates } = partitionAnswerCitations(citations);
+  const appendCitationLines = (title, items, note = "") => {
+    if (!items.length) return;
+    lines.push(`${title}:`);
+    if (note) lines.push(`- note: ${note}`);
+    items.slice(0, 8).forEach((citation) => {
       lines.push(`- ${String(citation?.id || "-")} | ${String(citation?.tool || "")} | ${String(citation?.label || citation?.title || citation?.url || citation?.path || "")}`);
       if (citation?.locator) lines.push(`  locator: ${citation.locator}`);
       if (citation?.domain) lines.push(`  domain: ${citation.domain}`);
@@ -908,7 +939,9 @@ function renderAnswerBundle(bundle = {}) {
       if (citation?.warning) lines.push(`  warning: ${citation.warning}`);
     });
     lines.push("");
-  }
+  };
+  appendCitationLines(evidence.length ? "evidence" : "citations", evidence);
+  appendCitationLines("search_candidates", candidates, "候选链接，尚未抓取正文");
 
   const warnings = Array.isArray(bundle?.warnings) ? bundle.warnings : [];
   if (warnings.length) {

@@ -229,23 +229,118 @@ def _extract_html_metadata(raw_html: str, base_url: str = "") -> dict[str, str]:
 
 
 def _tokenize_query(query: str) -> list[str]:
-    parts = re.split(r"[^a-z0-9]+", (query or "").lower())
-    return [item for item in parts if len(item) >= 2]
+    text = (query or "").strip()
+    if not text:
+        return []
+
+    ascii_stopwords = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "at",
+        "for",
+        "from",
+        "how",
+        "in",
+        "is",
+        "it",
+        "latest",
+        "mlb",
+        "news",
+        "npb",
+        "of",
+        "on",
+        "recent",
+        "score",
+        "scores",
+        "the",
+        "today",
+        "what",
+        "when",
+        "where",
+        "who",
+        "why",
+    }
+    cjk_fillers = (
+        "查一下",
+        "查下",
+        "搜一下",
+        "搜索",
+        "帮我查",
+        "请问",
+        "最近",
+        "近期",
+        "最新",
+        "新闻",
+        "消息",
+        "今天",
+        "今日",
+        "现在",
+        "目前",
+        "在不在",
+        "在哪",
+        "是否",
+        "一下",
+    )
+    cjk_stopwords = {"新闻", "消息", "今天", "今日", "最近", "近期", "一下", "查下", "搜索"}
+
+    seen: set[str] = set()
+    tokens: list[str] = []
+
+    def add(token: str) -> None:
+        normalized = str(token or "").strip().lower()
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        tokens.append(normalized)
+
+    for part in re.split(r"[^a-z0-9]+", text.lower()):
+        if len(part) < 2 or part in ascii_stopwords:
+            continue
+        add(part)
+
+    cjk_text = text
+    for filler in cjk_fillers:
+        cjk_text = cjk_text.replace(filler, " ")
+
+    for segment in re.findall(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+", cjk_text):
+        cleaned = segment.strip()
+        if len(cleaned) < 2:
+            continue
+        max_size = min(4, len(cleaned))
+        for size in range(max_size, 1, -1):
+            for start in range(0, len(cleaned) - size + 1):
+                token = cleaned[start : start + size]
+                if token in cjk_stopwords:
+                    continue
+                add(token)
+                if len(tokens) >= 24:
+                    return tokens
+
+    return tokens
 
 
-def _score_web_result(query: str, item: dict[str, Any]) -> float:
+def _query_relevance_score(query: str, item: dict[str, Any]) -> float:
     title = str(item.get("title") or "").lower()
     snippet = str(item.get("snippet") or "").lower()
     domain = str(item.get("domain") or "").lower()
     tokens = _tokenize_query(query)
     score = 0.0
     for token in tokens:
+        weight = 1.0 + min(len(token), 4) * 0.35
         if token in title:
-            score += 4.0
+            score += 4.0 * weight
         if token in snippet:
-            score += 2.0
-        if token in domain:
-            score += 1.5
+            score += 2.0 * weight
+        if token.isascii() and token in domain:
+            score += 1.5 * weight
+    return score
+
+
+def _score_web_result(query: str, item: dict[str, Any]) -> float:
+    domain = str(item.get("domain") or "").lower()
+    score = _query_relevance_score(query, item)
     if domain.endswith(".gov") or domain.endswith(".edu"):
         score += 2.5
     if any(flag in domain for flag in ("official", "docs", "developer", "openai.com", "github.com")):
@@ -253,6 +348,46 @@ def _score_web_result(query: str, item: dict[str, Any]) -> float:
     if item.get("published_at"):
         score += 0.5
     return score
+
+
+def _query_looks_specific(query: str) -> bool:
+    text = (query or "").strip()
+    if not text:
+        return False
+
+    normalized = text.lower()
+    generic_markers = (
+        "news",
+        "latest",
+        "recent",
+        "today",
+        "score",
+        "scores",
+        "baseball",
+        "mlb",
+        "npb",
+        "kbo",
+        "棒球",
+        "野球",
+        "新闻",
+        "消息",
+        "最近",
+        "近期",
+        "今天",
+        "今日",
+        "查一下",
+        "查下",
+        "搜一下",
+        "搜索",
+        "在不在",
+        "是否",
+    )
+    for marker in generic_markers:
+        normalized = normalized.replace(marker, " ")
+
+    ascii_tokens = [part for part in re.split(r"[^a-z0-9]+", normalized) if len(part) >= 2]
+    cjk_chars = "".join(re.findall(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+", normalized))
+    return bool(ascii_tokens or len(cjk_chars) >= 2)
 
 
 def _looks_like_script_payload(text: str) -> bool:
@@ -443,26 +578,37 @@ def _build_rss_candidates(query: str) -> list[tuple[str, str]]:
     q = (query or "").strip()
     out: list[tuple[str, str]] = []
     is_baseball = _looks_baseball_query(q)
+    query_has_cjk = bool(re.search(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", q))
+    query_is_specific = _query_looks_specific(q)
 
     if is_baseball:
         q_en = urllib.parse.quote_plus(f"{q} baseball")
         q_ja = urllib.parse.quote_plus(f"{q} 野球")
-        out.extend(
-            [
-                ("mlb_official_rss", "https://www.mlb.com/feeds/news/rss.xml"),
-                ("espn_mlb_rss", "https://www.espn.com/espn/rss/mlb/news"),
-                ("yahoo_mlb_rss", "https://sports.yahoo.com/mlb/rss/"),
-                (
-                    "google_news_baseball_en",
-                    f"https://news.google.com/rss/search?q={q_en}&hl=en-US&gl=US&ceid=US:en",
-                ),
-                (
-                    "google_news_baseball_ja",
-                    f"https://news.google.com/rss/search?q={q_ja}&hl=ja&gl=JP&ceid=JP:ja",
-                ),
-                ("nhk_sports_rss", "https://www3.nhk.or.jp/rss/news/cat7.xml"),
-            ]
-        )
+        google_news = [
+            (
+                "google_news_baseball_ja",
+                f"https://news.google.com/rss/search?q={q_ja}&hl=ja&gl=JP&ceid=JP:ja",
+            ),
+            (
+                "google_news_baseball_en",
+                f"https://news.google.com/rss/search?q={q_en}&hl=en-US&gl=US&ceid=US:en",
+            ),
+        ]
+        if not query_has_cjk:
+            google_news.reverse()
+
+        generic_feeds = [
+            ("mlb_official_rss", "https://www.mlb.com/feeds/news/rss.xml"),
+            ("espn_mlb_rss", "https://www.espn.com/espn/rss/mlb/news"),
+            ("yahoo_mlb_rss", "https://sports.yahoo.com/mlb/rss/"),
+            ("nhk_sports_rss", "https://www3.nhk.or.jp/rss/news/cat7.xml"),
+        ]
+        if query_is_specific:
+            out.extend(google_news)
+            out.extend(generic_feeds)
+        else:
+            out.extend(generic_feeds)
+            out.extend(google_news)
     else:
         quoted = urllib.parse.quote_plus(q)
         out.append(
@@ -1568,7 +1714,7 @@ class LocalToolExecutor:
                     full_text = extract_pdf_text_from_path(real_path, max_chars=1_000_000)
                 except Exception as exc:
                     full_text = f"[文档解析失败: {exc}]"
-            elif suffix in {".docx", ".msg", ".xlsx", ".xlsm", ".xltx", ".xltm", ".xls"}:
+            elif suffix in {".docx", ".msg", ".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".atom", ".rss", ".xml"}:
                 from app.attachments import extract_document_text  # lazy import
 
                 extracted = extract_document_text(str(real_path), max_chars=1_000_000) or ""
@@ -1579,6 +1725,8 @@ class LocalToolExecutor:
                     source_format = "msg_text_extracted"
                 elif suffix in {".xlsx", ".xlsm", ".xltx", ".xltm", ".xls"}:
                     source_format = "xlsx_text_extracted"
+                elif suffix in {".atom", ".rss", ".xml"}:
+                    source_format = "xml_text_extracted"
             else:
                 # Content sniffing: handle docs saved without normal suffix.
                 try:
@@ -2624,7 +2772,7 @@ class LocalToolExecutor:
 
         timeout_val = max(3, min(30, timeout_sec))
         limit = max(1, min(20, int(max_results)))
-        cache_key = {"query": q, "max_results": limit}
+        cache_key = {"query": q, "max_results": limit, "algo_version": 3}
         cached = self._load_web_cache("search_web", cache_key, max_age_sec=900)
         if cached:
             return {**cached, "cached": True}
@@ -2632,6 +2780,7 @@ class LocalToolExecutor:
         ddg_allowed = self._domain_allowed("duckduckgo.com")
         prefer_news = _looks_news_like_query(q)
         prefer_baseball = _looks_baseball_query(q)
+        query_is_specific = _query_looks_specific(q)
         rss_candidates = _build_rss_candidates(q)
         rss_allowed_candidates: list[tuple[str, str]] = []
         for name, url in rss_candidates:
@@ -2740,6 +2889,14 @@ class LocalToolExecutor:
                         break
                 return added
 
+            def _rss_source_requires_query_match(source_name: str) -> bool:
+                return query_is_specific and source_name in {
+                    "mlb_official_rss",
+                    "espn_mlb_rss",
+                    "yahoo_mlb_rss",
+                    "nhk_sports_rss",
+                }
+
             if prefer_news and rss_allowed_candidates:
                 for rss_name, rss_url in rss_allowed_candidates:
                     if len(results) >= limit:
@@ -2747,6 +2904,10 @@ class LocalToolExecutor:
                     try:
                         status, content_type, text, truncated = _fetch_page_with_retry(rss_url)
                         rss_results = _extract_google_news_rss_results(text, max_results=limit)
+                        if _rss_source_requires_query_match(rss_name):
+                            rss_results = [
+                                row for row in rss_results if _query_relevance_score(q, row) >= 12.0
+                            ]
                         if _append_results(rss_results, rss_name) > 0 and source == "unknown":
                             source = f"rss:{rss_name}"
                     except Exception as exc:
@@ -2777,6 +2938,10 @@ class LocalToolExecutor:
                     try:
                         status, content_type, text, truncated = _fetch_page_with_retry(rss_url)
                         rss_results = _extract_google_news_rss_results(text, max_results=limit)
+                        if _rss_source_requires_query_match(rss_name):
+                            rss_results = [
+                                row for row in rss_results if _query_relevance_score(q, row) >= 12.0
+                            ]
                         if _append_results(rss_results, rss_name) > 0 and source == "unknown":
                             source = f"rss:{rss_name}"
                     except Exception as exc:
@@ -2855,6 +3020,13 @@ class LocalToolExecutor:
                 ),
                 reverse=True,
             )
+            if query_is_specific and normalized_results:
+                best_score = float(normalized_results[0].get("score") or 0.0)
+                if best_score >= 12.0:
+                    min_score = max(6.0, best_score * 0.45)
+                    normalized_results = [
+                        item for item in normalized_results if float(item.get("score") or 0.0) >= min_score
+                    ]
 
             payload = {
                 "ok": True,

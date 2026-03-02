@@ -176,7 +176,10 @@ class UploadStore:
             kind = "image"
         elif mime.lower() in {"application/vnd.ms-outlook", "application/x-msg"}:
             kind = "document"
+        elif mime.lower() in {"application/atom+xml", "application/rss+xml", "application/xml", "text/xml"}:
+            kind = "document"
         elif suffix in {
+            ".atom",
             ".txt",
             ".md",
             ".csv",
@@ -199,6 +202,8 @@ class UploadStore:
             ".yaml",
             ".yml",
             ".log",
+            ".xml",
+            ".rss",
         }:
             kind = "document"
 

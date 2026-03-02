@@ -65,10 +65,40 @@ def _ensure_generated_fixtures() -> None:
     wb.close()
 
 
+def _ensure_atom_fixture() -> None:
+    generated_dir = ROOT / "evals" / "fixtures" / "generated"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    atom_path = generated_dir / "sample.atom"
+    if atom_path.exists():
+        return
+    atom_path.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Feed</title>
+  <subtitle>A subtitle.</subtitle>
+  <link href="http://example.org/"/>
+  <updated>2003-12-13T18:30:02Z</updated>
+  <author><name>John Doe</name></author>
+  <id>urn:uuid:60a76c80-d399-11d9-b93C-0003939e0af6</id>
+  <entry>
+    <title>Atom-Powered Robots Run Amok</title>
+    <link href="http://example.org/2003/12/13/atom03"/>
+    <id>urn:uuid:1225c695-cfb8-4ebb-aaaa-80da344efa6a</id>
+    <updated>2003-12-13T18:30:02Z</updated>
+    <summary>Some text about robots.</summary>
+  </entry>
+</feed>
+""",
+        encoding="utf-8",
+    )
+
+
 def _prepare_case(case: dict[str, Any]) -> None:
     fixture = str((case.get("prepare") or {}).get("fixture") or "").strip()
     if fixture == "opcode_xlsx":
         _ensure_generated_fixtures()
+    elif fixture == "sample_atom":
+        _ensure_atom_fixture()
 
 
 def _skip_reason(case: dict[str, Any]) -> str | None:
@@ -167,6 +197,9 @@ def _helper_arg(value: Any) -> Any:
                 input=value.get("input") if isinstance(value.get("input"), dict) else None,
                 output_preview=str(value.get("output_preview") or ""),
             )
+        if marker == "ChatSettings":
+            payload = {key: item for key, item in value.items() if key != "__type"}
+            return ChatSettings(**payload)
         return {key: _helper_arg(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_helper_arg(item) for item in value]

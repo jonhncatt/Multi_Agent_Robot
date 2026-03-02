@@ -59,6 +59,30 @@ _FOLLOWUP_SEARCH_HINTS = (
     "再搜",
 )
 
+_UNDERSTANDING_HINTS = (
+    "总结",
+    "总结下",
+    "概括",
+    "提炼",
+    "解读",
+    "解释",
+    "说明",
+    "分析",
+    "梳理",
+    "翻译",
+    "摘要",
+    "看懂",
+    "说说",
+    "summarize",
+    "summary",
+    "explain",
+    "interpret",
+    "analyze",
+    "analyse",
+    "translate",
+    "overview",
+)
+
 
 class RunShellArgs(BaseModel):
     command: str = Field(description="Shell command, e.g. `ls -la` or `rg TODO .`")
@@ -317,7 +341,7 @@ class OfficeAgent:
         requested_model = settings.model or self.config.default_model
         effective_model = requested_model
         style_hint = _STYLE_HINTS.get(settings.response_style, _STYLE_HINTS["normal"])
-        execution_plan = self._build_execution_plan(attachment_metas=attachment_metas, settings=settings)
+        execution_plan: list[str] = []
         execution_trace: list[str] = []
         debug_flow: list[dict[str, Any]] = []
         agent_panels: list[dict[str, Any]] = []
@@ -499,6 +523,51 @@ class OfficeAgent:
             add_trace(f"已处理 {len(attachment_metas)} 个附件输入。")
         for issue in attachment_issues:
             add_trace(f"附件提示: {issue}")
+
+        route, router_raw = self._route_request(
+            requested_model=requested_model,
+            user_message=user_message,
+            summary=summary,
+            attachment_metas=attachment_metas,
+            settings=settings,
+        )
+        execution_plan[:] = self._build_execution_plan(
+            attachment_metas=attachment_metas,
+            settings=settings,
+            route=route,
+        )
+        add_trace(
+            "Router 分诊完成: "
+            f"task_type={route.get('task_type')}, complexity={route.get('complexity')}, source={route.get('source')}。"
+        )
+        add_debug(
+            stage="backend_to_llm" if route.get("source") == "llm_router" else "backend_router",
+            title="后端编排器 -> Router" if route.get("source") == "llm_router" else "后端规则 Router",
+            detail=(
+                f"route={json.dumps(route, ensure_ascii=False)}\n"
+                f"raw={self._shorten(router_raw, 2400 if not debug_raw else 120000)}"
+            ),
+        )
+        add_panel(
+            "router",
+            "Router",
+            str(route.get("summary") or "已完成链路分诊。").strip() or "已完成链路分诊。",
+            [
+                f"task_type: {route.get('task_type')}",
+                f"complexity: {route.get('complexity')}",
+                f"source: {route.get('source')}",
+                f"planner: {str(bool(route.get('use_planner'))).lower()}",
+                f"worker_tools: {str(bool(route.get('use_worker_tools'))).lower()}",
+                f"reviewer: {str(bool(route.get('use_reviewer'))).lower()}",
+                f"revision: {str(bool(route.get('use_revision'))).lower()}",
+            ],
+        )
+
+        router_system_hint = self._router_system_hint(route)
+        if router_system_hint:
+            messages.insert(1, self._SystemMessage(content=router_system_hint))
+            add_trace("多 Agent: Worker 已加载 Router 摘要。")
+
         spec_lookup_request = self._looks_like_spec_lookup_request(user_message, attachment_metas)
         evidence_required_mode = self._requires_evidence_mode(user_message, attachment_metas)
         if spec_lookup_request:
@@ -515,7 +584,7 @@ class OfficeAgent:
                 )
             )
             add_trace("已启用规范文档检索模式。")
-        if evidence_required_mode:
+        if evidence_required_mode and route.get("use_worker_tools"):
             messages.append(
                 self._SystemMessage(
                     content=(
@@ -527,57 +596,71 @@ class OfficeAgent:
             )
             add_trace("已启用证据优先模式。")
 
-        planner_request_detail = "\n".join(
-            [
-                f"requested_model={requested_model}",
-                f"response_style={settings.response_style}",
-                f"attachments={len(attachment_metas)}",
-                f"history_summary_chars={len(summary.strip())}",
-                f"user_message_preview={self._shorten(user_message, 400 if not debug_raw else 5000)}",
-            ]
-        )
-        add_debug(
-            stage="backend_to_llm",
-            title="后端编排器 -> Planner",
-            detail=planner_request_detail,
-        )
-        planner_brief, planner_raw = self._run_planner(
-            requested_model=requested_model,
-            user_message=planner_user_message,
-            summary=summary,
-            attachment_metas=attachment_metas,
-            settings=settings,
-        )
-        planner_effective_model = str(planner_brief.get("effective_model") or "").strip()
-        if planner_effective_model:
-            effective_model = planner_effective_model
-        usage_total = self._merge_usage(usage_total, planner_brief.get("usage") or self._empty_usage())
-        for note in self._normalize_string_list(planner_brief.get("notes") or [], limit=4, item_limit=200):
-            add_trace(note)
-        add_trace("多 Agent: Planner 已生成目标摘要与执行计划。")
-        add_debug(
-            stage="llm_to_backend",
-            title="Planner -> 后端编排器",
-            detail=(
-                f"effective_model={planner_effective_model or requested_model}\n"
-                f"{self._shorten(planner_raw, 4000 if debug_raw else 1200)}"
-            ),
-        )
-        planner_plan = self._normalize_string_list(planner_brief.get("plan") or [], limit=8, item_limit=160)
-        if planner_plan:
-            execution_plan = planner_plan
-        planner_summary = str(planner_brief.get("objective") or "").strip() or "已生成目标摘要。"
-        planner_bullets = (
-            self._normalize_string_list(planner_brief.get("constraints") or [], limit=3, item_limit=180)
-            + self._normalize_string_list(planner_brief.get("plan") or [], limit=4, item_limit=180)
-        )
-        add_panel("planner", "Planner", planner_summary, planner_bullets)
-        planner_system_hint = self._format_planner_system_hint(planner_brief)
-        if planner_system_hint:
-            messages.insert(1, self._SystemMessage(content=planner_system_hint))
-            add_trace("多 Agent: Worker 已加载 Planner 摘要。")
+        planner_brief = {
+            "objective": self._shorten(planner_user_message.strip(), 220),
+            "constraints": [],
+            "plan": list(execution_plan),
+            "watchouts": [],
+            "success_signals": [],
+            "usage": self._empty_usage(),
+            "effective_model": effective_model,
+            "notes": [],
+        }
+        planner_raw = ""
+        if route.get("use_planner"):
+            planner_request_detail = "\n".join(
+                [
+                    f"requested_model={requested_model}",
+                    f"response_style={settings.response_style}",
+                    f"attachments={len(attachment_metas)}",
+                    f"history_summary_chars={len(summary.strip())}",
+                    f"user_message_preview={self._shorten(user_message, 400 if not debug_raw else 5000)}",
+                ]
+            )
+            add_debug(
+                stage="backend_to_llm",
+                title="后端编排器 -> Planner",
+                detail=planner_request_detail,
+            )
+            planner_brief, planner_raw = self._run_planner(
+                requested_model=requested_model,
+                user_message=planner_user_message,
+                summary=summary,
+                attachment_metas=attachment_metas,
+                settings=settings,
+            )
+            planner_effective_model = str(planner_brief.get("effective_model") or "").strip()
+            if planner_effective_model:
+                effective_model = planner_effective_model
+            usage_total = self._merge_usage(usage_total, planner_brief.get("usage") or self._empty_usage())
+            for note in self._normalize_string_list(planner_brief.get("notes") or [], limit=4, item_limit=200):
+                add_trace(note)
+            add_trace("多 Agent: Planner 已生成目标摘要与执行计划。")
+            add_debug(
+                stage="llm_to_backend",
+                title="Planner -> 后端编排器",
+                detail=(
+                    f"effective_model={planner_effective_model or requested_model}\n"
+                    f"{self._shorten(planner_raw, 4000 if debug_raw else 1200)}"
+                ),
+            )
+            planner_plan = self._normalize_string_list(planner_brief.get("plan") or [], limit=8, item_limit=160)
+            if planner_plan:
+                execution_plan[:] = planner_plan
+            planner_summary = str(planner_brief.get("objective") or "").strip() or "已生成目标摘要。"
+            planner_bullets = (
+                self._normalize_string_list(planner_brief.get("constraints") or [], limit=3, item_limit=180)
+                + self._normalize_string_list(planner_brief.get("plan") or [], limit=4, item_limit=180)
+            )
+            add_panel("planner", "Planner", planner_summary, planner_bullets)
+            planner_system_hint = self._format_planner_system_hint(planner_brief)
+            if planner_system_hint:
+                messages.insert(1, self._SystemMessage(content=planner_system_hint))
+                add_trace("多 Agent: Worker 已加载 Planner 摘要。")
+        else:
+            add_trace("Router 已跳过 Planner。")
 
-        prefetch_payload = self._auto_prefetch_web(user_message, settings.enable_tools)
+        prefetch_payload = self._auto_prefetch_web(user_message, bool(route.get("use_web_prefetch")))
         if prefetch_payload:
             messages.append(self._SystemMessage(content=prefetch_payload["context"]))
             add_trace(
@@ -619,7 +702,7 @@ class OfficeAgent:
             detail=(
                 f"requested_model={requested_model}\n"
                 f"execution_mode={requested_execution_mode}\n"
-                f"enable_tools={settings.enable_tools}\n"
+                f"enable_tools={bool(route.get('use_worker_tools'))}\n"
                 f"attachments={len(attachment_metas)}\n"
                 f"history_turns_used={min(len(history_turns), settings.max_context_turns)}"
             ),
@@ -628,7 +711,7 @@ class OfficeAgent:
             stage="backend_to_llm",
             title="后端编排器 -> Worker",
             detail=(
-                f"model={requested_model}, enable_tools={settings.enable_tools}, max_output_tokens={settings.max_output_tokens}, "
+                f"model={requested_model}, enable_tools={bool(route.get('use_worker_tools'))}, max_output_tokens={settings.max_output_tokens}, "
                 f"debug_raw={debug_raw}, "
                 f"history_turns_used={min(len(history_turns), settings.max_context_turns)}, "
                 f"attachments={len(attachment_metas)}\n"
@@ -645,7 +728,7 @@ class OfficeAgent:
                 messages=messages,
                 model=requested_model,
                 max_output_tokens=settings.max_output_tokens,
-                enable_tools=settings.enable_tools,
+                enable_tools=bool(route.get("use_worker_tools")),
             )
             for note in failover_notes:
                 add_trace(note)
@@ -675,17 +758,15 @@ class OfficeAgent:
             )
 
         has_attachments = bool(attachment_metas)
+        attachments_need_tooling = any(self._attachment_needs_tooling(meta) for meta in attachment_metas)
         has_msg_attachment = any(str(meta.get("suffix", "") or "").lower() == ".msg" for meta in attachment_metas)
-        request_requires_tools = self._request_likely_requires_tools(
-            user_message=user_message,
-            attachment_metas=attachment_metas,
-        )
+        request_requires_tools = bool(route.get("use_worker_tools")) or attachments_need_tooling
         auto_nudge_budget = 4 if has_attachments else 2
         for _ in range(24):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
-            if not settings.enable_tools or not tool_calls:
+            if not route.get("use_worker_tools") or not tool_calls:
                 if (
-                    settings.enable_tools
+                    route.get("use_worker_tools")
                     and evidence_required_mode
                     and auto_nudge_budget > 0
                     and self._evidence_mode_needs_more_support(
@@ -719,7 +800,7 @@ class OfficeAgent:
                             messages=messages,
                             model=effective_model,
                             max_output_tokens=settings.max_output_tokens,
-                            enable_tools=settings.enable_tools,
+                            enable_tools=bool(route.get("use_worker_tools")),
                         )
                         for note in failover_notes:
                             add_trace(note)
@@ -738,8 +819,7 @@ class OfficeAgent:
                         add_debug(stage="llm_error", title="Worker 证据补强失败", detail=str(exc))
                         break
                 if (
-                    settings.enable_tools
-                    and auto_nudge_budget > 0
+                    auto_nudge_budget > 0
                     and self._looks_like_permission_gate(
                         ai_msg,
                         has_attachments=has_attachments,
@@ -759,7 +839,7 @@ class OfficeAgent:
                         "不要询问用户是否继续读取、是否继续写入、是否授权或是否确认。",
                         "不要让用户在方案A/方案B之间选择，也不要要求用户二次确认。",
                     ]
-                    if request_requires_tools or has_attachments:
+                    if request_requires_tools:
                         nudge_lines.extend(
                             [
                                 "用户当前请求已授权你直接继续执行。",
@@ -774,7 +854,7 @@ class OfficeAgent:
                                 "不要解释内部流程，也不要让用户再给下一步指令。",
                             ]
                         )
-                    if has_attachments:
+                    if attachments_need_tooling:
                         nudge_lines.extend(
                             [
                                 "本轮存在附件输入，禁止回复“已完成解析/无需调用工具/后续再解析”这类占位话术。",
@@ -797,7 +877,7 @@ class OfficeAgent:
                             messages=messages,
                             model=effective_model,
                             max_output_tokens=settings.max_output_tokens,
-                            enable_tools=settings.enable_tools,
+                            enable_tools=bool(route.get("use_worker_tools")),
                         )
                         for note in failover_notes:
                             add_trace(note)
@@ -886,7 +966,7 @@ class OfficeAgent:
                     messages=messages,
                     model=effective_model,
                     max_output_tokens=settings.max_output_tokens,
-                    enable_tools=settings.enable_tools,
+                    enable_tools=bool(route.get("use_worker_tools")),
                 )
                 for note in failover_notes:
                     add_trace(note)
@@ -927,7 +1007,12 @@ class OfficeAgent:
         ]
         if prefetch_payload:
             worker_bullets.append(f"自动预搜索: {prefetch_payload.get('count', 0)} 条")
-        add_panel("worker", "Worker", "主执行 Agent 已完成取证、工具调用与作答。", worker_bullets)
+        worker_summary = (
+            "主执行 Agent 已完成取证、工具调用与作答。"
+            if route.get("use_worker_tools")
+            else "主执行 Agent 已基于当前上下文直接完成作答。"
+        )
+        add_panel("worker", "Worker", worker_summary, worker_bullets)
         add_debug(
             stage="multi_agent_worker",
             title="Worker 执行完成",
@@ -946,168 +1031,228 @@ class OfficeAgent:
                 f"text_chars={len(text)}\npreview={self._shorten(text, 1200 if not debug_raw else 50000)}"
             ),
         )
-        conflict_request_detail = "\n".join(
-            [
-                f"requested_model={effective_model or requested_model}",
-                f"evidence_required_mode={evidence_required_mode}",
-                f"web_tools_used={str(self._summarize_validation_context(tool_events)['web_tools_used']).lower()}",
-                f"web_tools_success={str(self._summarize_validation_context(tool_events)['web_tools_success']).lower()}",
-                f"draft_chars={len(text)}",
-                f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
-            ]
-        )
-        add_debug(
-            stage="backend_to_llm",
-            title="后端编排器 -> Conflict Detector",
-            detail=conflict_request_detail,
-        )
-        conflict_brief, conflict_raw = self._run_answer_conflict_detector(
-            requested_model=effective_model or requested_model,
-            user_message=user_message,
-            final_text=text,
-            planner_brief=planner_brief,
-            tool_events=tool_events,
-            spec_lookup_request=spec_lookup_request,
-            evidence_required_mode=evidence_required_mode,
-        )
-        conflict_effective_model = str(conflict_brief.get("effective_model") or "").strip()
-        if conflict_effective_model:
-            effective_model = conflict_effective_model
-        usage_total = self._merge_usage(usage_total, conflict_brief.get("usage") or self._empty_usage())
-        for note in self._normalize_string_list(conflict_brief.get("notes") or [], limit=3, item_limit=200):
-            add_trace(note)
-        add_debug(
-            stage="llm_to_backend",
-            title="Conflict Detector -> 后端编排器",
-            detail=(
-                f"effective_model={conflict_effective_model or effective_model or requested_model}\n"
-                f"{self._shorten(conflict_raw, 4000 if debug_raw else 1200)}"
-            ),
-        )
-        conflict_summary = str(conflict_brief.get("summary") or "").strip() or "已完成通识冲突检查。"
-        conflict_bullets = self._normalize_string_list(conflict_brief.get("concerns") or [], limit=4, item_limit=180)
-        add_panel("conflict_detector", "Conflict Detector", conflict_summary, conflict_bullets)
-        reviewer_request_detail = "\n".join(
-            [
-                f"requested_model={effective_model or requested_model}",
-                f"tool_events={len(tool_events)}",
-                f"execution_trace_items={len(execution_trace)}",
-                f"draft_chars={len(text)}",
-                f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
-                f"evidence_required_mode={evidence_required_mode}",
-            ]
-        )
-        add_debug(
-            stage="backend_to_llm",
-            title="后端编排器 -> Reviewer",
-            detail=reviewer_request_detail,
-        )
-        reviewer_brief, reviewer_raw = self._run_reviewer(
-            requested_model=effective_model or requested_model,
-            user_message=user_message,
-            final_text=text,
-            planner_brief=planner_brief,
-            tool_events=tool_events,
-            execution_trace=execution_trace,
-            spec_lookup_request=spec_lookup_request,
-            evidence_required_mode=evidence_required_mode,
-            conflict_brief=conflict_brief,
-            debug_cb=add_debug,
-            trace_cb=add_trace,
-        )
-        reviewer_effective_model = str(reviewer_brief.get("effective_model") or "").strip()
-        if reviewer_effective_model:
-            effective_model = reviewer_effective_model
-        usage_total = self._merge_usage(usage_total, reviewer_brief.get("usage") or self._empty_usage())
-        for note in self._normalize_string_list(reviewer_brief.get("notes") or [], limit=4, item_limit=200):
-            add_trace(note)
-        reviewer_verdict = str(reviewer_brief.get("verdict") or "pass").strip().lower()
-        reviewer_confidence = str(reviewer_brief.get("confidence") or "medium").strip().lower()
-        if reviewer_verdict == "block":
-            add_trace(f"多 Agent: Reviewer 判定阻断，需要大幅修订，confidence={reviewer_confidence}。")
-        elif reviewer_verdict == "warn":
-            add_trace(f"多 Agent: Reviewer 判定可保留但需补强，confidence={reviewer_confidence}。")
+        conflict_brief = {
+            "has_conflict": False,
+            "confidence": "medium",
+            "summary": "Router 已跳过冲突检查。",
+            "concerns": [],
+            "suggested_checks": [],
+            "usage": self._empty_usage(),
+            "effective_model": effective_model,
+            "notes": [],
+        }
+        reviewer_brief = {
+            "verdict": "pass",
+            "confidence": "medium",
+            "summary": "Router 已跳过最终审阅。",
+            "strengths": [],
+            "risks": [],
+            "followups": [],
+            "usage": self._empty_usage(),
+            "effective_model": effective_model,
+            "notes": [],
+            "readonly_checks": [],
+            "readonly_evidence": [],
+        }
+        if route.get("use_reviewer"):
+            if route.get("use_conflict_detector"):
+                conflict_request_detail = "\n".join(
+                    [
+                        f"requested_model={effective_model or requested_model}",
+                        f"evidence_required_mode={evidence_required_mode}",
+                        f"web_tools_used={str(self._summarize_validation_context(tool_events)['web_tools_used']).lower()}",
+                        f"web_tools_success={str(self._summarize_validation_context(tool_events)['web_tools_success']).lower()}",
+                        f"draft_chars={len(text)}",
+                        f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
+                    ]
+                )
+                add_debug(
+                    stage="backend_to_llm",
+                    title="后端编排器 -> Conflict Detector",
+                    detail=conflict_request_detail,
+                )
+                conflict_brief, conflict_raw = self._run_answer_conflict_detector(
+                    requested_model=effective_model or requested_model,
+                    user_message=user_message,
+                    final_text=text,
+                    planner_brief=planner_brief,
+                    tool_events=tool_events,
+                    spec_lookup_request=spec_lookup_request,
+                    evidence_required_mode=evidence_required_mode,
+                )
+                conflict_effective_model = str(conflict_brief.get("effective_model") or "").strip()
+                if conflict_effective_model:
+                    effective_model = conflict_effective_model
+                usage_total = self._merge_usage(usage_total, conflict_brief.get("usage") or self._empty_usage())
+                for note in self._normalize_string_list(conflict_brief.get("notes") or [], limit=3, item_limit=200):
+                    add_trace(note)
+                add_debug(
+                    stage="llm_to_backend",
+                    title="Conflict Detector -> 后端编排器",
+                    detail=(
+                        f"effective_model={conflict_effective_model or effective_model or requested_model}\n"
+                        f"{self._shorten(conflict_raw, 4000 if debug_raw else 1200)}"
+                    ),
+                )
+                conflict_summary = str(conflict_brief.get("summary") or "").strip() or "已完成通识冲突检查。"
+                conflict_bullets = self._normalize_string_list(conflict_brief.get("concerns") or [], limit=4, item_limit=180)
+                add_panel("conflict_detector", "Conflict Detector", conflict_summary, conflict_bullets)
+            else:
+                add_trace("Router 已跳过 Conflict Detector。")
+
+            reviewer_request_detail = "\n".join(
+                [
+                    f"requested_model={effective_model or requested_model}",
+                    f"tool_events={len(tool_events)}",
+                    f"execution_trace_items={len(execution_trace)}",
+                    f"draft_chars={len(text)}",
+                    f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
+                    f"evidence_required_mode={evidence_required_mode}",
+                ]
+            )
+            add_debug(
+                stage="backend_to_llm",
+                title="后端编排器 -> Reviewer",
+                detail=reviewer_request_detail,
+            )
+            reviewer_brief, reviewer_raw = self._run_reviewer(
+                requested_model=effective_model or requested_model,
+                user_message=user_message,
+                final_text=text,
+                planner_brief=planner_brief,
+                tool_events=tool_events,
+                execution_trace=execution_trace,
+                spec_lookup_request=spec_lookup_request,
+                evidence_required_mode=evidence_required_mode,
+                conflict_brief=conflict_brief,
+                debug_cb=add_debug,
+                trace_cb=add_trace,
+            )
+            reviewer_effective_model = str(reviewer_brief.get("effective_model") or "").strip()
+            if reviewer_effective_model:
+                effective_model = reviewer_effective_model
+            usage_total = self._merge_usage(usage_total, reviewer_brief.get("usage") or self._empty_usage())
+            for note in self._normalize_string_list(reviewer_brief.get("notes") or [], limit=4, item_limit=200):
+                add_trace(note)
+            reviewer_verdict = str(reviewer_brief.get("verdict") or "pass").strip().lower()
+            reviewer_confidence = str(reviewer_brief.get("confidence") or "medium").strip().lower()
+            if reviewer_verdict == "block":
+                add_trace(f"多 Agent: Reviewer 判定阻断，需要大幅修订，confidence={reviewer_confidence}。")
+            elif reviewer_verdict == "warn":
+                add_trace(f"多 Agent: Reviewer 判定可保留但需补强，confidence={reviewer_confidence}。")
+            else:
+                add_trace(f"多 Agent: Reviewer 通过，confidence={reviewer_confidence}。")
+            add_debug(
+                stage="llm_to_backend",
+                title="Reviewer -> 后端编排器",
+                detail=(
+                    f"effective_model={reviewer_effective_model or effective_model or requested_model}\n"
+                    f"{self._shorten(reviewer_raw, 4000 if debug_raw else 1200)}"
+                ),
+            )
+            reviewer_summary = str(reviewer_brief.get("summary") or "").strip() or "已完成最终答复审阅。"
+            reviewer_bullets = (
+                self._normalize_string_list(
+                    [f"判定: {reviewer_verdict}"],
+                    limit=1,
+                    item_limit=80,
+                )
+                + self._normalize_string_list(
+                    [f"使用工具: {item}" for item in reviewer_brief.get("readonly_checks") or []],
+                    limit=4,
+                    item_limit=180,
+                )
+                + self._normalize_string_list(
+                    [f"复核证据: {item}" for item in reviewer_brief.get("readonly_evidence") or []],
+                    limit=4,
+                    item_limit=200,
+                )
+                + self._normalize_string_list(reviewer_brief.get("strengths") or [], limit=2, item_limit=180)
+                + self._normalize_string_list(reviewer_brief.get("risks") or [], limit=3, item_limit=180)
+                + self._normalize_string_list(reviewer_brief.get("followups") or [], limit=2, item_limit=180)
+            )
+            add_panel("reviewer", "Reviewer", reviewer_summary, reviewer_bullets)
+            if route.get("use_revision"):
+                revision_request_detail = "\n".join(
+                    [
+                        f"requested_model={effective_model or requested_model}",
+                        f"reviewer_verdict={reviewer_verdict}",
+                        f"reviewer_confidence={reviewer_confidence}",
+                        f"current_text_chars={len(text)}",
+                        f"current_text_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
+                    ]
+                )
+                add_debug(
+                    stage="backend_to_llm",
+                    title="后端编排器 -> Revision",
+                    detail=revision_request_detail,
+                )
+                revision_brief, revision_raw = self._run_revision(
+                    requested_model=effective_model or requested_model,
+                    user_message=user_message,
+                    current_text=text,
+                    planner_brief=planner_brief,
+                    reviewer_brief=reviewer_brief,
+                    tool_events=tool_events,
+                    conflict_brief=conflict_brief,
+                    evidence_required_mode=evidence_required_mode,
+                )
+                revision_effective_model = str(revision_brief.get("effective_model") or "").strip()
+                if revision_effective_model:
+                    effective_model = revision_effective_model
+                usage_total = self._merge_usage(usage_total, revision_brief.get("usage") or self._empty_usage())
+                for note in self._normalize_string_list(revision_brief.get("notes") or [], limit=4, item_limit=200):
+                    add_trace(note)
+                revised_text = str(revision_brief.get("final_answer") or "").strip()
+                revision_changed = bool(revision_brief.get("changed")) and bool(revised_text)
+                if revision_changed:
+                    text = revised_text
+                    add_trace("多 Agent: Revision 已应用到最终答复。")
+                else:
+                    add_trace("多 Agent: Revision 未修改最终答复。")
+                add_debug(
+                    stage="llm_to_backend",
+                    title="Revision -> 后端编排器",
+                    detail=(
+                        f"effective_model={revision_effective_model or effective_model or requested_model}\n"
+                        f"{self._shorten(revision_raw, 4000 if debug_raw else 1200)}"
+                    ),
+                )
+                revision_summary = str(revision_brief.get("summary") or "").strip() or "已完成最终润色与修订判断。"
+                revision_bullets = self._normalize_string_list(revision_brief.get("key_changes") or [], limit=4, item_limit=180)
+                add_panel("revision", "Revision", revision_summary, revision_bullets)
+            else:
+                add_trace("Router 已跳过 Revision。")
         else:
-            add_trace(f"多 Agent: Reviewer 通过，confidence={reviewer_confidence}。")
-        add_debug(
-            stage="llm_to_backend",
-            title="Reviewer -> 后端编排器",
-            detail=(
-                f"effective_model={reviewer_effective_model or effective_model or requested_model}\n"
-                f"{self._shorten(reviewer_raw, 4000 if debug_raw else 1200)}"
-            ),
-        )
-        reviewer_summary = str(reviewer_brief.get("summary") or "").strip() or "已完成最终答复审阅。"
-        reviewer_bullets = (
-            self._normalize_string_list(
-                [f"判定: {reviewer_verdict}"],
-                limit=1,
-                item_limit=80,
-            )
-            + self._normalize_string_list(
-                [f"使用工具: {item}" for item in reviewer_brief.get("readonly_checks") or []],
-                limit=4,
-                item_limit=180,
-            )
-            + self._normalize_string_list(
-                [f"复核证据: {item}" for item in reviewer_brief.get("readonly_evidence") or []],
-                limit=4,
-                item_limit=200,
-            )
-            + self._normalize_string_list(reviewer_brief.get("strengths") or [], limit=2, item_limit=180)
-            + self._normalize_string_list(reviewer_brief.get("risks") or [], limit=3, item_limit=180)
-            + self._normalize_string_list(reviewer_brief.get("followups") or [], limit=2, item_limit=180)
-        )
-        add_panel("reviewer", "Reviewer", reviewer_summary, reviewer_bullets)
-        revision_request_detail = "\n".join(
-            [
-                f"requested_model={effective_model or requested_model}",
-                f"reviewer_verdict={reviewer_verdict}",
-                f"reviewer_confidence={reviewer_confidence}",
-                f"current_text_chars={len(text)}",
-                f"current_text_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
-            ]
-        )
-        add_debug(
-            stage="backend_to_llm",
-            title="后端编排器 -> Revision",
-            detail=revision_request_detail,
-        )
-        revision_brief, revision_raw = self._run_revision(
-            requested_model=effective_model or requested_model,
-            user_message=user_message,
-            current_text=text,
-            planner_brief=planner_brief,
-            reviewer_brief=reviewer_brief,
-            tool_events=tool_events,
-            conflict_brief=conflict_brief,
-            evidence_required_mode=evidence_required_mode,
-        )
-        revision_effective_model = str(revision_brief.get("effective_model") or "").strip()
-        if revision_effective_model:
-            effective_model = revision_effective_model
-        usage_total = self._merge_usage(usage_total, revision_brief.get("usage") or self._empty_usage())
-        for note in self._normalize_string_list(revision_brief.get("notes") or [], limit=4, item_limit=200):
-            add_trace(note)
-        revised_text = str(revision_brief.get("final_answer") or "").strip()
-        revision_changed = bool(revision_brief.get("changed")) and bool(revised_text)
-        if revision_changed:
-            text = revised_text
-            add_trace("多 Agent: Revision 已应用到最终答复。")
-        else:
-            add_trace("多 Agent: Revision 未修改最终答复。")
-        add_debug(
-            stage="llm_to_backend",
-            title="Revision -> 后端编排器",
-            detail=(
-                f"effective_model={revision_effective_model or effective_model or requested_model}\n"
-                f"{self._shorten(revision_raw, 4000 if debug_raw else 1200)}"
-            ),
-        )
-        revision_summary = str(revision_brief.get("summary") or "").strip() or "已完成最终润色与修订判断。"
-        revision_bullets = self._normalize_string_list(revision_brief.get("key_changes") or [], limit=4, item_limit=180)
-        add_panel("revision", "Revision", revision_summary, revision_bullets)
+            add_trace("Router 已跳过 Conflict Detector / Reviewer / Revision。")
+
         finalized_citations = self._finalize_citation_candidates(worker_citation_candidates)
+        if not route.get("use_structurer"):
+            return (
+                text,
+                tool_events,
+                attachment_note,
+                execution_plan,
+                execution_trace,
+                debug_flow,
+                agent_panels,
+                answer_bundle,
+                usage_total,
+                effective_model,
+            )
+        if not self._should_emit_answer_bundle(finalized_citations):
+            return (
+                text,
+                tool_events,
+                attachment_note,
+                execution_plan,
+                execution_trace,
+                debug_flow,
+                agent_panels,
+                answer_bundle,
+                usage_total,
+                effective_model,
+            )
         structurer_request_detail = "\n".join(
             [
                 f"requested_model={effective_model or requested_model}",
@@ -1697,6 +1842,7 @@ class OfficeAgent:
             citation_lines.extend(
                 [
                     f"id={item.get('id')}",
+                    f"kind={item.get('kind') or 'evidence'}",
                     f"tool={item.get('tool') or '(unknown)'}",
                     f"source_type={item.get('source_type') or 'other'}",
                     f"label={item.get('label') or '(none)'}",
@@ -1728,6 +1874,7 @@ class OfficeAgent:
                     "把最终答复整理为结构化证据包。"
                     "不要改写事实本身，不要输出思维链。"
                     "你只能使用输入里已经给出的 citation id，禁止捏造新来源。"
+                    "kind=evidence 才能视为已取证来源；kind=candidate 只是搜索候选，不足以单独支撑确定性结论。"
                     "claims 最多 5 条，每条都必须简洁。"
                     "如果某条结论没有足够证据，status 必须是 needs_review 或 partially_supported。"
                     "warnings 应优先写来源 warning、证据不足、Reviewer 风险。"
@@ -1755,6 +1902,9 @@ class OfficeAgent:
                 return self._strip_answer_bundle_meta(fallback), raw_text
 
             valid_ids = {str(item.get("id") or "").strip() for item in citations}
+            citations_by_id = {
+                str(item.get("id") or "").strip(): item for item in citations if str(item.get("id") or "").strip()
+            }
             claims_out: list[dict[str, Any]] = []
             for item in parsed.get("claims") or []:
                 if not isinstance(item, dict):
@@ -1773,17 +1923,19 @@ class OfficeAgent:
                 if status not in {"supported", "partially_supported", "needs_review"}:
                     status = "supported" if citation_ids else "needs_review"
                 claims_out.append(
-                    {
-                        "statement": self._shorten(statement, 220),
-                        "citation_ids": citation_ids,
-                        "confidence": confidence,
-                        "status": status,
-                    }
+                    self._normalize_claim_record(
+                        statement=statement,
+                        citation_ids=citation_ids,
+                        confidence=confidence,
+                        status=status,
+                        citations_by_id=citations_by_id,
+                    )
                 )
                 if len(claims_out) >= 5:
                     break
 
             warnings = self._normalize_string_list(parsed.get("warnings") or [], limit=5, item_limit=220)
+            warnings = self._augment_bundle_warnings(warnings=warnings, citations=citations)
             bundle = {
                 "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
                 "claims": claims_out or fallback["claims"],
@@ -1807,17 +1959,30 @@ class OfficeAgent:
         conflict_brief: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         summary = self._extract_answer_summary(final_text)
-        citation_ids = [str(item.get("id") or "").strip() for item in citations if str(item.get("id") or "").strip()]
+        citations_by_id = {
+            str(item.get("id") or "").strip(): item for item in citations if str(item.get("id") or "").strip()
+        }
+        evidence_ids = [
+            cid
+            for cid, item in citations_by_id.items()
+            if self._citation_kind(item) == "evidence"
+        ]
+        candidate_ids = [
+            cid
+            for cid, item in citations_by_id.items()
+            if self._citation_kind(item) == "candidate"
+        ]
         claims: list[dict[str, Any]] = []
         for statement in self._split_claim_candidates(final_text)[:5]:
-            linked_ids = citation_ids[: min(2, len(citation_ids))]
+            linked_ids = evidence_ids[: min(2, len(evidence_ids))] or candidate_ids[: min(2, len(candidate_ids))]
             claims.append(
-                {
-                    "statement": statement,
-                    "citation_ids": linked_ids,
-                    "confidence": "medium" if linked_ids else "low",
-                    "status": "supported" if linked_ids else "needs_review",
-                }
+                self._normalize_claim_record(
+                    statement=statement,
+                    citation_ids=linked_ids,
+                    confidence="medium" if evidence_ids else "low",
+                    status="supported" if evidence_ids else "needs_review",
+                    citations_by_id=citations_by_id,
+                )
             )
         warnings = self._normalize_string_list(
             list(reviewer_brief.get("risks") or [])
@@ -1826,6 +1991,7 @@ class OfficeAgent:
             limit=5,
             item_limit=220,
         )
+        warnings = self._augment_bundle_warnings(warnings=warnings, citations=citations)
         return {
             "summary": summary,
             "claims": claims,
@@ -1843,6 +2009,69 @@ class OfficeAgent:
             "citations": list(bundle.get("citations") or []),
             "warnings": list(bundle.get("warnings") or []),
         }
+
+    def _should_emit_answer_bundle(self, citations: list[dict[str, Any]]) -> bool:
+        return bool(citations)
+
+    def _citation_kind(self, citation: dict[str, Any]) -> str:
+        kind = str(citation.get("kind") or "").strip().lower()
+        if kind in {"evidence", "candidate"}:
+            return kind
+        return "candidate" if str(citation.get("tool") or "").strip() == "search_web" else "evidence"
+
+    def _citation_strength(self, citation: dict[str, Any]) -> int:
+        if self._citation_kind(citation) != "evidence":
+            return 0
+        confidence = str(citation.get("confidence") or "medium").strip().lower()
+        return {"high": 3, "medium": 2, "low": 1}.get(confidence, 2)
+
+    def _normalize_claim_record(
+        self,
+        *,
+        statement: str,
+        citation_ids: list[str],
+        confidence: str,
+        status: str,
+        citations_by_id: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        linked_ids = [cid for cid in citation_ids if cid in citations_by_id][:4]
+        linked_citations = [citations_by_id[cid] for cid in linked_ids]
+        evidence_strength = max((self._citation_strength(item) for item in linked_citations), default=0)
+        has_evidence = any(self._citation_kind(item) == "evidence" for item in linked_citations)
+
+        normalized_confidence = confidence if confidence in {"high", "medium", "low"} else "medium"
+        normalized_status = status if status in {"supported", "partially_supported", "needs_review"} else "needs_review"
+
+        if not linked_ids:
+            normalized_confidence = "low"
+            normalized_status = "needs_review"
+        elif not has_evidence:
+            normalized_confidence = "low"
+            normalized_status = "needs_review"
+        elif evidence_strength <= 1:
+            if normalized_confidence == "high":
+                normalized_confidence = "medium"
+            if normalized_status == "supported":
+                normalized_status = "partially_supported"
+
+        return {
+            "statement": self._shorten(statement, 220),
+            "citation_ids": linked_ids,
+            "confidence": normalized_confidence,
+            "status": normalized_status,
+        }
+
+    def _augment_bundle_warnings(self, *, warnings: list[str], citations: list[dict[str, Any]]) -> list[str]:
+        normalized = self._normalize_string_list(warnings, limit=5, item_limit=220)
+        if not citations:
+            return normalized
+        if all(self._citation_kind(item) == "candidate" for item in citations if isinstance(item, dict)):
+            normalized = self._normalize_string_list(
+                ["当前来源仅为搜索候选链接，尚未抓取正文，结论需复核。", *normalized],
+                limit=5,
+                item_limit=220,
+            )
+        return normalized
 
     def _extract_answer_summary(self, final_text: str) -> str:
         cleaned = " ".join(str(final_text or "").strip().split())
@@ -2100,6 +2329,7 @@ class OfficeAgent:
                 out.append(
                     {
                         "source_type": "web",
+                        "kind": "candidate",
                         "tool": "search_web",
                         "label": title or domain or url or "web result",
                         "url": url or None,
@@ -2108,8 +2338,8 @@ class OfficeAgent:
                         "locator": f"query={query}" if query else None,
                         "excerpt": self._shorten(snippet, 280),
                         "published_at": str(row.get("published_at") or "").strip() or None,
-                        "warning": str(result.get("warning") or "").strip() or None,
-                        "confidence": "medium",
+                        "warning": None,
+                        "confidence": "low",
                     }
                 )
             return out
@@ -2120,6 +2350,7 @@ class OfficeAgent:
             out.append(
                 {
                     "source_type": "web",
+                    "kind": "evidence",
                     "tool": "fetch_web",
                     "label": str(result.get("title") or self._domain_from_url(url) or url or "web page").strip(),
                     "url": url or None,
@@ -2144,6 +2375,7 @@ class OfficeAgent:
                 out.append(
                     {
                         "source_type": "document",
+                        "kind": "evidence",
                         "tool": "search_text_in_file",
                         "label": Path(path or "document").name,
                         "path": path,
@@ -2165,6 +2397,7 @@ class OfficeAgent:
             out.append(
                 {
                     "source_type": "document",
+                    "kind": "evidence",
                     "tool": "read_section_by_heading",
                     "label": Path(path or "document").name,
                     "path": path,
@@ -2187,6 +2420,7 @@ class OfficeAgent:
                 out.append(
                     {
                         "source_type": "table",
+                        "kind": "evidence",
                         "tool": "table_extract",
                         "label": Path(path or "table").name,
                         "path": path,
@@ -2207,6 +2441,7 @@ class OfficeAgent:
                 out.append(
                     {
                         "source_type": "codebase",
+                        "kind": "evidence",
                         "tool": "search_codebase",
                         "label": Path(match_path or "code").name,
                         "path": match_path or None,
@@ -2226,6 +2461,7 @@ class OfficeAgent:
                 out.append(
                     {
                         "source_type": "document",
+                        "kind": "evidence",
                         "tool": "fact_check_file",
                         "label": Path(path or "document").name,
                         "path": path,
@@ -2273,14 +2509,46 @@ class OfficeAgent:
         return merged
 
     def _finalize_citation_candidates(self, citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        prepared = [item for item in citations if isinstance(item, dict)]
+        if any(self._citation_kind(item) == "evidence" for item in prepared):
+            prepared = [item for item in prepared if self._citation_kind(item) == "evidence"]
+
+        def sort_key(item: dict[str, Any]) -> tuple[int, int, int, int, int]:
+            tool = str(item.get("tool") or "").strip()
+            source_type = str(item.get("source_type") or "").strip()
+            confidence = str(item.get("confidence") or "medium").strip().lower()
+
+            tool_priority = {
+                "fetch_web": 6,
+                "fact_check_file": 5,
+                "search_text_in_file": 5,
+                "read_section_by_heading": 5,
+                "table_extract": 5,
+                "search_codebase": 4,
+                "search_web": 1,
+            }.get(tool, 3)
+            if source_type in {"document", "table", "codebase"} and tool_priority < 5:
+                tool_priority = 5
+
+            confidence_priority = {"high": 3, "medium": 2, "low": 1}.get(confidence, 2)
+            excerpt_priority = 1 if str(item.get("excerpt") or "").strip() else 0
+            published_priority = 1 if str(item.get("published_at") or "").strip() else 0
+            warning_penalty = 0 if not str(item.get("warning") or "").strip() else -1
+            return (
+                tool_priority,
+                confidence_priority,
+                excerpt_priority,
+                published_priority,
+                warning_penalty,
+            )
+
         out: list[dict[str, Any]] = []
-        for idx, item in enumerate(citations[:12], start=1):
-            if not isinstance(item, dict):
-                continue
+        for idx, item in enumerate(sorted(prepared, key=sort_key, reverse=True)[:12], start=1):
             out.append(
                 {
                     "id": f"c{idx}",
                     "source_type": str(item.get("source_type") or "other").strip() or "other",
+                    "kind": self._citation_kind(item),
                     "tool": str(item.get("tool") or "").strip(),
                     "label": str(item.get("label") or "").strip() or f"source_{idx}",
                     "path": str(item.get("path") or "").strip() or None,
@@ -2421,16 +2689,427 @@ class OfficeAgent:
             lines.append(f"warning: {warning}")
         return "\n".join(lines)[:6000]
 
-    def _build_execution_plan(self, attachment_metas: list[dict[str, Any]], settings: ChatSettings) -> list[str]:
-        plan = ["Planner 提炼目标、约束与执行计划。", "Worker 根据计划执行与取证。"]
+    def _looks_like_understanding_request(self, user_message: str) -> bool:
+        text = (user_message or "").strip().lower()
+        if not text:
+            return False
+        if any(hint in text for hint in _NEWS_HINTS):
+            return False
+        if self._requires_evidence_mode(user_message, []):
+            return False
+        tool_markers = (
+            "read_text_file",
+            "search_text_in_file",
+            "table_extract",
+            "fact_check_file",
+            "search_codebase",
+            "search_web",
+            "fetch_web",
+            "download_web_file",
+        )
+        if any(marker in text for marker in tool_markers):
+            return False
+        return any(hint in text for hint in _UNDERSTANDING_HINTS)
+
+    def _attachment_is_inline_parseable(self, meta: dict[str, Any]) -> bool:
+        suffix = str(meta.get("suffix") or "").strip().lower()
+        kind = str(meta.get("kind") or "").strip().lower()
+        try:
+            size = int(meta.get("size") or 0)
+        except Exception:
+            size = 0
+        if kind != "document":
+            return False
+        if self._attachment_needs_tooling(meta):
+            return False
+        parseable_suffixes = {
+            ".txt",
+            ".md",
+            ".csv",
+            ".json",
+            ".pdf",
+            ".docx",
+            ".xlsx",
+            ".xlsm",
+            ".xltx",
+            ".xltm",
+            ".xls",
+            ".html",
+            ".xml",
+            ".atom",
+            ".rss",
+            ".yaml",
+            ".yml",
+            ".log",
+            ".py",
+            ".js",
+            ".ts",
+            ".tsx",
+        }
+        return suffix in parseable_suffixes and size <= _ATTACHMENT_INLINE_MAX_BYTES
+
+    def _normalize_route_decision(
+        self,
+        route: dict[str, Any],
+        *,
+        fallback: dict[str, Any],
+        settings: ChatSettings,
+    ) -> dict[str, Any]:
+        normalized = dict(fallback)
+        normalized.update(route or {})
+
+        normalized["task_type"] = str(normalized.get("task_type") or fallback.get("task_type") or "standard").strip()
+        complexity = str(normalized.get("complexity") or fallback.get("complexity") or "medium").strip().lower()
+        if complexity not in {"low", "medium", "high"}:
+            complexity = "medium"
+        normalized["complexity"] = complexity
+
+        for key in (
+            "use_planner",
+            "use_worker_tools",
+            "use_reviewer",
+            "use_revision",
+            "use_structurer",
+            "use_web_prefetch",
+            "use_conflict_detector",
+            "needs_llm_router",
+        ):
+            normalized[key] = bool(normalized.get(key))
+
+        if not settings.enable_tools:
+            normalized["use_worker_tools"] = False
+            normalized["use_web_prefetch"] = False
+
+        if not normalized["use_reviewer"]:
+            normalized["use_revision"] = False
+            normalized["use_conflict_detector"] = False
+
+        if not normalized["use_worker_tools"]:
+            normalized["use_web_prefetch"] = False
+
+        normalized["reason"] = str(normalized.get("reason") or fallback.get("reason") or "").strip()
+        normalized["source"] = str(normalized.get("source") or fallback.get("source") or "rules").strip() or "rules"
+        normalized["summary"] = (
+            str(normalized.get("summary") or "").strip()
+            or f"task_type={normalized['task_type']}, complexity={normalized['complexity']}"
+        )
+        normalized["router_model"] = str(normalized.get("router_model") or "").strip()
+        return normalized
+
+    def _route_request_by_rules(
+        self,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: ChatSettings,
+    ) -> dict[str, Any]:
+        text = (user_message or "").strip().lower()
+        has_attachments = bool(attachment_metas)
+        spec_lookup_request = self._looks_like_spec_lookup_request(user_message, attachment_metas)
+        evidence_required = self._requires_evidence_mode(user_message, attachment_metas)
+        attachment_needs_tooling = any(self._attachment_needs_tooling(meta) for meta in attachment_metas)
+        inline_parseable_attachments = has_attachments and all(
+            self._attachment_is_inline_parseable(meta) for meta in attachment_metas
+        )
+        understanding_request = self._looks_like_understanding_request(user_message)
+        web_request = (
+            any(hint in text for hint in _NEWS_HINTS)
+            or "http://" in text
+            or "https://" in text
+            or any(hint in text for hint in ("上网", "网上", "联网", "search_web", "fetch_web", "download_web_file"))
+        )
+        request_requires_tools = self._request_likely_requires_tools(user_message, attachment_metas)
+
+        fallback = {
+            "task_type": "standard",
+            "complexity": "medium",
+            "use_planner": True,
+            "use_worker_tools": bool(settings.enable_tools and request_requires_tools),
+            "use_reviewer": True,
+            "use_revision": True,
+            "use_structurer": True,
+            "use_web_prefetch": bool(settings.enable_tools and web_request),
+            "use_conflict_detector": True,
+            "needs_llm_router": False,
+            "reason": "rules_default_full_pipeline",
+            "source": "rules",
+            "summary": "默认走完整流水线。",
+            "router_model": "",
+        }
+
+        if spec_lookup_request or evidence_required:
+            return self._normalize_route_decision(
+                {
+                    "task_type": "evidence_lookup",
+                    "complexity": "high" if has_attachments else "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": True,
+                    "use_revision": True,
+                    "use_structurer": True,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": True,
+                    "reason": "rules_evidence_or_spec_request",
+                    "summary": "检测到查证/定位类任务，保留完整取证链路。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        if web_request:
+            return self._normalize_route_decision(
+                {
+                    "task_type": "web_research",
+                    "complexity": "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": True,
+                    "use_revision": True,
+                    "use_structurer": True,
+                    "use_web_prefetch": True,
+                    "use_conflict_detector": True,
+                    "reason": "rules_web_request",
+                    "summary": "检测到联网/实时信息请求，启用联网取证链路。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        if has_attachments and inline_parseable_attachments and understanding_request and not attachment_needs_tooling:
+            return self._normalize_route_decision(
+                {
+                    "task_type": "simple_understanding",
+                    "complexity": "low",
+                    "use_planner": False,
+                    "use_worker_tools": False,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "reason": "rules_small_parseable_attachment_understanding",
+                    "summary": "小型可解析附件的理解任务，直接由 Worker 作答。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        if not has_attachments and not request_requires_tools and not understanding_request and len(text) <= 240:
+            return self._normalize_route_decision(
+                {
+                    "task_type": "simple_qa",
+                    "complexity": "low",
+                    "use_planner": False,
+                    "use_worker_tools": False,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "reason": "rules_simple_qa",
+                    "summary": "简单问答，直接由 Worker 回答。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        if attachment_needs_tooling:
+            return self._normalize_route_decision(
+                {
+                    "task_type": "attachment_tooling",
+                    "complexity": "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "reason": "rules_attachment_requires_tooling",
+                    "summary": "附件需要解包或分块读取，先走 Worker 工具链。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        if has_attachments and inline_parseable_attachments and not request_requires_tools:
+            return self._normalize_route_decision(
+                {
+                    "task_type": "mixed_attachment",
+                    "complexity": "medium",
+                    "needs_llm_router": True,
+                    "reason": "rules_ambiguous_small_attachment_request",
+                    "summary": "附件可直接理解，但用户意图不够明确，交给轻量 Router 补判。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        if not has_attachments and not request_requires_tools and len(text) <= 800:
+            return self._normalize_route_decision(
+                {
+                    "task_type": "general_qa",
+                    "complexity": "medium",
+                    "needs_llm_router": True,
+                    "reason": "rules_ambiguous_general_request",
+                    "summary": "普通问答但复杂度不够明确，交给轻量 Router 补判。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        return self._normalize_route_decision(fallback, fallback=fallback, settings=settings)
+
+    def _run_router(
+        self,
+        *,
+        requested_model: str,
+        user_message: str,
+        summary: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: ChatSettings,
+        rules_route: dict[str, Any],
+    ) -> tuple[dict[str, Any], str]:
+        fallback = self._normalize_route_decision(rules_route, fallback=rules_route, settings=settings)
+        if not str(os.environ.get("OPENAI_API_KEY") or "").strip():
+            return fallback, json.dumps({"skipped": "OPENAI_API_KEY missing"}, ensure_ascii=False)
+
+        router_input = "\n".join(
+            [
+                f"user_message:\n{user_message.strip() or '(empty)'}",
+                f"history_summary:\n{summary.strip() or '(none)'}",
+                f"attachments:\n{self._summarize_attachment_metas_for_agents(attachment_metas)}",
+                f"enable_tools={str(settings.enable_tools).lower()}",
+                f"rules_task_type={fallback['task_type']}",
+                f"rules_complexity={fallback['complexity']}",
+                f"rules_reason={fallback['reason']}",
+                f"rules_summary={fallback['summary']}",
+            ]
+        )
+        messages = [
+            self._SystemMessage(
+                content=(
+                    "你是轻量 Router。"
+                    "你的职责是为当前请求选择最小可行链路，避免所有请求都跑完整流水线。"
+                    "优先最小化角色数和工具数，但不能牺牲明显必要的取证。"
+                    "只返回 JSON 对象，字段固定为 "
+                    "task_type, complexity, use_planner, use_worker_tools, use_reviewer, use_revision, "
+                    "use_structurer, use_web_prefetch, use_conflict_detector, reason, summary。"
+                    "complexity 只能是 low, medium, high。"
+                    "典型规则："
+                    "简单文本理解/小附件摘要 => Worker 直接回答；"
+                    "规范定位/证据请求 => Planner + Worker tools + Reviewer；"
+                    "联网/实时问题 => Worker tools，必要时 Reviewer；"
+                    "不要输出思维链。"
+                )
+            ),
+            self._HumanMessage(content=router_input),
+        ]
+        try:
+            ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
+                messages=messages,
+                model=self.config.summary_model or requested_model,
+                max_output_tokens=500,
+                enable_tools=False,
+            )
+            raw_text = self._content_to_text(getattr(ai_msg, "content", "")).strip()
+            parsed = self._parse_json_object(raw_text)
+            if not parsed:
+                fallback["router_model"] = effective_model
+                fallback["source"] = "rules_fallback"
+                fallback["reason"] = f"{fallback['reason']}; router_invalid_json"
+                fallback["summary"] = f"{fallback['summary']} Router 未返回标准 JSON，回退规则分诊。"
+                return fallback, raw_text
+            normalized = self._normalize_route_decision(
+                {
+                    **parsed,
+                    "source": "llm_router",
+                    "router_model": effective_model,
+                    "needs_llm_router": False,
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+            if notes:
+                normalized["reason"] = "; ".join(
+                    [normalized["reason"], *self._normalize_string_list(notes, limit=2, item_limit=120)]
+                ).strip("; ")
+            return normalized, raw_text
+        except Exception as exc:
+            fallback["source"] = "rules_fallback"
+            fallback["reason"] = f"{fallback['reason']}; router_failed"
+            fallback["summary"] = f"{fallback['summary']} Router 调用失败，回退规则分诊。"
+            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    def _route_request(
+        self,
+        *,
+        requested_model: str,
+        user_message: str,
+        summary: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: ChatSettings,
+    ) -> tuple[dict[str, Any], str]:
+        rules_route = self._route_request_by_rules(
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            settings=settings,
+        )
+        if not rules_route.get("needs_llm_router"):
+            return rules_route, json.dumps({"source": "rules", "task_type": rules_route.get("task_type")}, ensure_ascii=False)
+        return self._run_router(
+            requested_model=requested_model,
+            user_message=user_message,
+            summary=summary,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            rules_route=rules_route,
+        )
+
+    def _router_system_hint(self, route: dict[str, Any]) -> str:
+        task_type = str(route.get("task_type") or "standard").strip()
+        if task_type == "simple_understanding":
+            return (
+                "本轮属于简单理解任务。"
+                "直接基于当前消息与已内联附件内容回答。"
+                "不要调用工具，不要输出流程说明，不要把回答改写成证据审计格式。"
+            )
+        if task_type == "simple_qa":
+            return "本轮属于简单问答。直接回答，不要调用工具，不要追加多余审阅话术。"
+        if task_type == "attachment_tooling":
+            return "本轮附件需要工具预处理。先用必要工具完成读取/解包，再给结论。"
+        if task_type == "web_research":
+            return "本轮属于联网信息任务。优先用联网工具取证，再回答。"
+        if task_type == "evidence_lookup":
+            return "本轮属于查证/定位任务。优先完整取证，再给可复核答案。"
+        return ""
+
+    def _build_execution_plan(
+        self,
+        attachment_metas: list[dict[str, Any]],
+        settings: ChatSettings,
+        route: dict[str, Any] | None = None,
+    ) -> list[str]:
+        route = route or {}
+        plan = [
+            f"Router 分诊任务类型与链路（task_type={str(route.get('task_type') or 'standard')}, complexity={str(route.get('complexity') or 'medium')}）。"
+        ]
+        if route.get("use_planner"):
+            plan.append("Planner 提炼目标、约束与执行计划。")
+        plan.append("Worker 根据当前链路执行与作答。")
         if attachment_metas:
             plan.append(f"解析附件内容（{len(attachment_metas)} 个）。")
         plan.append(f"结合最近 {settings.max_context_turns} 条历史消息组织上下文。")
-        if settings.enable_tools:
+        if settings.enable_tools and route.get("use_worker_tools"):
             plan.append("如有必要自动连续调用工具（读文件/列目录/执行命令/联网搜索与抓取）获取事实，不逐步征询。")
             if self.config.enable_session_tools:
                 plan.append("涉及历史对话时，自动调用会话工具检索旧 session。")
-        plan.append("Reviewer 做最终自检，Revision 按审阅结果做最后修订。")
+        if route.get("use_reviewer"):
+            plan.append("Reviewer 做最终自检。")
+        if route.get("use_revision"):
+            plan.append("Revision 按审阅结果做最后修订。")
+        if route.get("use_structurer"):
+            plan.append("Structurer 在有来源时生成结构化证据包。")
         return plan
 
     def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
@@ -3462,8 +4141,6 @@ class OfficeAgent:
         return any(hint in text for hint in hints)
 
     def _requires_evidence_mode(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
-        if attachment_metas:
-            return True
         text = (user_message or "").strip().lower()
         if not text:
             return False
@@ -3484,8 +4161,6 @@ class OfficeAgent:
             "repo",
             "source code",
             "line ",
-            "文件",
-            "附件",
             "规范",
             "协议",
             "规格",
@@ -3495,8 +4170,33 @@ class OfficeAgent:
             "代码库",
             "行号",
             "路径",
+            "页码",
+            "证据",
+            "出处",
+            "引用",
+            "定位",
+            "命中",
+            "查证",
+            "核对",
+            "根据原文",
+            "according to",
+            "citation",
         )
         return any(hint in text for hint in hints)
+
+    def _attachment_needs_tooling(self, meta: dict[str, Any]) -> bool:
+        suffix = str(meta.get("suffix") or "").strip().lower()
+        kind = str(meta.get("kind") or "").strip().lower()
+        try:
+            size = int(meta.get("size") or 0)
+        except Exception:
+            size = 0
+
+        if suffix in {".zip", ".msg"}:
+            return True
+        if kind == "document" and size > _ATTACHMENT_INLINE_MAX_BYTES:
+            return True
+        return False
 
     def _evidence_mode_needs_more_support(
         self,
@@ -3544,7 +4244,7 @@ class OfficeAgent:
         return not any(marker in content for marker in evidence_markers)
 
     def _request_likely_requires_tools(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
-        if attachment_metas:
+        if any(self._attachment_needs_tooling(meta) for meta in attachment_metas):
             return True
         text = (user_message or "").strip().lower()
         if not text:
@@ -3553,8 +4253,6 @@ class OfficeAgent:
             return True
 
         direct_hints = (
-            "文件",
-            "附件",
             "路径",
             "目录",
             "上网",
@@ -3584,6 +4282,13 @@ class OfficeAgent:
             ".csv",
             ".zip",
             ".msg",
+            "页码",
+            "定位",
+            "命中",
+            "查证",
+            "核对",
+            "according to",
+            "citation",
         )
         if any(hint in text for hint in direct_hints):
             return True

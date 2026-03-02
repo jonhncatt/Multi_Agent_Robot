@@ -6,7 +6,7 @@
 - 可选本地工具执行（读写文件、白名单命令、联网抓取）
 - 会话自动摘要压缩，避免上下文无限增长
 - 页面显示“执行轨迹”，可见每次调用实际做了什么
-- 多 Agent 透明层：`Planner -> Worker -> Reviewer -> Revision`，可见目标理解、执行计划、审阅结论与最终修订
+- 多 Agent 透明层：`Router -> Planner -> Worker -> Reviewer -> Revision`，按任务类型动态裁剪链路，可见分诊、执行计划、审阅结论与最终修订
 - 一键“沙盒演练”（按当前执行环境做只读健康检查，先验环境再跑复杂任务）
 - 对话请求支持流式进度（SSE），可实时看到后端阶段、工具调用与执行轨迹更新
 - 页面展示 Token 统计（本轮/会话累计/全局累计），除非手动清除会一直累积
@@ -198,6 +198,7 @@ cd $HOME\Desktop\officetool
 - 联网任务建议先 `search_web` 再 `fetch_web`，可减少“先问网址”的来回交互
 - 对“新闻/实时”类问题，后端会自动做一次 `search_web` 预搜索并把候选链接注入上下文，减少反复追问
 - 对“棒球新闻”等体育场景，`search_web` 会优先尝试 MLB/ESPN/Yahoo 等 RSS 源；搜索页被反爬时也会回退到可访问入口
+- 结构化证据包会区分 `Evidence` 与 `Search Candidates`：前者表示已抓取正文或本地证据，后者只是搜索候选链接，不应单独视为已证实来源
 - 如遇证书链异常，可设置 `OFFICETOOL_WEB_CA_CERT_PATH` 指定 CA；若仍失败可临时用 `OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`（仅建议内网）
 - 若未配置上述参数且遇到证书校验失败，`fetch_web` 也会自动降级重试一次（返回 `warning` 提示）
 - 若要“完整复制一个文件”，请让助手使用 `copy_file`，不要用 `read_text_file + write_text_file`（前者是全量复制，后者可能按 `max_chars` 截断）
@@ -249,12 +250,16 @@ cd $HOME\Desktop\officetool
 
 ### 多 Agent 透明层
 
+- `Router`：先做规则分诊；命中模糊场景时再调用轻量 LLM Router，决定是否需要 Planner、工具链、Reviewer 与 Structurer
 - `Planner`：先提炼目标、约束、执行计划，不直接调工具
 - `Worker`：沿用主 Agent 工具循环，负责取证、执行、生成答复
 - `Reviewer`：在最终答复后做一次独立审阅，给出置信度、风险与后续建议
 - `Revision`：根据 Reviewer 结论做最后一次修订；无必要时保留原答复
+- 简单理解/小附件摘要会直接走 `Router -> Worker`
+- 联网查证/规范定位会保留 `Planner -> Worker -> Reviewer`，必要时再进 `Revision`
 - 页面“多 Agent 透明层”面板会展示：
   - Execution Plan
+  - Router 分诊摘要
   - Planner 摘要
   - Worker 执行概览
   - Reviewer 审阅结论
