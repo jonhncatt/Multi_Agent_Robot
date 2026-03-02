@@ -921,6 +921,39 @@
     }
   },
   {
+    "name": "helper_parse_loose_object_literal_handles_windows_path",
+    "kind": "helper",
+    "helper": "_parse_loose_object_literal",
+    "args": {
+      "raw_text": "{\"root\":\"C:\\Users\\dalizhou\\Desktop\\workbench\",\"query\":\"handle_route\"}"
+    },
+    "assert": {
+      "contains": {
+        "root": [
+          "workbench"
+        ],
+        "query": [
+          "handle_route"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_permission_gate_detects_accessible_directory_prompt",
+    "kind": "helper",
+    "helper": "_looks_like_permission_gate_text",
+    "args": {
+      "text": "在开始搜索前，我需要先确认 workbench 是否是当前可直接访问的目录。",
+      "has_attachments": false,
+      "request_requires_tools": true
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
     "name": "tool_table_extract_xlsx",
     "kind": "tool",
     "tool": "table_extract",
