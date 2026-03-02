@@ -2214,12 +2214,22 @@ class OfficeAgent:
             cleaned = re.sub(r"(?is)[^。；\n]*请(?:提供|给出|补充).{0,50}路径[^。；\n]*[。；]?", "", cleaned)
             cleaned = re.sub(r"(?is)[^。；\n]*(?:回复.?同意继续|请回复.?同意继续|需要你同意继续|需要你回复同意继续|同意继续后)[^。；\n]*[。；]?", "", cleaned)
 
+        if self._request_likely_requires_tools(user_message, attachment_metas):
+            cleaned = re.sub(r"(?is)[^。；\n]*(?:是否可直接访问|是否可以直接访问|是否能直接访问|可直接访问的目录|可访问的目录)[^。；\n]*[。；]?", "", cleaned)
+            cleaned = re.sub(r"(?is)[^。；\n]*workbench[^。；\n]*(?:可直接访问|直接访问|访问目录)[^。；\n]*[。；]?", "", cleaned)
+
+        inferred_bare_tool = self._infer_bare_tool_call_from_text(cleaned)
+        if inferred_bare_tool:
+            cleaned = ""
+
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         if not cleaned:
             if not attachment_metas and self._looks_like_inline_document_payload(user_message) and had_internal_meta:
                 return "已按你直接粘贴的原始文本内容理解，不需要额外提供本地文件路径。请继续指定你要我解释的结构、字段或结论。"
             if local_access_succeeded and (had_path_denial or had_permission_gate or had_internal_meta):
                 return "我已经能访问你授权的本地路径，不需要你重复提供路径或再次授权。请直接继续说明要看的函数、文件或上下文，我会继续读取并给出结果。"
+            if inferred_bare_tool and self._request_likely_requires_tools(user_message, attachment_metas):
+                return "我已经开始按当前路径和目标继续搜索，不需要你额外确认目录权限或工具格式。"
             return original
         return cleaned
 
@@ -3622,13 +3632,47 @@ class OfficeAgent:
                 return data
         return None
 
+    def _parse_loose_object_literal(self, raw_text: str) -> dict[str, Any] | None:
+        text = str(raw_text or "").strip()
+        if not text:
+            return None
+        start = text.find("{")
+        end = text.rfind("}")
+        if not (0 <= start < end):
+            return None
+        body = text[start + 1 : end]
+        pair_pattern = re.compile(
+            r'["\'](?P<key>[^"\']+)["\']\s*:\s*(?P<value>"[^"]*"|\'[^\']*\'|true|false|-?\d+(?:\.\d+)?)',
+            re.IGNORECASE,
+        )
+        parsed: dict[str, Any] = {}
+        for match in pair_pattern.finditer(body):
+            key = str(match.group("key") or "").strip()
+            raw_value = str(match.group("value") or "").strip()
+            if not key or not raw_value:
+                continue
+            lowered = raw_value.lower()
+            if lowered == "true":
+                value: Any = True
+            elif lowered == "false":
+                value = False
+            elif raw_value[:1] in {'"', "'"} and raw_value[-1:] == raw_value[:1]:
+                value = raw_value[1:-1]
+            else:
+                try:
+                    value = float(raw_value) if "." in raw_value else int(raw_value)
+                except Exception:
+                    value = raw_value
+            parsed[key] = value
+        return parsed or None
+
     def _infer_bare_tool_call_from_text(
         self,
         text: str,
         *,
         task_type: str = "",
     ) -> dict[str, Any] | None:
-        parsed = self._parse_json_object(text)
+        parsed = self._parse_json_object(text) or self._parse_loose_object_literal(text)
         if not isinstance(parsed, dict) or not parsed:
             return None
 
@@ -5615,6 +5659,14 @@ class OfficeAgent:
             "回复“同意继续”",
             "回复'同意继续'",
             "授权继续",
+            "是否可直接访问",
+            "是否可以直接访问",
+            "是否能直接访问",
+            "可直接访问的目录",
+            "可访问的目录",
+            "是不是可访问",
+            "is workbench directly accessible",
+            "is it directly accessible",
         )
         if not request_requires_tools and not has_attachments:
             return any(p in text for p in general_gate_patterns)
