@@ -209,6 +209,7 @@ cd $HOME\Desktop\officetool
 
 - 回归测试脚本：`python3 scripts/run_evals.py`
 - 前端也可直接点击“回归测试”按钮，默认跑非 optional 用例，并把逐条结果展示在运行面板
+- GitHub Actions 也会运行同一套非 optional regression cases，作为 push / PR 的基础检查
 - 默认运行工具级 regression cases，不依赖在线模型
 - 可选 case：
   - `OPENAI_API_KEY=... python3 scripts/run_evals.py --include-optional`
