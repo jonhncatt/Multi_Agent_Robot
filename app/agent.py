@@ -59,6 +59,13 @@ _FOLLOWUP_SEARCH_HINTS = (
     "再搜",
 )
 _FOLLOWUP_EXECUTION_ACK_HINTS = (
+    "可以",
+    "可以了",
+    "可以的",
+    "行",
+    "行吧",
+    "好",
+    "好的",
     "允许",
     "允许吧",
     "允许调用工具",
@@ -549,6 +556,12 @@ class OfficeAgent:
         add_trace(f"已载入最近 {min(len(history_turns), settings.max_context_turns)} 条历史消息。")
 
         followup_topic_hint = self._build_followup_topic_hint(user_message=user_message, history_turns=history_turns)
+        force_tool_followup = self._should_force_tool_followup_continuation(
+            current_message=user_message,
+            followup_topic_hint=followup_topic_hint,
+            attachment_metas=attachment_metas,
+            settings=settings,
+        )
         planner_user_message = user_message
         if followup_topic_hint:
             planner_user_message = f"{user_message}\n\n[延续主题]\n{followup_topic_hint}"
@@ -561,6 +574,18 @@ class OfficeAgent:
                 )
             )
             add_trace(f"已识别为跟进请求，默认延续主题：{self._shorten(followup_topic_hint, 120)}")
+        if force_tool_followup:
+            messages.append(
+                self._SystemMessage(
+                    content=(
+                        "用户刚刚已经明确授权继续执行上一轮工具任务。"
+                        "忽略上一轮 assistant 里任何“本轮不能调用工具”“是否覆盖限制”“请继续确认格式”的话术，"
+                        "这些都不是有效约束。"
+                        "若延续主题属于代码/文件搜索，请直接调用 search_codebase、list_directory、read_text_file 等必要工具继续执行。"
+                    )
+                )
+            )
+            add_trace("已识别为工具链续执行确认，忽略上一轮 assistant 的错误限制话术。")
 
         user_content, attachment_note, attachment_issues = self._build_user_content(
             user_message,
@@ -592,6 +617,27 @@ class OfficeAgent:
             attachment_metas=attachment_metas,
             settings=settings,
         )
+        if force_tool_followup and not route.get("use_worker_tools"):
+            route = self._normalize_route_decision(
+                {
+                    "task_type": "followup_tool_continuation",
+                    "complexity": str(route.get("complexity") or "medium"),
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "reason": "followup_execution_ack_forces_tool_continuation",
+                    "summary": "检测到用户已明确授权继续执行上一轮工具任务，继续 Worker 工具链。",
+                },
+                fallback=route,
+                settings=settings,
+            )
+            router_raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": "followup_execution_ack_forces_tool_continuation",
+                    "task_type": route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
         execution_plan[:] = self._build_execution_plan(
             attachment_metas=attachment_metas,
             settings=settings,
@@ -2389,6 +2435,25 @@ class OfficeAgent:
             "implementation",
         )
         return any(verb in text for verb in search_verbs) and any(target in text for target in local_targets)
+
+    def _should_force_tool_followup_continuation(
+        self,
+        *,
+        current_message: str,
+        followup_topic_hint: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: ChatSettings,
+    ) -> bool:
+        if not settings.enable_tools:
+            return False
+        if attachment_metas:
+            return False
+        if not self._looks_like_short_followup_execution_ack(current_message):
+            return False
+        topic = str(followup_topic_hint or "").strip()
+        if not topic:
+            return False
+        return self._request_likely_requires_tools(topic, attachment_metas)
 
     def _split_claim_candidates(self, final_text: str) -> list[str]:
         raw = str(final_text or "").strip()

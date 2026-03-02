@@ -737,6 +737,26 @@
     }
   },
   {
+    "name": "helper_followup_execution_ack_forces_tool_continuation",
+    "kind": "helper",
+    "helper": "_should_force_tool_followup_continuation",
+    "args": {
+      "current_message": "可以",
+      "followup_topic_hint": "去 /Users/dalizhou/Desktop/new_validation_agent/app 下面找 handle_route 和 run_chat 这两个函数。",
+      "attachment_metas": [],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
     "name": "helper_route_rules_followup_tool_ack_keeps_tools_enabled",
     "kind": "helper",
     "helper": "_route_request_by_rules",
