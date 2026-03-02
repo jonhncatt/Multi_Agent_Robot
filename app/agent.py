@@ -413,7 +413,7 @@ class OfficeAgent:
         )
         add_debug(
             stage="backend_to_llm",
-            title="Planner -> LLM 请求",
+            title="后端编排器 -> Planner",
             detail=planner_request_detail,
         )
         planner_brief, planner_raw = self._run_planner(
@@ -432,7 +432,7 @@ class OfficeAgent:
         add_trace("多 Agent: Planner 已生成目标摘要与执行计划。")
         add_debug(
             stage="llm_to_backend",
-            title="LLM -> Planner 响应",
+            title="Planner -> 后端编排器",
             detail=(
                 f"effective_model={planner_effective_model or requested_model}\n"
                 f"{self._shorten(planner_raw, 4000 if debug_raw else 1200)}"
@@ -493,7 +493,7 @@ class OfficeAgent:
         )
         add_debug(
             stage="backend_to_llm",
-            title="Worker -> LLM 请求",
+            title="后端编排器 -> Worker",
             detail=(
                 f"model={requested_model}, enable_tools={settings.enable_tools}, max_output_tokens={settings.max_output_tokens}, "
                 f"debug_raw={debug_raw}, "
@@ -519,7 +519,7 @@ class OfficeAgent:
             usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
             add_debug(
                 stage="llm_to_backend",
-                title="LLM -> Worker 首次响应",
+                title="Worker -> 后端编排器（首次响应）",
                 detail=(
                     f"effective_model={effective_model}\n"
                     f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
@@ -527,7 +527,7 @@ class OfficeAgent:
             )
         except Exception as exc:
             add_trace(f"模型请求失败: {exc}")
-            add_debug(stage="llm_error", title="LLM 请求失败", detail=str(exc))
+            add_debug(stage="llm_error", title="Worker 模型调用失败", detail=str(exc))
             return (
                 f"请求模型失败: {exc}",
                 tool_events,
@@ -617,7 +617,7 @@ class OfficeAgent:
                         usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
                         add_debug(
                             stage="llm_to_backend",
-                            title="LLM -> 后端 自动纠偏后响应",
+                            title="Worker -> 后端编排器（自动纠偏后响应）",
                             detail=(
                                 f"effective_model={effective_model}\n"
                                 f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
@@ -626,7 +626,7 @@ class OfficeAgent:
                         continue
                     except Exception as exc:
                         add_trace(f"自动纠偏后推理失败: {exc}")
-                        add_debug(stage="llm_error", title="自动纠偏后推理失败", detail=str(exc))
+                        add_debug(stage="llm_error", title="Worker 自动纠偏后失败", detail=str(exc))
                         break
                 break
 
@@ -642,7 +642,7 @@ class OfficeAgent:
                 add_trace(f"执行工具: {name}")
                 add_debug(
                     stage="llm_to_backend",
-                    title=f"LLM -> Worker 工具调用 {name}",
+                    title=f"Worker -> 后端编排器（请求工具 {name}）",
                     detail=f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}",
                 )
 
@@ -677,7 +677,7 @@ class OfficeAgent:
                 )
                 add_debug(
                     stage="backend_to_llm",
-                    title=f"Worker -> LLM 工具结果 {name}",
+                    title=f"后端编排器 -> Worker（工具结果 {name}）",
                     detail=self._serialize_tool_message_for_debug(
                         name=name,
                         tool_call_id=call_id,
@@ -702,7 +702,7 @@ class OfficeAgent:
                 usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
                 add_debug(
                     stage="llm_to_backend",
-                    title="LLM -> Worker 后续响应",
+                    title="Worker -> 后端编排器（后续响应）",
                     detail=(
                         f"effective_model={effective_model}\n"
                         f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
@@ -710,7 +710,7 @@ class OfficeAgent:
                 )
             except Exception as exc:
                 add_trace(f"工具后续推理失败: {exc}")
-                add_debug(stage="llm_error", title="工具后续推理失败", detail=str(exc))
+                add_debug(stage="llm_error", title="Worker 工具后续推理失败", detail=str(exc))
                 return (
                     f"工具执行后续推理失败: {exc}",
                     tool_events,
@@ -765,7 +765,7 @@ class OfficeAgent:
         )
         add_debug(
             stage="backend_to_llm",
-            title="Reviewer -> LLM 请求",
+            title="后端编排器 -> Reviewer",
             detail=reviewer_request_detail,
         )
         reviewer_brief, reviewer_raw = self._run_reviewer(
@@ -790,7 +790,7 @@ class OfficeAgent:
             add_trace(f"多 Agent: Reviewer 完成审阅，confidence={reviewer_confidence}。")
         add_debug(
             stage="llm_to_backend",
-            title="LLM -> Reviewer 响应",
+            title="Reviewer -> 后端编排器",
             detail=(
                 f"effective_model={reviewer_effective_model or effective_model or requested_model}\n"
                 f"{self._shorten(reviewer_raw, 4000 if debug_raw else 1200)}"
@@ -814,7 +814,7 @@ class OfficeAgent:
         )
         add_debug(
             stage="backend_to_llm",
-            title="Revision -> LLM 请求",
+            title="后端编排器 -> Revision",
             detail=revision_request_detail,
         )
         revision_brief, revision_raw = self._run_revision(
@@ -840,7 +840,7 @@ class OfficeAgent:
             add_trace("多 Agent: Revision 未修改最终答复。")
         add_debug(
             stage="llm_to_backend",
-            title="LLM -> Revision 响应",
+            title="Revision -> 后端编排器",
             detail=(
                 f"effective_model={revision_effective_model or effective_model or requested_model}\n"
                 f"{self._shorten(revision_raw, 4000 if debug_raw else 1200)}"
