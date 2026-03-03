@@ -654,6 +654,16 @@ class OfficeAgent:
                 summary="检测到用户已明确授权继续执行上一轮工具任务，继续 Worker 工具链。",
                 use_planner=True,
             )
+            add_debug(
+                stage="backend_coordinator",
+                title="Coordinator 切换工具模式",
+                detail=(
+                    "reason=followup_execution_ack_forces_tool_continuation\n"
+                    f"tool_mode={execution_state.tool_mode}\n"
+                    f"tool_latch={str(execution_state.tool_latch).lower()}\n"
+                    f"transitions={json.dumps(execution_state.transitions[-3:], ensure_ascii=False)}"
+                ),
+            )
             router_raw = json.dumps(
                 {
                     "source": "backend_override",
@@ -677,6 +687,17 @@ class OfficeAgent:
             detail=(
                 f"route={json.dumps(route, ensure_ascii=False)}\n"
                 f"raw={self._shorten(router_raw, 2400 if not debug_raw else 120000)}"
+            ),
+        )
+        add_debug(
+            stage="backend_coordinator",
+            title="Coordinator 初始化",
+            detail=(
+                f"task_type={execution_state.task_type}\n"
+                f"complexity={execution_state.complexity}\n"
+                f"tool_mode={execution_state.tool_mode}\n"
+                f"tool_latch={str(execution_state.tool_latch).lower()}\n"
+                f"transitions={json.dumps(execution_state.transitions, ensure_ascii=False)}"
             ),
         )
         add_panel(
@@ -1035,6 +1056,16 @@ class OfficeAgent:
                         reason="worker_requested_code_search_backend_escalated",
                         summary="Worker 已暴露需要代码/文件搜索，后端已强制升级到工具链。",
                     )
+                    add_debug(
+                        stage="backend_coordinator",
+                        title="Coordinator 切换工具模式",
+                        detail=(
+                            "reason=worker_requested_code_search_backend_escalated\n"
+                            f"tool_mode={execution_state.tool_mode}\n"
+                            f"tool_latch={str(execution_state.tool_latch).lower()}\n"
+                            f"transitions={json.dumps(execution_state.transitions[-3:], ensure_ascii=False)}"
+                        ),
+                    )
                     request_requires_tools = True
                     execution_plan[:] = self._build_execution_plan(
                         attachment_metas=attachment_metas,
@@ -1079,6 +1110,44 @@ class OfficeAgent:
                     except Exception as exc:
                         add_trace(f"升级工具链后推理失败: {exc}")
                         add_debug(stage="llm_error", title="Worker 工具链升级失败", detail=str(exc))
+                        break
+                if (
+                    self._coordinator_tools_enabled(execution_state)
+                    and str(route.get("task_type") or "") == "code_lookup"
+                    and auto_nudge_budget > 0
+                    and self._tool_events_have_code_hits(tool_events)
+                    and self._answer_incorrectly_denies_code_hits(
+                        self._content_to_text(getattr(ai_msg, "content", ""))
+                    )
+                ):
+                    auto_nudge_budget -= 1
+                    add_trace("检测到 search_codebase 已命中，但 Worker 仍声称未找到代码，Coordinator 已要求继续基于命中上下文作答。")
+                    add_debug(
+                        stage="backend_coordinator",
+                        title="Coordinator 纠正命中否认",
+                        detail="search_codebase 已有 match_count>0，但 Worker 文本仍否认命中；已追加系统指令要求基于命中继续解释。",
+                    )
+                    messages.append(ai_msg)
+                    messages.append(
+                        self._SystemMessage(
+                            content=(
+                                "你已经拿到了 search_codebase 的真实命中和后续代码上下文。"
+                                "不要再说未找到、没有真实代码命中，也不要继续追问是否读取。"
+                                "请直接基于已返回的命中路径、行号和代码片段解释目标函数。"
+                            )
+                        )
+                    )
+                    try:
+                        ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
+                            title="Worker -> 后端编排器（纠正代码命中否认后响应）",
+                            model=effective_model,
+                            current_runner=runner,
+                        )
+                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+                        continue
+                    except Exception as exc:
+                        add_trace(f"纠正代码命中否认后推理失败: {exc}")
+                        add_debug(stage="llm_error", title="Worker 代码命中纠偏失败", detail=str(exc))
                         break
                 if (
                     self._coordinator_tools_enabled(execution_state)
@@ -1190,6 +1259,16 @@ class OfficeAgent:
                                 summary="检测到拖延式确认话术，Coordinator 已强制切换到工具执行模式。",
                                 use_planner=True,
                             )
+                            add_debug(
+                                stage="backend_coordinator",
+                                title="Coordinator 切换工具模式",
+                                detail=(
+                                    "reason=permission_gate_forced_tool_continuation\n"
+                                    f"tool_mode={execution_state.tool_mode}\n"
+                                    f"tool_latch={str(execution_state.tool_latch).lower()}\n"
+                                    f"transitions={json.dumps(execution_state.transitions[-3:], ensure_ascii=False)}"
+                                ),
+                            )
                             request_requires_tools = True
                             execution_plan[:] = self._build_execution_plan(
                                 attachment_metas=attachment_metas,
@@ -1232,20 +1311,35 @@ class OfficeAgent:
                 break
 
             messages.append(ai_msg)
-            for call in tool_calls:
-                name = call.get("name") or "unknown"
-                arguments = call.get("args") or {}
-                if not isinstance(arguments, dict):
-                    arguments = {}
-
-                result = self.tools.execute(name, arguments)
+            def append_tool_result_message(
+                *,
+                name: str,
+                arguments: dict[str, Any],
+                result: dict[str, Any],
+                call_id: str,
+                synthetic: bool = False,
+            ) -> None:
+                nonlocal worker_citation_candidates
                 result_json = json.dumps(result, ensure_ascii=False)
-                add_trace(f"执行工具: {name}")
-                add_debug(
-                    stage="llm_to_backend",
-                    title=f"Worker -> 后端编排器（请求工具 {name}）",
-                    detail=f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}",
-                )
+                if synthetic:
+                    add_trace(
+                        f"Coordinator 根据 {name} 上下文自动补充工具读取。"
+                    )
+                    add_debug(
+                        stage="backend_coordinator",
+                        title="Coordinator 自动扩展工具链",
+                        detail=(
+                            f"tool={name}\n"
+                            f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}"
+                        ),
+                    )
+                else:
+                    add_trace(f"执行工具: {name}")
+                    add_debug(
+                        stage="llm_to_backend",
+                        title=f"Worker -> 后端编排器（请求工具 {name}）",
+                        detail=f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}",
+                    )
 
                 add_tool_event(
                     ToolEvent(
@@ -1255,7 +1349,6 @@ class OfficeAgent:
                     )
                 )
 
-                call_id = call.get("id") or f"call_{len(tool_events)}"
                 tool_message_payload, trim_note = self._prepare_tool_result_for_llm(
                     name=name,
                     arguments=arguments,
@@ -1290,6 +1383,41 @@ class OfficeAgent:
                     worker_citation_candidates,
                     self._extract_citations_from_tool_result(name=name, arguments=arguments, result=result),
                 )
+
+            batch_has_read_text_call = any(str(call.get("name") or "") == "read_text_file" for call in tool_calls)
+            for call in tool_calls:
+                name = call.get("name") or "unknown"
+                arguments = call.get("args") or {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+
+                result = self.tools.execute(name, arguments)
+                call_id = call.get("id") or f"call_{len(tool_events)}"
+                append_tool_result_message(
+                    name=name,
+                    arguments=arguments,
+                    result=result,
+                    call_id=call_id,
+                )
+                if (
+                    str(route.get("task_type") or "") == "code_lookup"
+                    and name == "search_codebase"
+                    and not batch_has_read_text_call
+                ):
+                    auto_reads = self._coordinator_auto_read_code_search_matches(result)
+                    for idx, synthetic_call in enumerate(auto_reads, start=1):
+                        synthetic_name = str(synthetic_call.get("name") or "").strip()
+                        synthetic_args = synthetic_call.get("args") if isinstance(synthetic_call.get("args"), dict) else {}
+                        if not synthetic_name or not synthetic_args:
+                            continue
+                        synthetic_result = self.tools.execute(synthetic_name, synthetic_args)
+                        append_tool_result_message(
+                            name=synthetic_name,
+                            arguments=synthetic_args,
+                            result=synthetic_result,
+                            call_id=f"{call_id}_auto_{idx}",
+                            synthetic=True,
+                        )
 
             try:
                 pruned = self._prune_old_tool_messages(messages)
@@ -2498,16 +2626,26 @@ class OfficeAgent:
         if not short_followup_search and not short_execution_ack:
             return ""
         for turn in reversed(history_turns):
-            if str(turn.get("role") or "") != "user":
-                continue
+            role = str(turn.get("role") or "").strip().lower()
             text = str(turn.get("text") or "").strip()
             if not text:
                 continue
             if text == current:
                 continue
-            if short_execution_ack and not self._request_likely_requires_tools(text, []):
-                continue
-            return self._shorten(" ".join(text.split()), 280)
+            compact_text = " ".join(text.split())
+            if role == "user":
+                if short_execution_ack and not self._request_likely_requires_tools(text, []):
+                    if len(compact_text) <= 80:
+                        continue
+                return self._shorten(compact_text, 280)
+            if (
+                role == "assistant"
+                and short_execution_ack
+                and self._request_likely_requires_tools(text, [])
+                and not self._looks_like_permission_gate_text(text, has_attachments=False, request_requires_tools=True)
+                and not self._looks_like_local_path_denial(text)
+            ):
+                return self._shorten(compact_text, 280)
         return ""
 
     def _looks_like_short_followup_search(self, text: str) -> bool:
@@ -2700,6 +2838,97 @@ class OfficeAgent:
         if not topic:
             return False
         return self._request_likely_requires_tools(topic, attachment_metas)
+
+    def _estimate_char_offset_for_line(
+        self,
+        path: str,
+        line_number: int,
+        *,
+        context_lines_before: int = 40,
+    ) -> int:
+        real_path = Path(str(path or "")).expanduser()
+        if not real_path.exists() or line_number <= 1:
+            return 0
+        try:
+            lines = real_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+        except Exception:
+            return 0
+        start_line = max(1, int(line_number) - max(0, int(context_lines_before)))
+        return sum(len(chunk) for chunk in lines[: start_line - 1])
+
+    def _coordinator_auto_read_code_search_matches(
+        self,
+        result: dict[str, Any],
+        *,
+        limit: int = 2,
+        max_chars: int = 24000,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(result, dict) or not bool(result.get("ok")):
+            return []
+        matches = list(result.get("matches") or [])
+        if not matches:
+            return []
+        out: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        for match in matches:
+            if not isinstance(match, dict):
+                continue
+            path = str(match.get("path") or "").strip()
+            if not path or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            try:
+                line_no = int(match.get("line") or 0)
+            except Exception:
+                line_no = 0
+            out.append(
+                {
+                    "name": "read_text_file",
+                    "args": {
+                        "path": path,
+                        "start_char": self._estimate_char_offset_for_line(path, line_no, context_lines_before=50),
+                        "max_chars": max(4000, min(int(max_chars), 50000)),
+                    },
+                    "source_line": line_no,
+                }
+            )
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
+
+    def _tool_events_have_code_hits(self, tool_events: list[ToolEvent]) -> bool:
+        for event in tool_events:
+            if str(getattr(event, "name", "") or "") != "search_codebase":
+                continue
+            preview = str(getattr(event, "output_preview", "") or "")
+            parsed = self._parse_json_object(preview) or self._parse_loose_object_literal(preview)
+            if not isinstance(parsed, dict):
+                continue
+            try:
+                match_count = int(parsed.get("match_count") or len(parsed.get("matches") or []))
+            except Exception:
+                match_count = 0
+            if bool(parsed.get("ok")) and match_count > 0:
+                return True
+        return False
+
+    def _answer_incorrectly_denies_code_hits(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        patterns = (
+            "没有真实的代码命中",
+            "没有代码命中",
+            "没有任何真实的代码命中",
+            "没有找到代码",
+            "未找到代码",
+            "没有出现任何真实的代码命中内容",
+            "no real code hit",
+            "no code hit",
+            "did not find code",
+            "no matching code",
+        )
+        return any(pattern in lowered for pattern in patterns)
 
     def _coordinator_init_state(
         self,
@@ -3284,6 +3513,10 @@ class OfficeAgent:
             "未提供可供工具读取",
             "没有提供本地文件路径",
             "未提供本地文件路径",
+            "没有给我实际路径",
+            "没有给出实际路径",
+            "未给出实际路径",
+            "没有实际路径",
             "请提供路径",
             "请给出路径",
             "必须提供路径",

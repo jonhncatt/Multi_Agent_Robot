@@ -787,6 +787,37 @@
     }
   },
   {
+    "name": "helper_followup_topic_hint_can_fallback_to_assistant_search_prompt",
+    "kind": "helper",
+    "helper": "_build_followup_topic_hint",
+    "args": {
+      "user_message": "继续",
+      "history_turns": [
+        {
+          "role": "user",
+          "text": "帮我解释 workbench 文件夹下的 handle_route 和 run_chat 这两个函数。"
+        },
+        {
+          "role": "assistant",
+          "text": "我已经在 workbench 中定位到 handle_route 的命中，需要继续读取函数上下文。"
+        },
+        {
+          "role": "user",
+          "text": "你找到了。"
+        }
+      ]
+    },
+    "assert": {
+      "contains_any": {
+        "result": [
+          "handle_route",
+          "run_chat",
+          "workbench"
+        ]
+      }
+    }
+  },
+  {
     "name": "helper_tool_escalation_needed_detects_code_search_refusal",
     "kind": "helper",
     "helper": "_looks_like_tool_escalation_needed",
@@ -946,6 +977,73 @@
       "text": "在开始搜索前，我需要先确认 workbench 是否是当前可直接访问的目录。",
       "has_attachments": false,
       "request_requires_tools": true
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_coordinator_auto_read_code_search_matches",
+    "kind": "helper",
+    "helper": "_coordinator_auto_read_code_search_matches",
+    "args": {
+      "result": {
+        "ok": true,
+        "match_count": 1,
+        "matches": [
+          {
+            "path": "/Users/dalizhou/Desktop/new_validation_agent/app/agent.py",
+            "line": 1000,
+            "text": "def run_chat("
+          }
+        ]
+      }
+    },
+    "assert": {
+      "equals": {
+        "result.0.name": "read_text_file"
+      },
+      "contains": {
+        "result.0.args.path": [
+          "/Users/dalizhou/Desktop/new_validation_agent/app/agent.py"
+        ]
+      },
+      "min_value": {
+        "result.0.args.max_chars": 4000
+      }
+    }
+  },
+  {
+    "name": "helper_tool_events_have_code_hits",
+    "kind": "helper",
+    "helper": "_tool_events_have_code_hits",
+    "args": {
+      "tool_events": [
+        {
+          "__type": "ToolEvent",
+          "name": "search_codebase",
+          "input": {
+            "root": "workbench",
+            "query": "handle_route"
+          },
+          "output_preview": "{\"ok\": true, \"match_count\": 1, \"matches\": [{\"path\": \"/Users/dalizhou/Desktop/new_validation_agent/app/agent.py\", \"line\": 1000}]}"
+        }
+      ]
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_answer_incorrectly_denies_code_hits",
+    "kind": "helper",
+    "helper": "_answer_incorrectly_denies_code_hits",
+    "args": {
+      "text": "当前没有出现任何真实的代码命中内容。"
     },
     "assert": {
       "equals": {
