@@ -10,6 +10,8 @@ app/data/uploads/*
 !app/data/uploads/.gitkeep
 app/data/document_cache/*
 !app/data/document_cache/.gitkeep
+app/data/web_cache/*
+!app/data/web_cache/.gitkeep
 app/data/token_stats.json
 evals/fixtures/generated/*
 !evals/fixtures/generated/.gitkeep
