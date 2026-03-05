@@ -1116,7 +1116,8 @@ class LocalToolExecutor:
                 "name": "read_text_file",
                 "description": (
                     "Read a local text/document file in allowed roots. "
-                    "For PDF/DOCX/MSG/XLSX it auto-extracts text; supports chunked reads with start_char."
+                    "For PDF/DOCX/MSG/XLSX it auto-extracts text; supports chunked reads with start_char "
+                    "and optional line-mode reads with start_line/max_lines."
                 ),
                 "parameters": {
                     "type": "object",
@@ -1124,6 +1125,8 @@ class LocalToolExecutor:
                         "path": {"type": "string"},
                         "start_char": {"type": "integer", "minimum": 0, "default": 0},
                         "max_chars": {"type": "integer", "minimum": 128, "maximum": 1000000, "default": 200000},
+                        "start_line": {"type": "integer", "minimum": 0, "default": 0},
+                        "max_lines": {"type": "integer", "minimum": 0, "maximum": 200000, "default": 0},
                     },
                     "required": ["path"],
                     "additionalProperties": False,
@@ -1695,7 +1698,14 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"read_session_history failed: {exc}"}
 
-    def read_text_file(self, path: str, start_char: int = 0, max_chars: int = 200000) -> dict[str, Any]:
+    def read_text_file(
+        self,
+        path: str,
+        start_char: int = 0,
+        max_chars: int = 200000,
+        start_line: int = 0,
+        max_lines: int = 0,
+    ) -> dict[str, Any]:
         try:
             real_path = _resolve_source_path(self.config, path)
             if not real_path.exists():
@@ -1782,6 +1792,46 @@ class LocalToolExecutor:
 
             total_length = len(full_text)
             limit = max(128, min(1_000_000, int(max_chars)))
+            line_start = max(0, int(start_line))
+            line_limit = max(0, int(max_lines))
+
+            if line_start > 0 or line_limit > 0:
+                lines = full_text.splitlines()
+                total_lines = len(lines)
+                first_line = max(1, line_start if line_start > 0 else 1)
+                if first_line > total_lines:
+                    first_line = total_lines + 1
+                start_idx = max(0, first_line - 1)
+                take_lines = max(1, min(200_000, line_limit)) if line_limit > 0 else 400
+                end_idx = min(total_lines, start_idx + take_lines)
+                chunk_lines = lines[start_idx:end_idx]
+                text = "\n".join(chunk_lines)
+
+                if len(text) > limit:
+                    text = text[:limit]
+                    truncated = True
+                else:
+                    truncated = end_idx < total_lines
+
+                start_char_calc = sum(len(line) + 1 for line in lines[:start_idx])
+                end_char_calc = start_char_calc + len(text)
+                return {
+                    "ok": True,
+                    "path": str(real_path),
+                    "content": text,
+                    "length": len(text),
+                    "start_char": start_char_calc,
+                    "end_char": end_char_calc,
+                    "total_length": total_length,
+                    "truncated": truncated,
+                    "has_more": truncated,
+                    "line_mode": True,
+                    "start_line": first_line if total_lines else 0,
+                    "end_line": min(total_lines, end_idx),
+                    "total_lines": total_lines,
+                    "source_format": source_format,
+                }
+
             start = max(0, int(start_char))
             if start > total_length:
                 start = total_length

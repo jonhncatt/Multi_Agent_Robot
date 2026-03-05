@@ -269,6 +269,8 @@ class ReadTextFileArgs(BaseModel):
     path: str
     start_char: int = Field(default=0, ge=0)
     max_chars: int = Field(default=200000, ge=128, le=1000000)
+    start_line: int = Field(default=0, ge=0)
+    max_lines: int = Field(default=0, ge=0, le=200000)
 
 
 class SearchTextInFileArgs(BaseModel):
@@ -3697,10 +3699,64 @@ class OfficeAgent:
         lowered = str(text or "").strip().lower()
         if not lowered:
             return False
+        if self._looks_like_explicit_tool_confirmation(lowered):
+            return True
         compact = re.sub(r"[\s\"'`“”‘’.,!?，。！？、;；:：()\[\]{}<>《》【】/\\|-]+", "", lowered)
         if not compact or len(compact) > 16:
             return False
         return compact in _FOLLOWUP_EXECUTION_ACK_HINTS
+
+    def _looks_like_explicit_tool_confirmation(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        compact = re.sub(r"[\s\"'`“”‘’.,!?，。！？、;；:：()\[\]{}<>《》【】/\\|-]+", "", lowered)
+        if compact in _FOLLOWUP_EXECUTION_ACK_HINTS:
+            return True
+        if len(compact) > 220:
+            return False
+
+        confirm_hints = (
+            "确认",
+            "同意",
+            "可以",
+            "继续",
+            "开始",
+            "执行",
+            "ok",
+            "yes",
+            "confirm",
+            "proceed",
+        )
+        action_hints = (
+            "读取",
+            "读",
+            "搜索",
+            "检索",
+            "查",
+            "修改",
+            "修复",
+            "定位",
+            "打开",
+            "查看",
+            "read",
+            "search",
+            "scan",
+            "modify",
+            "edit",
+            "open",
+        )
+        has_confirm = any(hint in lowered for hint in confirm_hints)
+        has_action = any(hint in lowered for hint in action_hints)
+        if has_confirm and has_action:
+            return True
+        if has_confirm and self._message_has_explicit_local_path(lowered):
+            return True
+        if re.search(r"(?:确认|同意).{0,20}(?:读取|搜索|执行|修改|定位|打开|查看)", lowered):
+            return True
+        if re.search(r"(?:confirm|proceed).{0,30}(?:read|search|execute|modify|open)", lowered):
+            return True
+        return False
 
     def _looks_like_context_dependent_followup(self, text: str) -> bool:
         lowered = str(text or "").strip().lower()
@@ -3980,12 +4036,12 @@ class OfficeAgent:
             return False
         if attachment_metas:
             return False
-        if not self._looks_like_short_followup_execution_ack(current_message):
+        if not self._looks_like_explicit_tool_confirmation(current_message):
             return False
         topic = str(followup_topic_hint or "").strip()
-        if not topic:
-            return False
-        return self._request_likely_requires_tools(topic, attachment_metas)
+        if topic and self._request_likely_requires_tools(topic, attachment_metas):
+            return True
+        return self._request_likely_requires_tools(current_message, attachment_metas)
 
     def _estimate_char_offset_for_line(
         self,
@@ -5517,7 +5573,7 @@ class OfficeAgent:
 
         search_codebase_keys = {"query", "root", "max_matches", "file_glob", "use_regex", "case_sensitive"}
         list_directory_keys = {"path", "max_entries"}
-        read_text_file_keys = {"path", "start_char", "max_chars"}
+        read_text_file_keys = {"path", "start_char", "max_chars", "start_line", "max_lines"}
         search_text_in_file_keys = {"path", "query", "max_matches", "context_chars"}
 
         if "query" in keys and ("root" in keys or keys.issubset(search_codebase_keys) or task_type == "code_lookup"):
@@ -5556,7 +5612,7 @@ class OfficeAgent:
             if not path:
                 return None
             args = {"path": path}
-            for optional in ("start_char", "max_chars"):
+            for optional in ("start_char", "max_chars", "start_line", "max_lines"):
                 if optional in parsed:
                     args[optional] = parsed.get(optional)
             return {
@@ -5595,6 +5651,8 @@ class OfficeAgent:
             "path",
             "start_char",
             "max_chars",
+            "start_line",
+            "max_lines",
             "max_matches",
             "context_chars",
             "file_glob",
@@ -5609,7 +5667,7 @@ class OfficeAgent:
             return True
         if {"query", "root"} & keys:
             return True
-        if "path" in keys and ({"query", "start_char", "max_chars", "max_entries"} & keys):
+        if "path" in keys and ({"query", "start_char", "max_chars", "start_line", "max_lines", "max_entries"} & keys):
             return True
         return False
 
@@ -5965,6 +6023,7 @@ class OfficeAgent:
         inline_document_payload = self._looks_like_inline_document_payload(user_message)
         understanding_request = self._looks_like_understanding_request(user_message)
         source_trace_request = self._looks_like_source_trace_request(user_message)
+        explicit_tool_confirmation = self._looks_like_explicit_tool_confirmation(user_message)
         meeting_minutes_request = self._looks_like_meeting_minutes_request(user_message)
         has_url = "http://" in text or "https://" in text
         short_query_like = len(text) <= 280 and "\n" not in text
@@ -6065,6 +6124,27 @@ class OfficeAgent:
                 fallback=fallback,
                 settings=settings,
             )
+
+        if explicit_tool_confirmation and settings.enable_tools:
+            if request_requires_tools or self._message_has_explicit_local_path(user_message):
+                return self._normalize_route_decision(
+                    {
+                        "task_type": "standard",
+                        "complexity": "medium",
+                        "use_planner": True,
+                        "use_worker_tools": True,
+                        "use_reviewer": False,
+                        "use_revision": False,
+                        "use_structurer": False,
+                        "use_web_prefetch": False,
+                        "use_conflict_detector": False,
+                        "specialists": ["file_reader"] if has_attachments else [],
+                        "reason": "rules_explicit_tool_confirmation",
+                        "summary": "检测到用户明确要求继续读取/执行，延续 Worker 工具链。",
+                    },
+                    fallback=fallback,
+                    settings=settings,
+                )
 
         if meeting_minutes_request and not spec_lookup_request and not evidence_required and not web_request:
             needs_attachment_tools = has_attachments and (attachment_needs_tooling or not inline_parseable_attachments)
@@ -6760,7 +6840,7 @@ class OfficeAgent:
                 name="read_text_file",
                 description=(
                     "Read a local text/document file. Auto extracts text from PDF/DOCX/MSG/XLSX. "
-                    "Supports chunked reads with start_char. "
+                    "Supports chunked reads with start_char, and optional line-mode reads with start_line/max_lines. "
                     "For complete reading use max_chars up to 1000000 and continue while has_more=true."
                 ),
                 args_schema=ReadTextFileArgs,
@@ -7059,6 +7139,14 @@ class OfficeAgent:
             start_char = int(result.get("start_char") or 0)
             end_char = int(result.get("end_char") or 0)
             truncated = bool(result.get("truncated"))
+            if bool(result.get("line_mode")):
+                start_line = int(result.get("start_line") or 0)
+                end_line = int(result.get("end_line") or 0)
+                total_lines = int(result.get("total_lines") or 0)
+                return (
+                    f"read_text_file path={self._shorten(path, 60)}, chars={length}, "
+                    f"lines={start_line}-{end_line}/{total_lines}, truncated={str(truncated).lower()}"
+                )
             return (
                 f"read_text_file path={self._shorten(path, 60)}, chars={length}, "
                 f"range={start_char}-{end_char}, truncated={str(truncated).lower()}"
@@ -7080,8 +7168,21 @@ class OfficeAgent:
         result = self.tools.list_directory(path=path, max_entries=max_entries)
         return json.dumps(result, ensure_ascii=False)
 
-    def _read_text_file_tool(self, path: str, start_char: int = 0, max_chars: int = 200000) -> str:
-        result = self.tools.read_text_file(path=path, start_char=start_char, max_chars=max_chars)
+    def _read_text_file_tool(
+        self,
+        path: str,
+        start_char: int = 0,
+        max_chars: int = 200000,
+        start_line: int = 0,
+        max_lines: int = 0,
+    ) -> str:
+        result = self.tools.read_text_file(
+            path=path,
+            start_char=start_char,
+            max_chars=max_chars,
+            start_line=start_line,
+            max_lines=max_lines,
+        )
         return json.dumps(result, ensure_ascii=False)
 
     def _search_text_in_file_tool(
