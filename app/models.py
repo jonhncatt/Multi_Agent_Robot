@@ -116,6 +116,10 @@ class ChatResponse(BaseModel):
     current_role: str | None = None
     role_states: list[RoleRuntimeState] = Field(default_factory=list)
     answer_bundle: AnswerBundle = Field(default_factory=AnswerBundle)
+    attachment_context_mode: Literal["none", "explicit", "auto_linked", "cleared"] = "none"
+    effective_attachment_ids: list[str] = Field(default_factory=list)
+    auto_linked_attachment_ids: list[str] = Field(default_factory=list)
+    auto_linked_attachment_names: list[str] = Field(default_factory=list)
     missing_attachment_ids: list[str] = Field(default_factory=list)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)

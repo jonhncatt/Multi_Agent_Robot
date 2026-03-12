@@ -2251,6 +2251,14 @@ async function sendMessage() {
         state.attachments = state.attachments.filter((x) => !missing.has(x.id));
         refreshFileList();
       }
+      const autoLinkedNames = Array.isArray(data.auto_linked_attachment_names)
+        ? data.auto_linked_attachment_names.filter((x) => String(x || "").trim())
+        : [];
+      if (autoLinkedNames.length) {
+        addBubble("system", `已自动关联历史附件：${autoLinkedNames.join("，")}`, null);
+      } else if (String(data.attachment_context_mode || "") === "cleared") {
+        addBubble("system", "已按你的指令忽略历史附件。", null);
+      }
 
       renderRunTrace(data.execution_trace || [], data.tool_events || []);
       liveActiveRoles = normalizeRoleSet(data.active_roles);

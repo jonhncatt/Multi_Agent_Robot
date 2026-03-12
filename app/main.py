@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 from pathlib import Path
 import subprocess
 import threading
@@ -52,6 +53,68 @@ token_stats_store = TokenStatsStore(config.token_stats_path)
 _agent: OfficeAgent | None = None
 APP_VERSION = "0.3.5"
 
+_ATTACHMENT_CONTEXT_CLEAR_HINTS = (
+    "忽略之前附件",
+    "忽略附件",
+    "不要参考附件",
+    "别参考附件",
+    "不要用附件",
+    "不基于附件",
+    "清空附件",
+    "reset attachments",
+    "clear attachments",
+    "ignore previous attachment",
+    "ignore previous attachments",
+)
+_ATTACHMENT_CONTEXT_FILE_HINTS = (
+    "附件",
+    "文档",
+    "pdf",
+    "docx",
+    "xlsx",
+    "pptx",
+    "这个pdf",
+    "这个文档",
+    "这个文件",
+    "上个pdf",
+    "上个文档",
+    "上个文件",
+    "上一个附件",
+)
+_ATTACHMENT_CONTEXT_REFERENCE_HINTS = (
+    "这个",
+    "这份",
+    "上个",
+    "上一个",
+    "刚才",
+    "之前",
+    "前面",
+    "那个",
+    "this",
+    "that",
+    "previous",
+    "last",
+)
+_ATTACHMENT_CONTEXT_ACTION_HINTS = (
+    "继续",
+    "接着",
+    "解析",
+    "总结",
+    "概括",
+    "解读",
+    "翻译",
+    "提取",
+    "查找",
+    "看一下",
+    "继续看",
+    "继续读",
+    "continue",
+    "summarize",
+    "analyze",
+    "extract",
+    "find",
+)
+
 
 def _resolve_build_version() -> str:
     override = str(os.environ.get("OFFICETOOL_BUILD_VERSION") or "").strip()
@@ -95,6 +158,67 @@ def _resolve_build_version() -> str:
 
 
 BUILD_VERSION = _resolve_build_version()
+
+
+def _normalize_attachment_ids(raw_ids: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_ids or []:
+        item = str(raw or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _message_clears_attachment_context(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    return any(hint in text for hint in _ATTACHMENT_CONTEXT_CLEAR_HINTS)
+
+
+def _message_requests_attachment_context(message: str) -> bool:
+    raw = str(message or "").strip()
+    if not raw:
+        return False
+    text = raw.lower()
+    if any(hint in text for hint in _ATTACHMENT_CONTEXT_FILE_HINTS):
+        return True
+    has_ref = any(hint in text for hint in _ATTACHMENT_CONTEXT_REFERENCE_HINTS)
+    has_action = any(hint in text for hint in _ATTACHMENT_CONTEXT_ACTION_HINTS)
+    if has_ref and has_action:
+        return True
+    if len(raw) <= 12 and any(token in text for token in ("继续", "接着", "然后呢", "继续吧", "接着说")):
+        return True
+    if len(raw) <= 24 and re.search(r"\b(continue|go on|next)\b", text):
+        return True
+    return False
+
+
+def _infer_session_active_attachment_ids(session: dict[str, Any]) -> list[str]:
+    from_state = session.get("active_attachment_ids")
+    if isinstance(from_state, list):
+        normalized = _normalize_attachment_ids([str(item or "") for item in from_state])
+        if normalized:
+            return normalized
+
+    turns_raw = session.get("turns", [])
+    if not isinstance(turns_raw, list):
+        return []
+    for turn in reversed(turns_raw):
+        if not isinstance(turn, dict) or str(turn.get("role") or "") != "user":
+            continue
+        attachments = turn.get("attachments", [])
+        if not isinstance(attachments, list) or not attachments:
+            continue
+        normalized = _normalize_attachment_ids(
+            [str(item.get("id") or "") for item in attachments if isinstance(item, dict)]
+        )
+        if normalized:
+            return normalized
+    return []
 
 
 class AgentRunQueue:
@@ -577,16 +701,45 @@ def _process_chat_request(
         if summarized:
             _emit_progress(progress_cb, "trace", message="历史上下文已自动压缩摘要。", run_id=run_id)
 
-        attachments = upload_store.get_many(req.attachment_ids)
+        requested_attachment_ids = _normalize_attachment_ids(req.attachment_ids)
+        remembered_attachment_ids = _infer_session_active_attachment_ids(session)
+        clear_attachment_context = _message_clears_attachment_context(req.message)
+        attachment_context_mode = "none"
+        auto_linked_attachment_ids: list[str] = []
+
+        if clear_attachment_context:
+            session["active_attachment_ids"] = []
+            effective_attachment_ids = requested_attachment_ids
+            attachment_context_mode = "cleared" if not requested_attachment_ids else "explicit"
+        elif requested_attachment_ids:
+            effective_attachment_ids = requested_attachment_ids
+            attachment_context_mode = "explicit"
+        elif remembered_attachment_ids and _message_requests_attachment_context(req.message):
+            effective_attachment_ids = remembered_attachment_ids
+            attachment_context_mode = "auto_linked"
+            auto_linked_attachment_ids = list(remembered_attachment_ids)
+        else:
+            effective_attachment_ids = []
+
+        attachments = upload_store.get_many(effective_attachment_ids)
         _emit_progress(
             progress_cb,
             "stage",
             code="attachments_ready",
-            detail=f"附件检查完成: 请求 {len(req.attachment_ids)} 个，命中 {len(attachments)} 个。",
+            detail=(
+                f"附件检查完成: mode={attachment_context_mode}, "
+                f"请求 {len(effective_attachment_ids)} 个，命中 {len(attachments)} 个。"
+            ),
             run_id=run_id,
         )
         found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
-        missing_attachment_ids = [file_id for file_id in req.attachment_ids if file_id not in found_attachment_ids]
+        missing_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id not in found_attachment_ids]
+        resolved_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id in found_attachment_ids]
+
+        if attachment_context_mode in {"explicit", "auto_linked"}:
+            session["active_attachment_ids"] = resolved_attachment_ids
+        elif clear_attachment_context and not requested_attachment_ids:
+            session["active_attachment_ids"] = []
 
         _emit_progress(progress_cb, "stage", code="agent_run_start", detail="开始模型推理与工具调度。", run_id=run_id)
         (
@@ -626,6 +779,20 @@ def _process_chat_request(
             }
             debug_flow.append(debug_item)
             _emit_progress(progress_cb, "debug", item=debug_item, run_id=run_id)
+
+        auto_linked_attachment_names = [
+            str(item.get("original_name") or "")
+            for item in attachments
+            if str(item.get("id") or "") in set(auto_linked_attachment_ids)
+        ]
+        if auto_linked_attachment_names:
+            auto_link_msg = f"已自动关联历史附件: {', '.join(auto_linked_attachment_names[:6])}"
+            execution_trace.append(auto_link_msg)
+            _emit_progress(progress_cb, "trace", message=auto_link_msg, index=len(execution_trace), run_id=run_id)
+        elif attachment_context_mode == "cleared" and not requested_attachment_ids:
+            cleared_msg = "已按用户指令清空历史附件关联。"
+            execution_trace.append(cleared_msg)
+            _emit_progress(progress_cb, "trace", message=cleared_msg, index=len(execution_trace), run_id=run_id)
 
         user_text = req.message.strip()
         if attachment_note:
@@ -707,6 +874,10 @@ def _process_chat_request(
             current_role=current_role,
             role_states=role_states,
             answer_bundle=answer_bundle,
+            attachment_context_mode=attachment_context_mode,
+            effective_attachment_ids=resolved_attachment_ids,
+            auto_linked_attachment_ids=[item for item in auto_linked_attachment_ids if item in found_attachment_ids],
+            auto_linked_attachment_names=auto_linked_attachment_names,
             missing_attachment_ids=missing_attachment_ids,
             token_usage=TokenUsage(**token_usage),
             session_token_totals=TokenTotals(**session_totals_raw),
