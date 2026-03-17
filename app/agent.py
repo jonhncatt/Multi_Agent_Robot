@@ -183,6 +183,14 @@ _UNDERSTANDING_HINTS = (
     "总结下",
     "概括",
     "提炼",
+    "整体思路",
+    "整体框架",
+    "整体结构",
+    "整体逻辑",
+    "总体思路",
+    "总体框架",
+    "总体结构",
+    "总览",
     "整理",
     "重整",
     "重排",
@@ -1241,8 +1249,11 @@ class OfficeAgent:
                 detail=router_system_hint,
             )
 
-        spec_lookup_request = self._looks_like_spec_lookup_request(planner_user_message, attachment_metas)
-        evidence_required_mode = self._requires_evidence_mode(planner_user_message, attachment_metas)
+        raw_spec_lookup_request = self._looks_like_spec_lookup_request(planner_user_message, attachment_metas)
+        raw_evidence_required_mode = self._requires_evidence_mode(planner_user_message, attachment_metas)
+        route_task_type = str(route.get("task_type") or "").strip().lower()
+        spec_lookup_request = raw_spec_lookup_request and route_task_type == "evidence_lookup"
+        evidence_required_mode = raw_evidence_required_mode and route_task_type == "evidence_lookup"
         if spec_lookup_request:
             messages.append(
                 self._SystemMessage(
@@ -6903,6 +6914,77 @@ class OfficeAgent:
             return False
         return any(hint in text for hint in _UNDERSTANDING_HINTS)
 
+    def _looks_like_holistic_document_explanation_request(self, user_message: str) -> bool:
+        text = (user_message or "").strip().lower()
+        if not text:
+            return False
+        if self._looks_like_source_trace_request(user_message):
+            return False
+        evidence_markers = (
+            "证据",
+            "出处",
+            "引用",
+            "定位",
+            "命中",
+            "查证",
+            "核对",
+            "根据原文",
+            "哪一页",
+            "哪页",
+            "页码",
+            "which page",
+            "where did you see",
+            "citation",
+        )
+        if any(marker in text for marker in evidence_markers):
+            return False
+        overview_markers = (
+            "整体思路",
+            "整体框架",
+            "整体结构",
+            "整体逻辑",
+            "整体设计",
+            "总体思路",
+            "总体框架",
+            "总体结构",
+            "总体逻辑",
+            "整体上",
+            "从整体上",
+            "先整体",
+            "总览",
+            "全貌",
+            "全局",
+            "主线",
+            "big picture",
+            "high level",
+            "high-level",
+            "overall idea",
+            "overall structure",
+            "overall flow",
+            "overview",
+        )
+        explain_markers = (
+            "解释",
+            "解读",
+            "说明",
+            "分析",
+            "梳理",
+            "讲讲",
+            "讲一下",
+            "讲下",
+            "介绍",
+            "看懂",
+            "explain",
+            "interpret",
+            "analyze",
+            "analyse",
+        )
+        has_overview = any(marker in text for marker in overview_markers)
+        has_explain = any(marker in text for marker in explain_markers)
+        if has_overview and has_explain:
+            return True
+        return any(phrase in text for phrase in ("整体思路", "整体框架", "整体结构", "总体思路", "总体框架", "总体结构"))
+
     def _looks_like_source_trace_request(self, user_message: str) -> bool:
         text = (user_message or "").strip().lower()
         if not text:
@@ -7246,6 +7328,7 @@ class OfficeAgent:
         )
         inline_document_payload = self._looks_like_inline_document_payload(user_message)
         understanding_request = self._looks_like_understanding_request(user_message)
+        holistic_document_explanation = has_attachments and self._looks_like_holistic_document_explanation_request(user_message)
         source_trace_request = self._looks_like_source_trace_request(user_message)
         explicit_tool_confirmation = self._looks_like_explicit_tool_confirmation(user_message)
         meeting_minutes_request = self._looks_like_meeting_minutes_request(user_message)
@@ -7444,6 +7527,45 @@ class OfficeAgent:
                     "specialists": ["file_reader", "summarizer"] if has_attachments else ["summarizer"],
                     "reason": "rules_meeting_minutes_request",
                     "summary": "检测到会议纪要整理任务，输出面向记录与执行项，不进入证据审计链。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        if has_attachments and holistic_document_explanation and not web_request:
+            if attachment_needs_tooling or not inline_parseable_attachments:
+                return self._normalize_route_decision(
+                    {
+                        "task_type": "attachment_tooling",
+                        "complexity": "medium",
+                        "use_planner": True,
+                        "use_worker_tools": True,
+                        "use_reviewer": False,
+                        "use_revision": False,
+                        "use_structurer": False,
+                        "use_web_prefetch": False,
+                        "use_conflict_detector": False,
+                        "specialists": ["file_reader"],
+                        "reason": "rules_attachment_holistic_understanding_requires_tooling",
+                        "summary": "检测到附件整体理解任务，先读文档再做高层解释，不进入取证审阅链。",
+                    },
+                    fallback=fallback,
+                    settings=settings,
+                )
+            return self._normalize_route_decision(
+                {
+                    "task_type": "simple_understanding",
+                    "complexity": "low",
+                    "use_planner": False,
+                    "use_worker_tools": False,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader", "summarizer"],
+                    "reason": "rules_attachment_holistic_understanding",
+                    "summary": "检测到附件整体理解任务，直接围绕整体结构与主线做解释，不进入取证审阅链。",
                 },
                 fallback=fallback,
                 settings=settings,
@@ -8976,6 +9098,8 @@ class OfficeAgent:
         text = (user_message or "").strip().lower()
         if not text:
             return False
+        if self._looks_like_holistic_document_explanation_request(user_message):
+            return False
 
         if re.search(r"(?i)\b(?:0x[0-9a-f]{1,4}|[0-9a-f]{1,4}h)\b", text):
             return True
@@ -9067,6 +9191,8 @@ class OfficeAgent:
         if not text:
             return False
         if not attachment_metas and self._looks_like_inline_document_payload(user_message):
+            return False
+        if attachment_metas and self._looks_like_holistic_document_explanation_request(user_message):
             return False
         if not attachment_metas and self._looks_like_table_reformat_request(text):
             return False

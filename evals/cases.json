@@ -434,6 +434,19 @@
     }
   },
   {
+    "name": "helper_holistic_document_explanation_detected",
+    "kind": "helper",
+    "helper": "_looks_like_holistic_document_explanation_request",
+    "args": {
+      "user_message": "请解释这个 TCG 协议设计文档的整体思路和整体框架。"
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
     "name": "helper_route_rules_inline_xml_understanding",
     "kind": "helper",
     "helper": "_route_request_by_rules",
@@ -664,6 +677,58 @@
         "use_worker_tools": true,
         "use_reviewer": true,
         "use_structurer": true
+      }
+    }
+  },
+  {
+    "name": "helper_requires_evidence_mode_false_for_holistic_doc_request",
+    "kind": "helper",
+    "helper": "_requires_evidence_mode",
+    "args": {
+      "user_message": "请解释这个 TCG 协议设计文档的整体思路和整体框架。",
+      "attachment_metas": [
+        {
+          "original_name": "tcg_design_spec.pdf",
+          "suffix": ".pdf",
+          "kind": "document",
+          "size": 7340032
+        }
+      ]
+    },
+    "assert": {
+      "equals": {
+        "result": false
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_holistic_doc_request_avoids_evidence_lookup",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "请解释这个 TCG 协议设计文档的整体思路和整体框架。",
+      "attachment_metas": [
+        {
+          "original_name": "tcg_design_spec.pdf",
+          "suffix": ".pdf",
+          "kind": "document",
+          "size": 7340032
+        }
+      ],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "attachment_tooling",
+        "use_planner": true,
+        "use_worker_tools": true,
+        "use_reviewer": false,
+        "use_revision": false,
+        "use_structurer": false
       }
     }
   },
