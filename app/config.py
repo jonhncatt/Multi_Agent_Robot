@@ -84,6 +84,7 @@ class AppConfig:
     workspace_root: Path
     sessions_dir: Path
     uploads_dir: Path
+    shadow_logs_dir: Path
     token_stats_path: Path
     allowed_roots: list[Path]
     default_extra_allowed_roots: list[Path]
@@ -96,10 +97,17 @@ class AppConfig:
     web_fetch_max_chars: int
     web_skip_tls_verify: bool
     web_ca_cert_path: str | None
+    openai_auth_mode: str
     openai_base_url: str | None
     openai_ca_cert_path: str | None
     openai_temperature: float | None
     openai_use_responses_api: bool
+    codex_home: Path
+    codex_auth_file: Path
+    codex_chatgpt_base_url: str
+    codex_refresh_url: str
+    codex_client_id: str
+    codex_refresh_interval_days: int
     default_model: str
     model_fallbacks: list[str]
     model_cooldown_base_sec: int
@@ -126,6 +134,7 @@ class AppConfig:
     docker_pids_limit: int
     docker_container_prefix: str
     enable_session_tools: bool
+    enable_shadow_logging: bool
     allowed_commands: list[str]
 
 
@@ -234,10 +243,19 @@ def load_config() -> AppConfig:
         )
         or str(workspace_root / "app" / "data" / "token_stats.json")
     ).resolve()
+    shadow_logs_dir = Path(
+        _env(
+            "OFFICETOOL_SHADOW_LOGS_DIR",
+            "OFFCIATOOL_SHADOW_LOGS_DIR",
+            default=str(workspace_root / "app" / "data" / "shadow_logs"),
+        )
+        or str(workspace_root / "app" / "data" / "shadow_logs")
+    ).resolve()
 
     sessions_dir.mkdir(parents=True, exist_ok=True)
     uploads_dir.mkdir(parents=True, exist_ok=True)
     token_stats_path.parent.mkdir(parents=True, exist_ok=True)
+    shadow_logs_dir.mkdir(parents=True, exist_ok=True)
 
     allowed_commands_raw = _env(
         "OFFICETOOL_ALLOWED_COMMANDS",
@@ -248,6 +266,64 @@ def load_config() -> AppConfig:
     openai_base_url = (
         _env("OFFICETOOL_OPENAI_BASE_URL", "OFFCIATOOL_OPENAI_BASE_URL", "OPENAI_BASE_URL", default="") or ""
     ).strip() or None
+    openai_auth_mode = (
+        _env("OFFICETOOL_OPENAI_AUTH_MODE", "OFFCIATOOL_OPENAI_AUTH_MODE", default="auto") or "auto"
+    ).strip().lower()
+    if openai_auth_mode not in {"auto", "api_key", "codex_auth"}:
+        openai_auth_mode = "auto"
+    codex_home = Path(
+        _env(
+            "OFFICETOOL_CODEX_HOME",
+            "OFFCIATOOL_CODEX_HOME",
+            "CODEX_HOME",
+            default=str(Path.home() / ".codex"),
+        )
+        or str(Path.home() / ".codex")
+    ).expanduser().resolve()
+    codex_auth_file = Path(
+        _env(
+            "OFFICETOOL_CODEX_AUTH_FILE",
+            "OFFCIATOOL_CODEX_AUTH_FILE",
+            default=str(codex_home / "auth.json"),
+        )
+        or str(codex_home / "auth.json")
+    ).expanduser().resolve()
+    codex_chatgpt_base_url = (
+        _env(
+            "OFFICETOOL_CODEX_CHATGPT_BASE_URL",
+            "OFFCIATOOL_CODEX_CHATGPT_BASE_URL",
+            "OFFICETOOL_CHATGPT_BASE_URL",
+            "OFFCIATOOL_CHATGPT_BASE_URL",
+            default="https://chatgpt.com/backend-api/codex",
+        )
+        or "https://chatgpt.com/backend-api/codex"
+    ).strip().rstrip("/")
+    codex_refresh_url = (
+        _env(
+            "OFFICETOOL_CODEX_REFRESH_URL",
+            "OFFCIATOOL_CODEX_REFRESH_URL",
+            default="https://auth.openai.com/oauth/token",
+        )
+        or "https://auth.openai.com/oauth/token"
+    ).strip()
+    codex_client_id = (
+        _env(
+            "OFFICETOOL_CODEX_CLIENT_ID",
+            "OFFCIATOOL_CODEX_CLIENT_ID",
+            default="app_EMoamEEZ73f0CkXaXp7hrann",
+        )
+        or "app_EMoamEEZ73f0CkXaXp7hrann"
+    ).strip()
+    codex_refresh_interval_days = int(
+        (
+            _env(
+                "OFFICETOOL_CODEX_REFRESH_INTERVAL_DAYS",
+                "OFFCIATOOL_CODEX_REFRESH_INTERVAL_DAYS",
+                default="8",
+            )
+            or "8"
+        ).strip()
+    )
     openai_ca_cert_path = (
         _env("OFFICETOOL_CA_CERT_PATH", "OFFCIATOOL_CA_CERT_PATH", "SSL_CERT_FILE", default="") or ""
     ).strip() or None
@@ -440,11 +516,16 @@ def load_config() -> AppConfig:
         _env("OFFICETOOL_ENABLE_SESSION_TOOLS", "OFFCIATOOL_ENABLE_SESSION_TOOLS", default="true") or "true"
     ).strip().lower()
     enable_session_tools = enable_session_tools_raw in {"1", "true", "yes", "on"}
+    enable_shadow_logging_raw = (
+        _env("OFFICETOOL_ENABLE_SHADOW_LOGGING", "OFFCIATOOL_ENABLE_SHADOW_LOGGING", default="true") or "true"
+    ).strip().lower()
+    enable_shadow_logging = enable_shadow_logging_raw in {"1", "true", "yes", "on"}
 
     return AppConfig(
         workspace_root=workspace_root,
         sessions_dir=sessions_dir,
         uploads_dir=uploads_dir,
+        shadow_logs_dir=shadow_logs_dir,
         token_stats_path=token_stats_path,
         allowed_roots=allowed_roots,
         default_extra_allowed_roots=default_extra_root_paths,
@@ -457,10 +538,17 @@ def load_config() -> AppConfig:
         web_fetch_max_chars=max(2000, min(500000, web_fetch_max_chars)),
         web_skip_tls_verify=web_skip_tls_verify,
         web_ca_cert_path=web_ca_cert_path,
+        openai_auth_mode=openai_auth_mode,
         openai_base_url=openai_base_url,
         openai_ca_cert_path=openai_ca_cert_path,
         openai_temperature=openai_temperature,
         openai_use_responses_api=openai_use_responses_api,
+        codex_home=codex_home,
+        codex_auth_file=codex_auth_file,
+        codex_chatgpt_base_url=codex_chatgpt_base_url or "https://chatgpt.com/backend-api/codex",
+        codex_refresh_url=codex_refresh_url or "https://auth.openai.com/oauth/token",
+        codex_client_id=codex_client_id or "app_EMoamEEZ73f0CkXaXp7hrann",
+        codex_refresh_interval_days=max(1, min(30, codex_refresh_interval_days)),
         default_model=(
             _env("OFFICETOOL_DEFAULT_MODEL", "OFFCIATOOL_DEFAULT_MODEL", default="gpt-5.1-chat") or "gpt-5.1-chat"
         ),
@@ -526,5 +614,6 @@ def load_config() -> AppConfig:
         docker_pids_limit=max(16, min(4096, docker_pids_limit)),
         docker_container_prefix=docker_container_prefix or "officetool-sbx",
         enable_session_tools=enable_session_tools,
+        enable_shadow_logging=enable_shadow_logging,
         allowed_commands=_split_csv(allowed_commands_raw),
     )

@@ -39,7 +39,9 @@ class SessionStore:
             "summary": "",
             "turns": [],
             "active_attachment_ids": [],
+            "attachment_context_cleared": False,
             "route_state": {},
+            "attachment_route_states": {},
         }
         self.save(session)
         return session
@@ -249,6 +251,30 @@ class UploadStore:
             except Exception:
                 pass
         self._save_index(index)
+
+
+class ShadowLogStore:
+    def __init__(self, logs_dir: Path) -> None:
+        self.logs_dir = logs_dir
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+
+    def _path_for_day(self, day: str) -> Path:
+        safe_day = re.sub(r"[^0-9-]+", "_", str(day or "").strip()) or "unknown"
+        return self.logs_dir / f"{safe_day}.jsonl"
+
+    def append(self, record: dict[str, Any], *, day: str | None = None) -> Path:
+        stamp = now_iso()
+        day_key = str(day or stamp[:10]).strip() or stamp[:10]
+        payload = dict(record or {})
+        payload.setdefault("logged_at", stamp)
+        target = self._path_for_day(day_key)
+        line = json.dumps(payload, ensure_ascii=False)
+        with self._lock:
+            with target.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+                fh.write("\n")
+        return target
 
 
 def _empty_totals() -> dict[str, int | float]:

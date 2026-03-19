@@ -35,6 +35,22 @@ class DebugFlowItem(BaseModel):
     detail: str
 
 
+class HookTelemetryItem(BaseModel):
+    phase: str
+    handler: str
+    changed_fields: list[str] = Field(default_factory=list)
+    route_changed: bool = False
+    task_type_before: str = ""
+    task_type_after: str = ""
+    primary_intent_before: str = ""
+    primary_intent_after: str = ""
+    execution_policy_before: str = ""
+    execution_policy_after: str = ""
+    prompt_injection_count: int = 0
+    trace_note_count: int = 0
+    debug_entry_count: int = 0
+
+
 class AgentPanel(BaseModel):
     role: str
     title: str
@@ -110,6 +126,7 @@ class ChatResponse(BaseModel):
     tool_events: list[ToolEvent] = Field(default_factory=list)
     execution_plan: list[str] = Field(default_factory=list)
     execution_trace: list[str] = Field(default_factory=list)
+    pipeline_hooks: list[HookTelemetryItem] = Field(default_factory=list)
     debug_flow: list[DebugFlowItem] = Field(default_factory=list)
     agent_panels: list[AgentPanel] = Field(default_factory=list)
     active_roles: list[str] = Field(default_factory=list)
@@ -121,6 +138,8 @@ class ChatResponse(BaseModel):
     auto_linked_attachment_ids: list[str] = Field(default_factory=list)
     auto_linked_attachment_names: list[str] = Field(default_factory=list)
     missing_attachment_ids: list[str] = Field(default_factory=list)
+    route_state_scope: Literal["none", "session", "attachment", "attachment_miss"] = "none"
+    attachment_context_key: str = ""
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)
     global_token_totals: TokenTotals = Field(default_factory=TokenTotals)

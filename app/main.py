@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import queue
-import re
 from pathlib import Path
 import subprocess
 import threading
@@ -43,100 +42,24 @@ from app.models import (
     TokenUsage,
     UploadResponse,
 )
+from app.openai_auth import OpenAIAuthManager
 from app.pricing import estimate_usage_cost
-from app.storage import SessionStore, TokenStatsStore, UploadStore
+from app.session_context import (
+    apply_attachment_context_result,
+    normalize_attachment_ids,
+    resolve_attachment_context,
+    resolve_scoped_route_state,
+    store_scoped_route_state,
+)
+from app.storage import SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
 
 config = load_config()
 session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
+shadow_log_store = ShadowLogStore(config.shadow_logs_dir)
 _agent: OfficeAgent | None = None
 APP_VERSION = "0.3.5"
-
-_ATTACHMENT_CONTEXT_CLEAR_HINTS = (
-    "忽略之前附件",
-    "忽略附件",
-    "不要参考附件",
-    "别参考附件",
-    "不要用附件",
-    "不基于附件",
-    "清空附件",
-    "reset attachments",
-    "clear attachments",
-    "ignore previous attachment",
-    "ignore previous attachments",
-)
-_ATTACHMENT_CONTEXT_FILE_HINTS = (
-    "附件",
-    "图片",
-    "截图",
-    "照片",
-    "文档",
-    "pdf",
-    "docx",
-    "xlsx",
-    "pptx",
-    "这个pdf",
-    "这个文档",
-    "这个文件",
-    "上个pdf",
-    "上个文档",
-    "上个文件",
-    "上一个附件",
-    "上一个截图",
-    "上一个图片",
-    "this image",
-    "this screenshot",
-    "image",
-    "screenshot",
-)
-_ATTACHMENT_CONTEXT_REFERENCE_HINTS = (
-    "这个",
-    "这份",
-    "上个",
-    "上一个",
-    "刚才",
-    "之前",
-    "前面",
-    "那个",
-    "this",
-    "that",
-    "previous",
-    "last",
-)
-_ATTACHMENT_CONTEXT_ACTION_HINTS = (
-    "继续",
-    "接着",
-    "解析",
-    "识别",
-    "ocr",
-    "转录",
-    "抄录",
-    "总结",
-    "概括",
-    "解读",
-    "翻译",
-    "提取",
-    "原文",
-    "文中",
-    "出现",
-    "用法",
-    "语法",
-    "什么意思",
-    "查找",
-    "看到",
-    "看到了",
-    "看一下",
-    "继续看",
-    "继续读",
-    "continue",
-    "transcribe",
-    "extract text",
-    "summarize",
-    "analyze",
-    "extract",
-    "find",
-)
 
 
 def _resolve_build_version() -> str:
@@ -181,72 +104,6 @@ def _resolve_build_version() -> str:
 
 
 BUILD_VERSION = _resolve_build_version()
-
-
-def _normalize_attachment_ids(raw_ids: list[str] | None) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for raw in raw_ids or []:
-        item = str(raw or "").strip()
-        if not item or item in seen:
-            continue
-        seen.add(item)
-        out.append(item)
-    return out
-
-
-def _message_clears_attachment_context(message: str) -> bool:
-    text = str(message or "").strip().lower()
-    if not text:
-        return False
-    return any(hint in text for hint in _ATTACHMENT_CONTEXT_CLEAR_HINTS)
-
-
-def _message_requests_attachment_context(message: str) -> bool:
-    raw = str(message or "").strip()
-    if not raw:
-        return False
-    text = raw.lower()
-    if any(hint in text for hint in _ATTACHMENT_CONTEXT_FILE_HINTS):
-        return True
-    has_ref = any(hint in text for hint in _ATTACHMENT_CONTEXT_REFERENCE_HINTS)
-    has_action = any(hint in text for hint in _ATTACHMENT_CONTEXT_ACTION_HINTS)
-    if has_ref and has_action:
-        return True
-    if len(raw) <= 40 and (
-        any(token in text for token in ("什么意思", "怎么用", "用法", "语法", "在文中", "有没有出现", "是否出现"))
-        or bool(re.search(r"[\"'“”‘’「『].{1,24}[\"'“”‘’」』]", raw))
-    ):
-        return True
-    if len(raw) <= 12 and any(token in text for token in ("继续", "接着", "然后呢", "继续吧", "接着说")):
-        return True
-    if len(raw) <= 24 and re.search(r"\b(continue|go on|next)\b", text):
-        return True
-    return False
-
-
-def _infer_session_active_attachment_ids(session: dict[str, Any]) -> list[str]:
-    from_state = session.get("active_attachment_ids")
-    if isinstance(from_state, list):
-        normalized = _normalize_attachment_ids([str(item or "") for item in from_state])
-        if normalized:
-            return normalized
-
-    turns_raw = session.get("turns", [])
-    if not isinstance(turns_raw, list):
-        return []
-    for turn in reversed(turns_raw):
-        if not isinstance(turn, dict) or str(turn.get("role") or "") != "user":
-            continue
-        attachments = turn.get("attachments", [])
-        if not isinstance(attachments, list) or not attachments:
-            continue
-        normalized = _normalize_attachment_ids(
-            [str(item.get("id") or "") for item in attachments if isinstance(item, dict)]
-        )
-        if normalized:
-            return normalized
-    return []
 
 
 class AgentRunQueue:
@@ -688,14 +545,15 @@ def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: 
 def _process_chat_request(
     req: ChatRequest, progress_cb: Callable[[dict[str, Any]], None] | None = None
 ) -> ChatResponse:
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is required")
+    auth_summary = OpenAIAuthManager(config).auth_summary()
+    if not bool(auth_summary.get("available")):
+        raise HTTPException(status_code=500, detail=str(auth_summary.get("reason") or "OpenAI credentials are required"))
     run_id = str(uuid.uuid4())
     _emit_progress(
         progress_cb,
         "stage",
         code="backend_start",
-        detail=f"后端已接收请求，开始处理。run_id={run_id}",
+        detail=f"后端已接收请求，开始处理。run_id={run_id}, auth_mode={auth_summary.get('mode')}",
         run_id=run_id,
     )
 
@@ -729,25 +587,17 @@ def _process_chat_request(
         if summarized:
             _emit_progress(progress_cb, "trace", message="历史上下文已自动压缩摘要。", run_id=run_id)
 
-        requested_attachment_ids = _normalize_attachment_ids(req.attachment_ids)
-        remembered_attachment_ids = _infer_session_active_attachment_ids(session)
-        clear_attachment_context = _message_clears_attachment_context(req.message)
-        attachment_context_mode = "none"
-        auto_linked_attachment_ids: list[str] = []
-
-        if clear_attachment_context:
-            session["active_attachment_ids"] = []
-            effective_attachment_ids = requested_attachment_ids
-            attachment_context_mode = "cleared" if not requested_attachment_ids else "explicit"
-        elif requested_attachment_ids:
-            effective_attachment_ids = requested_attachment_ids
-            attachment_context_mode = "explicit"
-        elif remembered_attachment_ids and _message_requests_attachment_context(req.message):
-            effective_attachment_ids = remembered_attachment_ids
-            attachment_context_mode = "auto_linked"
-            auto_linked_attachment_ids = list(remembered_attachment_ids)
-        else:
-            effective_attachment_ids = []
+        attachment_context = resolve_attachment_context(
+            session,
+            message=req.message,
+            requested_attachment_ids=req.attachment_ids,
+        )
+        requested_attachment_ids = attachment_context["requested_attachment_ids"]
+        clear_attachment_context = bool(attachment_context["clear_attachment_context"])
+        attachment_context_mode = str(attachment_context["attachment_context_mode"] or "none")
+        auto_linked_attachment_ids = list(attachment_context["auto_linked_attachment_ids"] or [])
+        effective_attachment_ids = list(attachment_context["effective_attachment_ids"] or [])
+        attachment_context_key = str(attachment_context["attachment_context_key"] or "")
 
         attachments = upload_store.get_many(effective_attachment_ids)
         _emit_progress(
@@ -763,11 +613,20 @@ def _process_chat_request(
         found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
         missing_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id not in found_attachment_ids]
         resolved_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id in found_attachment_ids]
-
-        if attachment_context_mode in {"explicit", "auto_linked"}:
-            session["active_attachment_ids"] = resolved_attachment_ids
-        elif clear_attachment_context and not requested_attachment_ids:
-            session["active_attachment_ids"] = []
+        apply_attachment_context_result(
+            session,
+            resolved_attachment_ids=resolved_attachment_ids,
+            attachment_context_mode=attachment_context_mode,
+            clear_attachment_context=clear_attachment_context,
+            requested_attachment_ids=requested_attachment_ids,
+        )
+        resolved_attachment_context_key = attachment_context_key or ""
+        if resolved_attachment_ids:
+            resolved_attachment_context_key = "|".join(normalize_attachment_ids(resolved_attachment_ids))
+        route_state_input, route_state_scope = resolve_scoped_route_state(
+            session,
+            attachment_ids=resolved_attachment_ids,
+        )
 
         _emit_progress(progress_cb, "stage", code="agent_run_start", detail="开始模型推理与工具调度。", run_id=run_id)
         (
@@ -776,6 +635,7 @@ def _process_chat_request(
             attachment_note,
             execution_plan,
             execution_trace,
+            pipeline_hooks,
             debug_flow,
             agent_panels,
             active_roles,
@@ -792,7 +652,7 @@ def _process_chat_request(
             attachment_metas=attachments,
             settings=req.settings,
             session_id=session_id,
-            route_state=session.get("route_state"),
+            route_state=route_state_input,
             progress_cb=progress_cb,
         )
         _emit_progress(progress_cb, "stage", code="agent_run_done", detail="模型推理结束，开始写入会话与统计。", run_id=run_id)
@@ -835,7 +695,11 @@ def _process_chat_request(
             attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
         )
         session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle)
-        session["route_state"] = route_state or {}
+        store_scoped_route_state(
+            session,
+            attachment_ids=resolved_attachment_ids,
+            route_state=route_state,
+        )
         session_store.save(session)
         _emit_progress(progress_cb, "stage", code="session_saved", detail="会话已写入本地存储。", run_id=run_id)
 
@@ -888,6 +752,34 @@ def _process_chat_request(
             model=selected_model,
         )
         _emit_progress(progress_cb, "stage", code="stats_saved", detail="Token 统计已更新。", run_id=run_id)
+        if config.enable_shadow_logging:
+            shadow_path = shadow_log_store.append(
+                {
+                    "run_id": run_id,
+                    "session_id": session["id"],
+                    "effective_model": selected_model,
+                    "attachment_context_mode": attachment_context_mode,
+                    "attachment_context_key": resolved_attachment_context_key,
+                    "effective_attachment_ids": resolved_attachment_ids,
+                    "auto_linked_attachment_ids": [item for item in auto_linked_attachment_ids if item in found_attachment_ids],
+                    "missing_attachment_ids": missing_attachment_ids,
+                    "route_state_scope": route_state_scope,
+                    "route_state": route_state or {},
+                    "pipeline_hooks": pipeline_hooks,
+                    "tool_events_count": len(tool_events),
+                    "active_roles": active_roles,
+                    "current_role": current_role,
+                    "token_usage": token_usage,
+                    "message_preview": req.message[:500],
+                    "response_preview": text[:500],
+                }
+            )
+            _emit_progress(
+                progress_cb,
+                "trace",
+                message=f"shadow log 已写入: {shadow_path.name}",
+                run_id=run_id,
+            )
         session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
         global_totals_raw = stats_snapshot.get("totals", {})
         response = ChatResponse(
@@ -899,6 +791,7 @@ def _process_chat_request(
             tool_events=tool_events,
             execution_plan=execution_plan,
             execution_trace=execution_trace,
+            pipeline_hooks=pipeline_hooks,
             debug_flow=debug_flow,
             agent_panels=agent_panels,
             active_roles=active_roles,
@@ -910,6 +803,8 @@ def _process_chat_request(
             auto_linked_attachment_ids=[item for item in auto_linked_attachment_ids if item in found_attachment_ids],
             auto_linked_attachment_names=auto_linked_attachment_names,
             missing_attachment_ids=missing_attachment_ids,
+            route_state_scope=route_state_scope,
+            attachment_context_key=resolved_attachment_context_key,
             token_usage=TokenUsage(**token_usage),
             session_token_totals=TokenTotals(**session_totals_raw),
             global_token_totals=TokenTotals(**global_totals_raw),

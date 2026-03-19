@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict, is_dataclass
 import json
 import os
 import time
@@ -9,6 +10,13 @@ from typing import Any
 from app.agent import ExecutionState, OfficeAgent
 from app.config import load_config
 from app.models import ChatSettings, ToolEvent
+from app.session_context import (
+    apply_attachment_context_result,
+    normalize_attachment_ids,
+    resolve_attachment_context,
+    resolve_scoped_route_state,
+    store_scoped_route_state,
+)
 from app.storage import now_iso
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -237,7 +245,12 @@ def _run_helper_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]
     started = time.perf_counter()
     result = fn(**args)
     elapsed_sec = time.perf_counter() - started
-    payload = result if isinstance(result, dict) else {"result": result}
+    if isinstance(result, dict):
+        payload = result
+    elif is_dataclass(result):
+        payload = asdict(result)
+    else:
+        payload = {"result": result}
     payload["elapsed_sec"] = round(elapsed_sec, 3)
     return payload
 
@@ -253,6 +266,7 @@ def _run_agent_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
         attachment_note,
         execution_plan,
         execution_trace,
+        pipeline_hooks,
         debug_flow,
         agent_panels,
         active_roles,
@@ -277,6 +291,7 @@ def _run_agent_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
         "attachment_note": attachment_note,
         "execution_plan": execution_plan,
         "execution_trace": execution_trace,
+        "pipeline_hooks": pipeline_hooks,
         "debug_flow_count": len(debug_flow),
         "agent_panels": agent_panels,
         "active_roles": active_roles,
@@ -288,6 +303,138 @@ def _run_agent_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
         "token_usage": token_usage,
         "effective_model": effective_model,
         "route_state": route_state,
+        "elapsed_sec": round(elapsed_sec, 3),
+    }
+
+
+def _attachment_catalog(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for item in entries:
+        meta = _attachment_meta(item)
+        attachment_id = str(item.get("id") or meta.get("id") or "").strip()
+        if not attachment_id:
+            continue
+        meta["id"] = attachment_id
+        out[attachment_id] = meta
+    return out
+
+
+def _run_conversation_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
+    attachments_by_id = _attachment_catalog(case.get("attachments") or [])
+    default_settings = ChatSettings(**(case.get("settings") or {}))
+    session = {
+        "id": str(case.get("session_id") or "eval-session"),
+        "summary": "",
+        "turns": [],
+        "active_attachment_ids": [],
+        "route_state": {},
+        "attachment_route_states": {},
+    }
+    turn_outputs: list[dict[str, Any]] = []
+    final_payload: dict[str, Any] = {}
+    started = time.perf_counter()
+
+    for turn_index, turn in enumerate(case.get("turns") or [], start=1):
+        message = str(turn.get("message") or "")
+        turn_settings_data = default_settings.model_dump()
+        turn_settings_data.update(turn.get("settings") or {})
+        turn_settings = ChatSettings(**turn_settings_data)
+
+        attachment_context = resolve_attachment_context(
+            session,
+            message=message,
+            requested_attachment_ids=turn.get("attachment_ids"),
+        )
+        requested_attachment_ids = attachment_context["requested_attachment_ids"]
+        effective_attachment_ids = list(attachment_context["effective_attachment_ids"] or [])
+        attachment_context_mode = str(attachment_context["attachment_context_mode"] or "none")
+        auto_linked_attachment_ids = list(attachment_context["auto_linked_attachment_ids"] or [])
+        clear_attachment_context = bool(attachment_context["clear_attachment_context"])
+
+        attachments = [dict(attachments_by_id[file_id]) for file_id in effective_attachment_ids if file_id in attachments_by_id]
+        found_attachment_ids = {str(item.get("id") or "") for item in attachments}
+        resolved_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id in found_attachment_ids]
+        missing_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id not in found_attachment_ids]
+        apply_attachment_context_result(
+            session,
+            resolved_attachment_ids=resolved_attachment_ids,
+            attachment_context_mode=attachment_context_mode,
+            clear_attachment_context=clear_attachment_context,
+            requested_attachment_ids=requested_attachment_ids,
+        )
+        route_state_input, route_state_scope = resolve_scoped_route_state(
+            session,
+            attachment_ids=resolved_attachment_ids,
+        )
+
+        route = agent._route_request_by_rules(
+            user_message=message,
+            attachment_metas=attachments,
+            settings=turn_settings,
+            route_state=route_state_input,
+            inline_followup_context=False,
+        )
+        route_state = agent._build_session_route_state(route)
+        execution_plan = []
+        if route.get("use_planner"):
+            execution_plan.append("planner")
+        if route.get("use_worker_tools"):
+            execution_plan.append("worker_tools")
+        if route.get("use_reviewer"):
+            execution_plan.append("reviewer")
+        if route.get("use_structurer"):
+            execution_plan.append("structurer")
+
+        user_text = message.strip()
+        session["turns"].append(
+            {
+                "role": "user",
+                "text": user_text,
+                "attachments": [{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
+                "answer_bundle": {},
+                "created_at": now_iso(),
+            }
+        )
+        session["turns"].append(
+            {
+                "role": "assistant",
+                "text": str(route.get("summary") or route.get("reason") or ""),
+                "attachments": [],
+                "answer_bundle": {},
+                "created_at": now_iso(),
+            }
+        )
+        store_scoped_route_state(
+            session,
+            attachment_ids=resolved_attachment_ids,
+            route_state=route_state,
+        )
+
+        turn_payload = {
+            "turn_index": turn_index,
+            "message": message,
+            "attachment_context_mode": attachment_context_mode,
+            "effective_attachment_ids": resolved_attachment_ids,
+            "auto_linked_attachment_ids": [item for item in auto_linked_attachment_ids if item in found_attachment_ids],
+            "missing_attachment_ids": missing_attachment_ids,
+            "route_state_scope": route_state_scope,
+            "route": route,
+            "route_state": route_state,
+            "execution_plan": execution_plan,
+        }
+        turn_outputs.append(turn_payload)
+        final_payload = turn_payload
+
+    elapsed_sec = time.perf_counter() - started
+    return {
+        "turns": turn_outputs,
+        "turn_count": len(turn_outputs),
+        "session": {
+            "active_attachment_ids": normalize_attachment_ids(session.get("active_attachment_ids")),
+            "route_state": session.get("route_state") or {},
+            "attachment_route_states": session.get("attachment_route_states") or {},
+        },
+        "final": final_payload,
         "elapsed_sec": round(elapsed_sec, 3),
     }
 
@@ -333,8 +480,12 @@ def run_regression_evals(
                 payload = _run_tool_case(case, tools)
             elif kind == "helper":
                 payload = _run_helper_case(case, agent)
-            else:
+            elif kind == "agent":
                 payload = _run_agent_case(case, agent)
+            elif kind == "conversation":
+                payload = _run_conversation_case(case, agent)
+            else:
+                raise ValueError(f"Unknown eval kind: {kind}")
             errors = _assertions(payload, case.get("assert") or {})
             if errors:
                 results.append({"name": name, "kind": kind, "status": "failed", "errors": errors, "payload": payload})

@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+
+PlannerMode = Literal["always", "never", "when_tools"]
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionPolicySpec:
+    planner: PlannerMode = "never"
+    reviewer: bool = False
+    revision: bool = False
+    structurer: bool = False
+    conflict_detector: bool = False
+
+
+_DEFAULT_SPEC = ExecutionPolicySpec(planner="always", reviewer=True, revision=True, structurer=True, conflict_detector=True)
+
+_POLICY_SPECS: dict[str, ExecutionPolicySpec] = {
+    "standard_full_pipeline": ExecutionPolicySpec(
+        planner="always",
+        reviewer=True,
+        revision=True,
+        structurer=True,
+        conflict_detector=True,
+    ),
+    "evidence_full_pipeline": ExecutionPolicySpec(
+        planner="always",
+        reviewer=True,
+        revision=True,
+        structurer=True,
+        conflict_detector=True,
+    ),
+    "web_research_full_pipeline": ExecutionPolicySpec(
+        planner="always",
+        reviewer=True,
+        revision=True,
+        structurer=True,
+        conflict_detector=True,
+    ),
+    "grounded_generation_with_tools": ExecutionPolicySpec(planner="always"),
+    "generation_with_tools": ExecutionPolicySpec(planner="always"),
+    "meeting_minutes_output": ExecutionPolicySpec(planner="when_tools"),
+    "attachment_holistic_understanding_with_tools": ExecutionPolicySpec(planner="always"),
+    "attachment_followup_understanding_with_tools": ExecutionPolicySpec(planner="always"),
+    "attachment_understanding_with_tools": ExecutionPolicySpec(planner="always"),
+    "attachment_tooling_generic": ExecutionPolicySpec(planner="always"),
+    "code_lookup_with_tools": ExecutionPolicySpec(planner="always"),
+    "continue_tooling": ExecutionPolicySpec(planner="always"),
+    "llm_router_attachment_ambiguity": ExecutionPolicySpec(planner="always"),
+    "llm_router_tool_ambiguity": ExecutionPolicySpec(planner="always"),
+    "inline_followup_understanding": ExecutionPolicySpec(planner="never"),
+    "attachment_holistic_understanding_direct": ExecutionPolicySpec(planner="never"),
+    "attachment_followup_understanding_direct": ExecutionPolicySpec(planner="never"),
+    "attachment_understanding_direct": ExecutionPolicySpec(planner="never"),
+    "small_parseable_attachment_understanding": ExecutionPolicySpec(planner="never"),
+    "inline_document_understanding_direct": ExecutionPolicySpec(planner="never"),
+    "qa_direct": ExecutionPolicySpec(planner="never"),
+    "llm_router_general_ambiguity": ExecutionPolicySpec(planner="never"),
+}
+
+
+def execution_policy_spec(policy: str) -> ExecutionPolicySpec:
+    normalized = str(policy or "").strip().lower()
+    if not normalized:
+        return _DEFAULT_SPEC
+    return _POLICY_SPECS.get(normalized, _DEFAULT_SPEC)
+
+
+def planner_enabled_for_policy(policy: str, *, use_worker_tools: bool) -> bool:
+    spec = execution_policy_spec(policy)
+    if spec.planner == "always":
+        return True
+    if spec.planner == "when_tools":
+        return bool(use_worker_tools)
+    return False

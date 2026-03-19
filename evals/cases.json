@@ -840,6 +840,62 @@
     }
   },
   {
+    "name": "helper_build_pipeline_hook_telemetry_detects_route_change",
+    "kind": "helper",
+    "helper": "_build_pipeline_hook_telemetry",
+    "args": {
+      "phase": "before_route_finalize",
+      "hook_payload": {
+        "trace_notes": [
+          "forced tooling"
+        ],
+        "debug_entries": [
+          {
+            "stage": "backend_hook",
+            "title": "Hook",
+            "detail": "forced"
+          }
+        ],
+        "prompt_injections": []
+      },
+      "route_before": {
+        "task_type": "simple_understanding",
+        "primary_intent": "understanding",
+        "execution_policy": "understanding_direct",
+        "use_worker_tools": false,
+        "use_planner": false,
+        "use_reviewer": false,
+        "use_revision": false,
+        "use_structurer": false
+      },
+      "route_after": {
+        "task_type": "attachment_tooling",
+        "primary_intent": "understanding",
+        "execution_policy": "attachment_tooling_generic",
+        "use_worker_tools": true,
+        "use_planner": true,
+        "use_reviewer": false,
+        "use_revision": false,
+        "use_structurer": false
+      }
+    },
+    "assert": {
+      "equals": {
+        "phase": "before_route_finalize",
+        "route_changed": true,
+        "task_type_before": "simple_understanding",
+        "task_type_after": "attachment_tooling",
+        "trace_note_count": 1,
+        "debug_entry_count": 1
+      },
+      "contains": {
+        "changed_fields.0": [
+          "task_type"
+        ]
+      }
+    }
+  },
+  {
     "name": "helper_hook_after_planner_injects_planner_summary",
     "kind": "helper",
     "helper": "_hook_after_planner",
@@ -1047,6 +1103,125 @@
     }
   },
   {
+    "name": "conversation_attachment_followup_switches_from_evidence_to_holistic_understanding",
+    "kind": "conversation",
+    "attachments": [
+      {
+        "id": "spec-doc",
+        "path": "evals/fixtures/spec_excerpt.txt",
+        "original_name": "spec_excerpt.txt",
+        "kind": "document",
+        "mime": "text/plain"
+      }
+    ],
+    "settings": {
+      "enable_tools": true,
+      "response_style": "short"
+    },
+    "turns": [
+      {
+        "message": "请在这个文档里查 15h 在哪看到，并给我出处。",
+        "attachment_ids": [
+          "spec-doc"
+        ]
+      },
+      {
+        "message": "请解释这个文档的整体思路和整体框架。"
+      }
+    ],
+    "assert": {
+      "equals": {
+        "turns.0.route.task_type": "evidence_lookup",
+        "turns.0.route.execution_policy": "evidence_full_pipeline",
+        "turns.0.route_state_scope": "attachment_miss",
+        "turns.1.attachment_context_mode": "auto_linked",
+        "turns.1.route_state_scope": "attachment",
+        "turns.1.route.task_type": "simple_understanding",
+        "turns.1.route.execution_policy": "attachment_holistic_understanding_direct",
+        "session.active_attachment_ids.0": "spec-doc"
+      }
+    }
+  },
+  {
+    "name": "conversation_attachment_scoped_route_state_survives_unrelated_session_turn",
+    "kind": "conversation",
+    "attachments": [
+      {
+        "id": "spec-doc",
+        "path": "evals/fixtures/spec_excerpt.txt",
+        "original_name": "spec_excerpt.txt",
+        "kind": "document",
+        "mime": "text/plain"
+      }
+    ],
+    "settings": {
+      "enable_tools": true,
+      "response_style": "short"
+    },
+    "turns": [
+      {
+        "message": "解释这个文档的整体思路。",
+        "attachment_ids": [
+          "spec-doc"
+        ]
+      },
+      {
+        "message": "HTTP 404 是什么？"
+      },
+      {
+        "message": "继续解释这个文档。"
+      }
+    ],
+    "assert": {
+      "equals": {
+        "turns.0.route.execution_policy": "attachment_holistic_understanding_direct",
+        "turns.1.route.execution_policy": "qa_direct",
+        "turns.1.route_state_scope": "session",
+        "turns.2.attachment_context_mode": "auto_linked",
+        "turns.2.route_state_scope": "attachment",
+        "turns.2.route.execution_policy": "attachment_followup_understanding_direct"
+      }
+    }
+  },
+  {
+    "name": "conversation_clear_attachment_context_stops_auto_linked_followup",
+    "kind": "conversation",
+    "attachments": [
+      {
+        "id": "spec-doc",
+        "path": "evals/fixtures/spec_excerpt.txt",
+        "original_name": "spec_excerpt.txt",
+        "kind": "document",
+        "mime": "text/plain"
+      }
+    ],
+    "settings": {
+      "enable_tools": true,
+      "response_style": "short"
+    },
+    "turns": [
+      {
+        "message": "解释这个文档的整体思路。",
+        "attachment_ids": [
+          "spec-doc"
+        ]
+      },
+      {
+        "message": "忽略之前附件。"
+      },
+      {
+        "message": "继续解释这个文档。"
+      }
+    ],
+    "assert": {
+      "equals": {
+        "turns.1.attachment_context_mode": "cleared",
+        "turns.2.attachment_context_mode": "none",
+        "turns.2.route_state_scope": "session"
+      }
+    }
+  },
+  {
     "name": "helper_route_rules_simple_qa",
     "kind": "helper",
     "helper": "_route_request_by_rules",
@@ -1079,6 +1254,81 @@
     "assert": {
       "equals": {
         "result": false
+      }
+    }
+  },
+  {
+    "name": "helper_codex_model_normalization_strips_chat_suffix",
+    "kind": "helper",
+    "helper": "_debug_normalize_model_for_auth",
+    "args": {
+      "model": "gpt-5.1-chat",
+      "auth_mode": "codex_auth"
+    },
+    "assert": {
+      "equals": {
+        "normalized_model": "gpt-5.1"
+      }
+    }
+  },
+  {
+    "name": "helper_api_key_model_normalization_keeps_model_name",
+    "kind": "helper",
+    "helper": "_debug_normalize_model_for_auth",
+    "args": {
+      "model": "gpt-5.1-chat",
+      "auth_mode": "api_key"
+    },
+    "assert": {
+      "equals": {
+        "normalized_model": "gpt-5.1-chat"
+      }
+    }
+  },
+  {
+    "name": "helper_codex_input_payload_preserves_tool_history",
+    "kind": "helper",
+    "helper": "_debug_codex_input_payload",
+    "args": {
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are helpful."
+        },
+        {
+          "role": "user",
+          "content": "Use ping."
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "ping",
+              "args": {},
+              "id": "call_123",
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "name": "ping",
+          "tool_call_id": "call_123",
+          "content": "pong"
+        }
+      ]
+    },
+    "assert": {
+      "equals": {
+        "instructions": "You are helpful.",
+        "input.0.role": "user",
+        "input.0.content.0.type": "input_text",
+        "input.1.type": "function_call",
+        "input.1.call_id": "call_123",
+        "input.2.type": "function_call_output",
+        "input.2.call_id": "call_123",
+        "input.2.output": "pong"
       }
     }
   },

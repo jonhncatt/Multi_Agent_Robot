@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dc_field
+from dataclasses import asdict, dataclass, field as dc_field, fields as dataclass_fields, is_dataclass
 import json
 import os
 import re
@@ -14,9 +14,37 @@ from pydantic import BaseModel, Field
 
 from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
 from app.config import AppConfig
+from app.codex_runner import CodexResponsesRunner, build_codex_input_payload
+from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.local_tools import LocalToolExecutor
 from app.models import AgentPanel, ChatSettings, ToolEvent
-from app.role_runtime import RoleContext, RoleResult, RoleSpec, RunState
+from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
+from app.pipeline_hooks import (
+    PIPELINE_HOOK_HANDLERS,
+    build_pipeline_hook_panel_payload,
+    build_pipeline_hook_telemetry,
+)
+from app.router_rules import (
+    HOLISTIC_DIRECT_PHRASES,
+    HOLISTIC_EXPLAIN_MARKERS,
+    HOLISTIC_OVERVIEW_MARKERS,
+    SOURCE_TRACE_HINTS,
+    SPEC_LOOKUP_HINTS,
+    SPEC_SCOPE_HINTS,
+    TABLE_REFERENCE_HINTS,
+    TABLE_REFORMAT_HINTS,
+    VERIFICATION_HINTS,
+    text_has_any,
+)
+from app.role_runtime import (
+    HookDebugEntry,
+    HookPromptInjection,
+    HookResult,
+    RoleContext,
+    RoleResult,
+    RoleSpec,
+    RunState,
+)
 
 
 _STYLE_HINTS = {
@@ -304,6 +332,7 @@ _SPECIALIST_LABELS = {
 _ROLE_KINDS = {
     "router": "hybrid",
     "coordinator": "processor",
+    "pipeline_hooks": "processor",
     "planner": "agent",
     "researcher": "agent",
     "file_reader": "agent",
@@ -315,15 +344,6 @@ _ROLE_KINDS = {
     "revision": "agent",
     "structurer": "agent",
 }
-
-_PIPELINE_HOOK_HANDLERS = {
-    "before_route_finalize": "_hook_before_route_finalize",
-    "before_worker_prompt": "_hook_before_worker_prompt",
-    "before_reviewer": "_hook_before_reviewer",
-    "after_planner": "_hook_after_planner",
-    "before_structurer": "_hook_before_structurer",
-}
-
 
 @dataclass
 class ExecutionState:
@@ -487,6 +507,7 @@ class OfficeAgent:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.tools = LocalToolExecutor(config)
+        self._auth_manager = OpenAIAuthManager(config)
 
         try:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -507,6 +528,42 @@ class OfficeAgent:
         self._lc_tool_map = {getattr(tool, "name", ""): tool for tool in self._lc_tools}
         self._model_failover_lock = threading.Lock()
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
+
+    def _debug_openai_auth_summary(self) -> dict[str, Any]:
+        return self._auth_manager.auth_summary()
+
+    def _debug_codex_input_payload(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        built_messages: list[Any] = []
+        for item in messages:
+            role = str(item.get("role") or "").strip().lower()
+            content = item.get("content") or ""
+            if role == "system":
+                built_messages.append(self._SystemMessage(content=content))
+                continue
+            if role == "user":
+                built_messages.append(self._HumanMessage(content=content))
+                continue
+            if role == "assistant":
+                built_messages.append(
+                    self._AIMessage(
+                        content=content,
+                        tool_calls=item.get("tool_calls") or [],
+                    )
+                )
+                continue
+            if role == "tool":
+                built_messages.append(
+                    self._ToolMessage(
+                        content=content,
+                        tool_call_id=str(item.get("tool_call_id") or "call_missing"),
+                        name=str(item.get("name") or ""),
+                    )
+                )
+        instructions, input_items = build_codex_input_payload(built_messages)
+        return {"instructions": instructions, "input": input_items}
+
+    def _debug_normalize_model_for_auth(self, model: str, auth_mode: str) -> dict[str, Any]:
+        return {"normalized_model": normalize_model_for_auth_mode(model, auth_mode)}
 
     def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
         turns = session.get("turns", [])
@@ -590,6 +647,7 @@ class OfficeAgent:
         list[str],
         list[dict[str, Any]],
         list[dict[str, Any]],
+        list[dict[str, Any]],
         list[str],
         str | None,
         list[dict[str, Any]],
@@ -603,6 +661,7 @@ class OfficeAgent:
         style_hint = _STYLE_HINTS.get(settings.response_style, _STYLE_HINTS["normal"])
         execution_plan: list[str] = []
         execution_trace: list[str] = []
+        pipeline_hook_telemetry: list[dict[str, Any]] = []
         debug_flow: list[dict[str, Any]] = []
         agent_panels: list[dict[str, Any]] = []
         active_roles: set[str] = set()
@@ -761,6 +820,25 @@ class OfficeAgent:
                     return
             agent_panels.append(payload)
             emit_agent_state()
+
+        def record_pipeline_hook(
+            *,
+            phase: str,
+            hook_payload: dict[str, Any],
+            route_before: dict[str, Any] | None = None,
+            route_after: dict[str, Any] | None = None,
+        ) -> None:
+            item = build_pipeline_hook_telemetry(
+                phase=phase,
+                handler_name=str(PIPELINE_HOOK_HANDLERS.get(str(phase or "").strip()) or ""),
+                hook_payload=hook_payload,
+                route_before=route_before,
+                route_after=route_after,
+            )
+            pipeline_hook_telemetry.append(item)
+            add_run_event("pipeline_hook", **item)
+            summary_text, bullets = build_pipeline_hook_panel_payload(pipeline_hook_telemetry)
+            add_panel("pipeline_hooks", "Pipeline Hooks", summary_text, bullets)
 
         def begin_role_instance(
             role: str,
@@ -1038,6 +1116,7 @@ class OfficeAgent:
             route_state=route_state,
             inline_followup_context=bool(inline_followup_source),
         )
+        route_before_hook = dict(route)
         route_finalize_hook = self._run_pipeline_hook(
             "before_route_finalize",
             route=route,
@@ -1051,6 +1130,12 @@ class OfficeAgent:
         )
         route = route_finalize_hook["route"]
         router_raw = str(route_finalize_hook["router_raw"] or "")
+        record_pipeline_hook(
+            phase="before_route_finalize",
+            hook_payload=route_finalize_hook,
+            route_before=route_before_hook,
+            route_after=route,
+        )
         self._apply_pipeline_hook_effects(
             hook_payload=route_finalize_hook,
             add_trace=add_trace,
@@ -1061,6 +1146,7 @@ class OfficeAgent:
             settings=settings,
             force_tool_followup=force_tool_followup,
         )
+        route_before_hook = dict(route)
         worker_prompt_hook = self._run_pipeline_hook(
             "before_worker_prompt",
             route=route,
@@ -1076,6 +1162,12 @@ class OfficeAgent:
         execution_state = worker_prompt_hook["execution_state"]
         spec_lookup_request = bool(worker_prompt_hook["spec_lookup_request"])
         evidence_required_mode = bool(worker_prompt_hook["evidence_required_mode"])
+        record_pipeline_hook(
+            phase="before_worker_prompt",
+            hook_payload=worker_prompt_hook,
+            route_before=route_before_hook,
+            route_after=route,
+        )
         self._apply_pipeline_hook_effects(
             hook_payload=worker_prompt_hook,
             messages=messages,
@@ -1252,6 +1344,12 @@ class OfficeAgent:
             planner_hook = self._run_pipeline_hook(
                 "after_planner",
                 planner_brief=planner_result,
+            )
+            record_pipeline_hook(
+                phase="after_planner",
+                hook_payload=planner_hook,
+                route_before=route,
+                route_after=route,
             )
             planner_execution_plan = planner_hook["execution_plan"]
             if planner_execution_plan:
@@ -1649,6 +1747,7 @@ class OfficeAgent:
                 attachment_note,
                 execution_plan,
                 execution_trace,
+                pipeline_hook_telemetry,
                 debug_flow,
                 agent_panels,
                 sorted(active_roles),
@@ -2175,6 +2274,7 @@ class OfficeAgent:
                     attachment_note,
                     execution_plan,
                     execution_trace,
+                    pipeline_hook_telemetry,
                     debug_flow,
                     agent_panels,
                     sorted(active_roles),
@@ -2280,6 +2380,12 @@ class OfficeAgent:
             route=route,
             spec_lookup_request=spec_lookup_request,
             evidence_required_mode=evidence_required_mode,
+        )
+        record_pipeline_hook(
+            phase="before_reviewer",
+            hook_payload=review_hook,
+            route_before=route,
+            route_after=route,
         )
         self._apply_pipeline_hook_effects(
             hook_payload=review_hook,
@@ -2692,6 +2798,12 @@ class OfficeAgent:
             evidence_required_mode=evidence_required_mode,
             spec_lookup_request=spec_lookup_request,
         )
+        record_pipeline_hook(
+            phase="before_structurer",
+            hook_payload=structurer_hook,
+            route_before=route,
+            route_after=route,
+        )
         finalized_citations = structurer_hook["finalized_citations"]
         answer_bundle = structurer_hook["answer_bundle"]
         self._apply_pipeline_hook_effects(
@@ -2707,6 +2819,7 @@ class OfficeAgent:
                 attachment_note,
                 execution_plan,
                 execution_trace,
+                pipeline_hook_telemetry,
                 debug_flow,
                 agent_panels,
                 sorted(active_roles),
@@ -2725,6 +2838,7 @@ class OfficeAgent:
                 attachment_note,
                 execution_plan,
                 execution_trace,
+                pipeline_hook_telemetry,
                 debug_flow,
                 agent_panels,
                 sorted(active_roles),
@@ -2807,6 +2921,7 @@ class OfficeAgent:
             attachment_note,
             execution_plan,
             execution_trace,
+            pipeline_hook_telemetry,
             debug_flow,
             agent_panels,
             sorted(active_roles),
@@ -4981,13 +5096,23 @@ class OfficeAgent:
 
     def _run_pipeline_hook(self, phase: str, **kwargs: Any) -> dict[str, Any]:
         phase_key = str(phase or "").strip()
-        handler_name = str(_PIPELINE_HOOK_HANDLERS.get(phase_key) or "").strip()
+        handler_name = str(PIPELINE_HOOK_HANDLERS.get(phase_key) or "").strip()
         if not handler_name:
             raise ValueError(f"Unknown pipeline hook phase: {phase_key or '(empty)'}")
         handler = getattr(self, handler_name, None)
         if not callable(handler):
             raise ValueError(f"Pipeline hook handler missing: {handler_name}")
         raw_result = handler(**kwargs)
+        if isinstance(raw_result, HookResult):
+            raw_result = {
+                field.name: getattr(raw_result, field.name)
+                for field in dataclass_fields(HookResult)
+            }
+        elif is_dataclass(raw_result):
+            raw_result = {
+                field.name: getattr(raw_result, field.name)
+                for field in dataclass_fields(raw_result)
+            }
         if not isinstance(raw_result, dict):
             raise ValueError(f"Pipeline hook {phase_key} returned non-dict payload")
 
@@ -5001,6 +5126,8 @@ class OfficeAgent:
 
         debug_entries: list[dict[str, str]] = []
         for item in list(normalized.get("debug_entries") or [])[:8]:
+            if is_dataclass(item):
+                item = asdict(item)
             if not isinstance(item, dict):
                 continue
             debug_entries.append(
@@ -5014,6 +5141,8 @@ class OfficeAgent:
 
         prompt_injections: list[dict[str, str]] = []
         for item in list(normalized.get("prompt_injections") or [])[:8]:
+            if is_dataclass(item):
+                item = asdict(item)
             if not isinstance(item, dict):
                 continue
             content = str(item.get("content") or "").strip()
@@ -5032,6 +5161,22 @@ class OfficeAgent:
             )
         normalized["prompt_injections"] = prompt_injections
         return normalized
+
+    def _build_pipeline_hook_telemetry(
+        self,
+        *,
+        phase: str,
+        hook_payload: dict[str, Any],
+        route_before: dict[str, Any] | None = None,
+        route_after: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return build_pipeline_hook_telemetry(
+            phase=phase,
+            handler_name=str(PIPELINE_HOOK_HANDLERS.get(str(phase or "").strip()) or ""),
+            hook_payload=hook_payload,
+            route_before=route_before,
+            route_after=route_after,
+        )
 
     def _apply_pipeline_hook_effects(
         self,
@@ -5082,11 +5227,11 @@ class OfficeAgent:
         followup_attachment_requires_tools: bool,
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
-    ) -> dict[str, Any]:
+    ) -> HookResult:
         updated_route = dict(route or {})
         updated_raw = str(router_raw or "")
         trace_notes: list[str] = []
-        debug_entries: list[dict[str, str]] = []
+        debug_entries: list[HookDebugEntry] = []
 
         attachment_context_incomplete = any(
             ("未结构化解析" in str(issue)) or ("文档解析失败" in str(issue))
@@ -5127,11 +5272,11 @@ class OfficeAgent:
             )
             trace_notes.append("Hook(before_route_finalize): 附件仅有预览或解析失败，已改走 attachment_tooling。")
             debug_entries.append(
-                {
-                    "stage": "backend_hook",
-                    "title": "Hook(before_route_finalize) 切换附件工具链",
-                    "detail": "reason=attachment_context_incomplete_requires_tooling",
-                }
+                HookDebugEntry(
+                    stage="backend_hook",
+                    title="Hook(before_route_finalize) 切换附件工具链",
+                    detail="reason=attachment_context_incomplete_requires_tooling",
+                )
             )
 
         if followup_has_attachments and settings.enable_tools and not updated_route.get("use_worker_tools"):
@@ -5176,23 +5321,22 @@ class OfficeAgent:
             )
             trace_notes.append("Hook(before_route_finalize): 跟进轮附件优先改走 Worker 工具链。")
             debug_entries.append(
-                {
-                    "stage": "backend_hook",
-                    "title": "Hook(before_route_finalize) 跟进附件改走工具链",
-                    "detail": (
+                HookDebugEntry(
+                    stage="backend_hook",
+                    title="Hook(before_route_finalize) 跟进附件改走工具链",
+                    detail=(
                         "reason=followup_attachment_requires_tooling"
                         if followup_attachment_requires_tools
                         else "reason=followup_attachment_prefers_worker_tooling"
                     ),
-                }
+                )
             )
-
-        return {
-            "route": updated_route,
-            "router_raw": updated_raw,
-            "trace_notes": trace_notes,
-            "debug_entries": debug_entries,
-        }
+        return HookResult(
+            route=updated_route,
+            router_raw=updated_raw,
+            trace_notes=trace_notes,
+            debug_entries=debug_entries,
+        )
 
     def _hook_before_worker_prompt(
         self,
@@ -5204,12 +5348,12 @@ class OfficeAgent:
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
         force_tool_followup: bool,
-    ) -> dict[str, Any]:
+    ) -> HookResult:
         updated_route = dict(route or {})
         updated_raw = str(router_raw or "")
         trace_notes: list[str] = []
-        debug_entries: list[dict[str, str]] = []
-        prompt_injections: list[dict[str, str]] = []
+        debug_entries: list[HookDebugEntry] = []
+        prompt_injections: list[HookPromptInjection] = []
 
         if force_tool_followup and not updated_route.get("use_worker_tools"):
             updated_route = self._coordinator_apply_tool_mode(
@@ -5231,16 +5375,16 @@ class OfficeAgent:
             )
             trace_notes.append("Hook(before_worker_prompt): 已识别为工具链续执行确认，继续 Worker 工具链。")
             debug_entries.append(
-                {
-                    "stage": "backend_hook",
-                    "title": "Hook(before_worker_prompt) 切换工具模式",
-                    "detail": (
+                HookDebugEntry(
+                    stage="backend_hook",
+                    title="Hook(before_worker_prompt) 切换工具模式",
+                    detail=(
                         "reason=followup_execution_ack_forces_tool_continuation\n"
                         f"tool_mode={execution_state.tool_mode}\n"
                         f"tool_latch={str(execution_state.tool_latch).lower()}\n"
                         f"transitions={json.dumps(execution_state.transitions[-3:], ensure_ascii=False)}"
                     ),
-                }
+                )
             )
 
         if settings.enable_tools and bool(updated_route.get("use_worker_tools")) and not self._coordinator_tools_enabled(execution_state):
@@ -5262,27 +5406,27 @@ class OfficeAgent:
             )
             trace_notes.append("Hook(before_worker_prompt): 已同步开启 Worker 工具绑定。")
             debug_entries.append(
-                {
-                    "stage": "backend_hook",
-                    "title": "Hook(before_worker_prompt) 同步工具绑定",
-                    "detail": (
+                HookDebugEntry(
+                    stage="backend_hook",
+                    title="Hook(before_worker_prompt) 同步工具绑定",
+                    detail=(
                         "reason=route_requires_worker_tools_sync\n"
                         f"tool_mode={execution_state.tool_mode}\n"
                         f"tool_latch={str(execution_state.tool_latch).lower()}\n"
                         f"transitions={json.dumps(execution_state.transitions[-3:], ensure_ascii=False)}"
                     ),
-                }
+                )
             )
 
         router_system_hint = self._router_system_hint(updated_route)
         if router_system_hint:
             prompt_injections.append(
-                {
-                    "position": "front",
-                    "title": "Hook(before_worker_prompt) 注入 Router 摘要",
-                    "content": router_system_hint,
-                    "trace_note": "多 Role: Coordinator 已将 Router 摘要注入 Worker 请求。",
-                }
+                HookPromptInjection(
+                    position="front",
+                    title="Hook(before_worker_prompt) 注入 Router 摘要",
+                    content=router_system_hint,
+                    trace_note="多 Role: Coordinator 已将 Router 摘要注入 Worker 请求。",
+                )
             )
 
         raw_spec_lookup_request = self._looks_like_spec_lookup_request(planner_user_message, attachment_metas)
@@ -5293,10 +5437,10 @@ class OfficeAgent:
 
         if spec_lookup_request:
             prompt_injections.append(
-                {
-                    "position": "append",
-                    "title": "Hook(before_worker_prompt) 启用规范检索模式",
-                    "content": (
+                HookPromptInjection(
+                    position="append",
+                    title="Hook(before_worker_prompt) 启用规范检索模式",
+                    content=(
                         "本轮属于规范/规格书定位任务。"
                         "先用 search_text_in_file 对章节名、命令码、opcode 或寄存器名做命中定位，"
                         "必要时分别尝试章节关键词和 15h/15 h/0x15 这类十六进制变体；"
@@ -5304,48 +5448,47 @@ class OfficeAgent:
                         "最终回答必须附带命中证据。"
                         "若未命中，只能说当前提取文本未定位到，不得直接断言规范不存在。"
                     ),
-                    "trace_note": "已启用规范文档检索模式。",
-                }
+                    trace_note="已启用规范文档检索模式。",
+                )
             )
         if evidence_required_mode and updated_route.get("use_worker_tools"):
             prompt_injections.append(
-                {
-                    "position": "append",
-                    "title": "Hook(before_worker_prompt) 启用证据优先模式",
-                    "content": (
+                HookPromptInjection(
+                    position="append",
+                    title="Hook(before_worker_prompt) 启用证据优先模式",
+                    content=(
                         "本轮已启用 evidence_required_mode。"
                         "对于文件、规范、代码库、章节定位类任务，必须给出证据来源（如路径、页码、章节、行号、命中片段）。"
                         "若证据不足，只能明确说明不足，不得给出无证据的确定性结论。"
                     ),
-                    "trace_note": "已启用证据优先模式。",
-                }
+                    trace_note="已启用证据优先模式。",
+                )
             )
         if updated_route.get("use_worker_tools") and self._should_auto_search_default_roots(planner_user_message, attachment_metas):
             prompt_injections.append(
-                {
-                    "position": "append",
-                    "title": "Hook(before_worker_prompt) 启用默认根目录搜索",
-                    "content": (
+                HookPromptInjection(
+                    position="append",
+                    title="Hook(before_worker_prompt) 启用默认根目录搜索",
+                    content=(
                         "本轮属于本地搜索/代码定位任务，且用户未提供明确路径。"
                         "请先直接尝试默认搜索：优先在当前工作区根目录 '.' 使用 search_codebase；"
                         "若仍不够，再在允许访问根目录中选择最可能的项目目录继续搜索。"
                         "如果用户给了目录名（例如 workbench），可以直接把它当成 root/path 尝试。"
                         "不要先向用户索取路径，也不要要求用户提供工具调用格式。"
                     ),
-                    "trace_note": "已启用默认根目录自动搜索策略。",
-                }
+                    trace_note="已启用默认根目录自动搜索策略。",
+                )
             )
-
-        return {
-            "route": updated_route,
-            "router_raw": updated_raw,
-            "execution_state": execution_state,
-            "spec_lookup_request": spec_lookup_request,
-            "evidence_required_mode": evidence_required_mode,
-            "prompt_injections": prompt_injections,
-            "trace_notes": trace_notes,
-            "debug_entries": debug_entries,
-        }
+        return HookResult(
+            route=updated_route,
+            router_raw=updated_raw,
+            execution_state=execution_state,
+            spec_lookup_request=spec_lookup_request,
+            evidence_required_mode=evidence_required_mode,
+            prompt_injections=prompt_injections,
+            trace_notes=trace_notes,
+            debug_entries=debug_entries,
+        )
 
     def _hook_before_reviewer(
         self,
@@ -5353,65 +5496,58 @@ class OfficeAgent:
         route: dict[str, Any],
         spec_lookup_request: bool,
         evidence_required_mode: bool,
-    ) -> dict[str, Any]:
+    ) -> HookResult:
         execution_policy = str(route.get("execution_policy") or "").strip().lower()
+        policy_spec = execution_policy_spec(execution_policy)
         reviewer_requested = bool(route.get("use_reviewer"))
-        reviewer_allowed_policies = {
-            "evidence_full_pipeline",
-            "web_research_full_pipeline",
-            "standard_full_pipeline",
-        }
-        reviewer_enabled = reviewer_requested and execution_policy in reviewer_allowed_policies
-        if reviewer_requested and (spec_lookup_request or evidence_required_mode):
-            reviewer_enabled = True
-        conflict_detector_enabled = reviewer_enabled and bool(route.get("use_conflict_detector"))
-        revision_enabled = reviewer_enabled and bool(route.get("use_revision"))
+        reviewer_enabled = reviewer_requested and policy_spec.reviewer
+        conflict_detector_enabled = reviewer_enabled and policy_spec.conflict_detector and bool(route.get("use_conflict_detector"))
+        revision_enabled = reviewer_enabled and policy_spec.revision and bool(route.get("use_revision"))
         trace_notes: list[str] = []
         debug_entries: list[dict[str, str]] = []
 
         if reviewer_requested and not reviewer_enabled:
             trace_notes.append("Hook(before_reviewer): 当前 execution_policy 不允许 Reviewer，已跳过审阅链。")
             debug_entries.append(
-                {
-                    "stage": "backend_hook",
-                    "title": "Hook(before_reviewer) 跳过审阅链",
-                    "detail": (
+                HookDebugEntry(
+                    stage="backend_hook",
+                    title="Hook(before_reviewer) 跳过审阅链",
+                    detail=(
                         f"execution_policy={execution_policy or '(empty)'}\n"
                         f"task_type={str(route.get('task_type') or 'standard')}"
                     ),
-                }
+                )
             )
-
-        return {
-            "use_reviewer": reviewer_enabled,
-            "use_conflict_detector": conflict_detector_enabled,
-            "use_revision": revision_enabled,
-            "trace_notes": trace_notes,
-            "debug_entries": debug_entries,
-        }
+        return HookResult(
+            use_reviewer=reviewer_enabled,
+            use_conflict_detector=conflict_detector_enabled,
+            use_revision=revision_enabled,
+            trace_notes=trace_notes,
+            debug_entries=debug_entries,
+        )
 
     def _hook_after_planner(
         self,
         *,
         planner_brief: RoleResult | dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> HookResult:
         planner_payload = self._role_payload_dict(planner_brief)
         planner_plan = self._normalize_string_list(planner_payload.get("plan") or [], limit=8, item_limit=160)
         planner_system_hint = self._format_planner_system_hint(planner_payload)
-        prompt_injections: list[dict[str, str]] = []
+        prompt_injections: list[HookPromptInjection] = []
         if planner_system_hint:
             prompt_injections.append(
-                {
-                    "position": "front",
-                    "title": "Hook(after_planner) 注入 Planner 摘要",
-                    "content": planner_system_hint,
-                    "trace_note": "多 Role: Coordinator 已将 Planner 摘要注入 Worker 请求。",
-                }
+                HookPromptInjection(
+                    position="front",
+                    title="Hook(after_planner) 注入 Planner 摘要",
+                    content=planner_system_hint,
+                    trace_note="多 Role: Coordinator 已将 Planner 摘要注入 Worker 请求。",
+                )
             )
-        return {
-            "execution_plan": planner_plan,
-            "prompt_injections": prompt_injections,
-        }
+        return HookResult(
+            execution_plan=planner_plan,
+            prompt_injections=prompt_injections,
+        )
 
     def _hook_before_structurer(
         self,
@@ -5423,10 +5559,10 @@ class OfficeAgent:
         conflict_brief: RoleResult | dict[str, Any] | None,
         evidence_required_mode: bool,
         spec_lookup_request: bool,
-    ) -> dict[str, Any]:
+    ) -> HookResult:
         finalized_citations = list(citations or [])
         trace_notes: list[str] = []
-        debug_entries: list[dict[str, str]] = []
+        debug_entries: list[HookDebugEntry] = []
 
         if str(route.get("task_type") or "").strip().lower() == "meeting_minutes":
             finalized_citations = []
@@ -5450,36 +5586,29 @@ class OfficeAgent:
             answer_bundle["warnings"] = []
 
         execution_policy = str(route.get("execution_policy") or "").strip().lower()
+        policy_spec = execution_policy_spec(execution_policy)
         structurer_requested = bool(route.get("use_structurer"))
-        allowed_policies = {
-            "evidence_full_pipeline",
-            "web_research_full_pipeline",
-            "standard_full_pipeline",
-        }
-        structurer_enabled = structurer_requested and (
-            execution_policy in allowed_policies or evidence_required_mode or spec_lookup_request
-        )
+        structurer_enabled = structurer_requested and policy_spec.structurer
         if structurer_requested and not structurer_enabled:
             trace_notes.append("Hook(before_structurer): 当前 execution_policy 不允许 Structurer，已直接返回 fallback answer bundle。")
             debug_entries.append(
-                {
-                    "stage": "backend_hook",
-                    "title": "Hook(before_structurer) 跳过结构化证据包",
-                    "detail": (
+                HookDebugEntry(
+                    stage="backend_hook",
+                    title="Hook(before_structurer) 跳过结构化证据包",
+                    detail=(
                         f"execution_policy={execution_policy or '(empty)'}\n"
                         f"task_type={str(route.get('task_type') or 'standard')}"
                     ),
-                }
+                )
             )
-
-        return {
-            "finalized_citations": finalized_citations,
-            "answer_bundle": answer_bundle,
-            "use_structurer": structurer_enabled,
-            "should_emit_answer_bundle": self._should_emit_answer_bundle(finalized_citations),
-            "trace_notes": trace_notes,
-            "debug_entries": debug_entries,
-        }
+        return HookResult(
+            finalized_citations=finalized_citations,
+            answer_bundle=answer_bundle,
+            use_structurer=structurer_enabled,
+            should_emit_answer_bundle=self._should_emit_answer_bundle(finalized_citations),
+            trace_notes=trace_notes,
+            debug_entries=debug_entries,
+        )
 
     def _looks_like_tool_escalation_needed(self, text: str) -> bool:
         raw = str(text or "").strip().lower()
@@ -7316,92 +7445,19 @@ class OfficeAgent:
             return False
         if self._looks_like_source_trace_request(user_message):
             return False
-        evidence_markers = (
-            "证据",
-            "出处",
-            "引用",
-            "定位",
-            "命中",
-            "查证",
-            "核对",
-            "根据原文",
-            "哪一页",
-            "哪页",
-            "页码",
-            "which page",
-            "where did you see",
-            "citation",
-        )
-        if any(marker in text for marker in evidence_markers):
+        if text_has_any(text, VERIFICATION_HINTS) or "页码" in text:
             return False
-        overview_markers = (
-            "整体思路",
-            "整体框架",
-            "整体结构",
-            "整体逻辑",
-            "整体设计",
-            "总体思路",
-            "总体框架",
-            "总体结构",
-            "总体逻辑",
-            "整体上",
-            "从整体上",
-            "先整体",
-            "总览",
-            "全貌",
-            "全局",
-            "主线",
-            "big picture",
-            "high level",
-            "high-level",
-            "overall idea",
-            "overall structure",
-            "overall flow",
-            "overview",
-        )
-        explain_markers = (
-            "解释",
-            "解读",
-            "说明",
-            "分析",
-            "梳理",
-            "讲讲",
-            "讲一下",
-            "讲下",
-            "介绍",
-            "看懂",
-            "explain",
-            "interpret",
-            "analyze",
-            "analyse",
-        )
-        has_overview = any(marker in text for marker in overview_markers)
-        has_explain = any(marker in text for marker in explain_markers)
+        has_overview = text_has_any(text, HOLISTIC_OVERVIEW_MARKERS)
+        has_explain = text_has_any(text, HOLISTIC_EXPLAIN_MARKERS)
         if has_overview and has_explain:
             return True
-        return any(phrase in text for phrase in ("整体思路", "整体框架", "整体结构", "总体思路", "总体框架", "总体结构"))
+        return text_has_any(text, HOLISTIC_DIRECT_PHRASES)
 
     def _looks_like_source_trace_request(self, user_message: str) -> bool:
         text = (user_message or "").strip().lower()
         if not text:
             return False
-        hints = (
-            "在哪看到",
-            "哪里看到",
-            "哪儿看到",
-            "哪一页",
-            "哪页",
-            "原文位置",
-            "原文在哪",
-            "出处",
-            "来源",
-            "source",
-            "where did you see",
-            "where is it in",
-            "which page",
-            "show me where",
-        )
-        if any(hint in text for hint in hints):
+        if text_has_any(text, SOURCE_TRACE_HINTS):
             return True
         return bool(
             re.search(r"(?:在哪|哪里|哪儿).{0,6}(?:看到|写到|提到)", text)
@@ -8339,9 +8395,15 @@ class OfficeAgent:
             normalized["use_worker_tools"] = False
             normalized["use_web_prefetch"] = False
 
-        if not normalized["use_reviewer"]:
-            normalized["use_revision"] = False
-            normalized["use_conflict_detector"] = False
+        policy_spec = execution_policy_spec(normalized["execution_policy"])
+        normalized["use_planner"] = planner_enabled_for_policy(
+            normalized["execution_policy"],
+            use_worker_tools=bool(normalized["use_worker_tools"]),
+        )
+        normalized["use_reviewer"] = policy_spec.reviewer
+        normalized["use_revision"] = policy_spec.revision
+        normalized["use_structurer"] = policy_spec.structurer
+        normalized["use_conflict_detector"] = policy_spec.conflict_detector
 
         if not normalized["use_worker_tools"]:
             normalized["use_web_prefetch"] = False
@@ -8505,8 +8567,9 @@ class OfficeAgent:
         rules_route: dict[str, Any],
     ) -> tuple[dict[str, Any], str]:
         fallback = self._normalize_route_decision(rules_route, fallback=rules_route, settings=settings)
-        if not str(os.environ.get("OPENAI_API_KEY") or "").strip():
-            return fallback, json.dumps({"skipped": "OPENAI_API_KEY missing"}, ensure_ascii=False)
+        auth_summary = self._auth_manager.auth_summary()
+        if not bool(auth_summary.get("available")):
+            return fallback, json.dumps({"skipped": auth_summary.get("reason") or "openai_auth_missing"}, ensure_ascii=False)
 
         router_input = "\n".join(
             [
@@ -8744,10 +8807,20 @@ class OfficeAgent:
         return plan
 
     def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
+        auth = self._auth_manager.require()
+        if auth.mode == "codex_auth":
+            return CodexResponsesRunner(
+                auth_manager=self._auth_manager,
+                model=model,
+                max_output_tokens=max_output_tokens,
+                temperature=self.config.openai_temperature,
+                ai_message_cls=self._AIMessage,
+            )
+
         selected_use_responses = self.config.openai_use_responses_api if use_responses_api is None else use_responses_api
         kwargs: dict[str, Any] = {
             "model": model,
-            "api_key": os.environ.get("OPENAI_API_KEY"),
+            "api_key": auth.api_key,
             "max_tokens": max_output_tokens,
             "use_responses_api": selected_use_responses,
         }
@@ -8857,12 +8930,13 @@ class OfficeAgent:
         tool_names: list[str] | None = None,
     ) -> tuple[Any, Any, list[str]]:
         notes: list[str] = []
+        auth = self._auth_manager.require(allow_refresh=False)
         llm = self._build_llm(model=model, max_output_tokens=max_output_tokens)
         runner = llm.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm
         try:
             return runner.invoke(messages), runner, notes
         except Exception as exc:
-            if not self._is_405_error(exc):
+            if auth.mode == "codex_auth" or not self._is_405_error(exc):
                 raise
 
         fallback_use_responses = not self.config.openai_use_responses_api
@@ -8896,7 +8970,7 @@ class OfficeAgent:
         candidates: list[str] = []
         seen: set[str] = set()
         for raw in [primary_model, *self.config.model_fallbacks]:
-            model = str(raw or "").strip()
+            model = self._normalize_model_for_current_auth(str(raw or "").strip())
             if not model:
                 continue
             key = model.lower()
@@ -8905,6 +8979,10 @@ class OfficeAgent:
             seen.add(key)
             candidates.append(model)
         return candidates
+
+    def _normalize_model_for_current_auth(self, model: str) -> str:
+        resolved = self._auth_manager.resolve()
+        return normalize_model_for_auth_mode(model, resolved.mode)
 
     def _mark_model_success(self, model: str) -> None:
         key = model.strip().lower()
@@ -9818,31 +9896,7 @@ class OfficeAgent:
 
         if re.search(r"(?i)\b(?:0x[0-9a-f]{1,4}|[0-9a-f]{1,4}h)\b", text):
             return True
-
-        hints = (
-            "spec",
-            "specification",
-            "protocol",
-            "opcode",
-            "command",
-            "register",
-            "section",
-            "chapter",
-            "status code",
-            "feature id",
-            "feature identifier",
-            "nvme",
-            "规范",
-            "协议",
-            "规格",
-            "规格书",
-            "命令",
-            "寄存器",
-            "章节",
-            "条目",
-            "状态码",
-        )
-        return any(hint in text for hint in hints)
+        return text_has_any(text, SPEC_LOOKUP_HINTS)
 
     def _looks_like_table_reformat_request(self, text: str) -> bool:
         lowered = str(text or "").strip().lower()
@@ -9850,56 +9904,12 @@ class OfficeAgent:
             return False
         if "table_extract" in lowered or "read_text_file" in lowered:
             return False
-        has_table_ref = any(token in lowered for token in ("表格", "这张表", "这个表", "该表", "table", "tsv", "csv"))
+        has_table_ref = text_has_any(lowered, TABLE_REFERENCE_HINTS)
         if not has_table_ref:
             return False
-        evidence_markers = (
-            "证据",
-            "出处",
-            "引用",
-            "定位",
-            "命中",
-            "查证",
-            "核对",
-            "页码",
-            "路径",
-            "行号",
-            "根据原文",
-            "在哪看到",
-            "哪里看到",
-            "哪一页",
-            "citation",
-            "show me where",
-            "which page",
-            "where did you see",
-        )
-        if any(marker in lowered for marker in evidence_markers):
+        if text_has_any(lowered, VERIFICATION_HINTS) or any(marker in lowered for marker in ("页码", "路径", "行号")):
             return False
-        format_markers = (
-            "整理",
-            "重整",
-            "重排",
-            "排版",
-            "表格化",
-            "格式",
-            "格式化",
-            "优化",
-            "美化",
-            "规范",
-            "改成",
-            "改为",
-            "再整理",
-            "再排",
-            "再调整",
-            "重新整理",
-            "format",
-            "reformat",
-            "rearrange",
-            "clean up",
-            "tidy",
-            "markdown",
-        )
-        return any(marker in lowered for marker in format_markers)
+        return text_has_any(lowered, TABLE_REFORMAT_HINTS)
 
     def _requires_evidence_mode(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
         text = (user_message or "").strip().lower()
@@ -9934,58 +9944,10 @@ class OfficeAgent:
             )
         ):
             return False
-        verification_hints = (
-            "证据",
-            "出处",
-            "引用",
-            "定位",
-            "命中",
-            "查证",
-            "核对",
-            "根据原文",
-            "according to",
-            "citation",
-            "在哪看到",
-            "哪里看到",
-            "哪儿看到",
-            "哪一页",
-            "哪页",
-            "原文位置",
-            "原文在哪",
-            "show me where",
-            "which page",
-            "where did you see",
-        )
-        if any(hint in text for hint in verification_hints):
+        if text_has_any(text, VERIFICATION_HINTS):
             return True
-        scope_hints = (
-            "spec",
-            "specification",
-            "protocol",
-            "opcode",
-            "register",
-            "section",
-            "chapter",
-            "heading",
-            "pdf",
-            "docx",
-            "xlsx",
-            "codebase",
-            "repo",
-            "source code",
-            "line ",
-            "规范",
-            "协议",
-            "规格",
-            "章节",
-            "源码",
-            "代码库",
-            "行号",
-            "路径",
-            "页码",
-        )
         if attachment_metas:
-            return any(hint in text for hint in scope_hints)
+            return text_has_any(text, SPEC_SCOPE_HINTS)
         return False
 
     def _attachment_needs_tooling(self, meta: dict[str, Any]) -> bool:

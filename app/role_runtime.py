@@ -56,6 +56,41 @@ class RoleResult:
 
 
 @dataclass(slots=True)
+class HookDebugEntry:
+    stage: str = "backend_hook"
+    title: str = ""
+    detail: str = ""
+
+
+@dataclass(slots=True)
+class HookPromptInjection:
+    position: Literal["front", "append"] = "append"
+    title: str = ""
+    content: str = ""
+    trace_note: str = ""
+
+
+@dataclass(slots=True)
+class HookResult:
+    route: dict[str, Any] | None = None
+    router_raw: str = ""
+    execution_state: Any = None
+    spec_lookup_request: bool = False
+    evidence_required_mode: bool = False
+    finalized_citations: list[dict[str, Any]] = field(default_factory=list)
+    answer_bundle: dict[str, Any] | None = None
+    use_reviewer: bool = False
+    use_conflict_detector: bool = False
+    use_revision: bool = False
+    use_structurer: bool = False
+    should_emit_answer_bundle: bool = False
+    execution_plan: list[str] = field(default_factory=list)
+    prompt_injections: list[HookPromptInjection] = field(default_factory=list)
+    trace_notes: list[str] = field(default_factory=list)
+    debug_entries: list[HookDebugEntry] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class RoleInstance:
     instance_id: str
     role: str
