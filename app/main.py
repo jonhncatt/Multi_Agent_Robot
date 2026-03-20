@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.agent import OfficeAgent
 from app.config import load_config
+from app.core.bootstrap import build_kernel_runtime
+from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
 from app.models import (
     ChatRequest,
@@ -27,6 +29,9 @@ from app.models import (
     EvalRunRequest,
     EvalRunResponse,
     HealthResponse,
+    KernelManifestUpdateRequest,
+    KernelRuntimeResponse,
+    KernelShadowSmokeRequest,
     NewSessionResponse,
     SessionDetailResponse,
     SessionListItem,
@@ -44,13 +49,8 @@ from app.models import (
 )
 from app.openai_auth import OpenAIAuthManager
 from app.pricing import estimate_usage_cost
-from app.session_context import (
-    apply_attachment_context_result,
-    normalize_attachment_ids,
-    resolve_attachment_context,
-    resolve_scoped_route_state,
-    store_scoped_route_state,
-)
+from app import session_context as session_context_impl
+from app.session_context import normalize_attachment_ids
 from app.storage import SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
 
 config = load_config()
@@ -58,6 +58,7 @@ session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
 shadow_log_store = ShadowLogStore(config.shadow_logs_dir)
+kernel_runtime = build_kernel_runtime(config)
 _agent: OfficeAgent | None = None
 APP_VERSION = "0.3.5"
 
@@ -169,10 +170,14 @@ class _AgentRunQueueTicket:
 run_queue = AgentRunQueue(config.max_concurrent_runs)
 
 
+def get_kernel_runtime():
+    return kernel_runtime
+
+
 def get_agent() -> OfficeAgent:
     global _agent
     if _agent is None:
-        _agent = OfficeAgent(config)
+        _agent = OfficeAgent(config, kernel_runtime=get_kernel_runtime())
     return _agent
 
 app = FastAPI(title="Officetool", version=APP_VERSION)
@@ -209,11 +214,14 @@ def index() -> FileResponse:
 def health() -> HealthResponse:
     agent = get_agent()
     docker_ok, docker_msg = agent.tools.docker_status()
+    auth_summary = OpenAIAuthManager(config).auth_summary()
+    kernel_health = build_kernel_health_payload(get_kernel_runtime())
     return HealthResponse(
         ok=True,
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
         model_default=config.default_model,
+        auth_mode=str(auth_summary.get("mode") or ""),
         execution_mode_default=config.execution_mode,
         docker_available=docker_ok,
         docker_message=docker_msg,
@@ -225,6 +233,107 @@ def health() -> HealthResponse:
         extra_allowed_roots_source=config.extra_allowed_roots_source,
         web_allow_all_domains=config.web_allow_all_domains,
         web_allowed_domains=config.web_allowed_domains,
+        kernel_active_manifest=dict(kernel_health.get("active_manifest") or {}),
+        kernel_shadow_manifest=dict(kernel_health.get("shadow_manifest") or {}),
+        kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
+        kernel_rollback_pointer=dict(kernel_health.get("rollback_pointer") or {}),
+        kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
+        kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
+        kernel_module_health=dict(kernel_health.get("module_health") or {}),
+        kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
+    )
+
+
+def _kernel_runtime_response(
+    *,
+    ok: bool,
+    detail: str = "",
+    validation: dict[str, object] | None = None,
+    smoke: dict[str, object] | None = None,
+) -> KernelRuntimeResponse:
+    kernel_health = build_kernel_health_payload(get_kernel_runtime())
+    return KernelRuntimeResponse(
+        ok=ok,
+        detail=detail,
+        validation=dict(validation or {}),
+        smoke=dict(smoke or {}),
+        kernel_active_manifest=dict(kernel_health.get("active_manifest") or {}),
+        kernel_shadow_manifest=dict(kernel_health.get("shadow_manifest") or {}),
+        kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
+        kernel_rollback_pointer=dict(kernel_health.get("rollback_pointer") or {}),
+        kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
+        kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
+        kernel_module_health=dict(kernel_health.get("module_health") or {}),
+        kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
+    )
+
+
+@app.get("/api/kernel/runtime", response_model=KernelRuntimeResponse)
+def kernel_runtime_state() -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    return _kernel_runtime_response(
+        ok=True,
+        detail="内核运行时状态。",
+        validation=runtime.validate_shadow_manifest(),
+    )
+
+
+@app.post("/api/kernel/shadow/stage", response_model=KernelRuntimeResponse)
+def kernel_shadow_stage(req: KernelManifestUpdateRequest) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    result = runtime.stage_shadow_manifest(overrides=req.model_dump(exclude_none=True))
+    return _kernel_runtime_response(
+        ok=bool(result.get("ok")),
+        detail="shadow manifest 已更新。",
+        validation=result.get("validation") if isinstance(result.get("validation"), dict) else {},
+    )
+
+
+@app.post("/api/kernel/shadow/validate", response_model=KernelRuntimeResponse)
+def kernel_shadow_validate() -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    validation = runtime.validate_shadow_manifest()
+    return _kernel_runtime_response(
+        ok=bool(validation.get("ok")),
+        detail="shadow manifest 校验完成。",
+        validation=validation,
+    )
+
+
+@app.post("/api/kernel/shadow/smoke", response_model=KernelRuntimeResponse)
+def kernel_shadow_smoke(req: KernelShadowSmokeRequest) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    smoke = runtime.run_shadow_smoke(
+        user_message=req.message,
+        validate_provider=bool(req.validate_provider),
+    )
+    return _kernel_runtime_response(
+        ok=bool(smoke.get("ok")),
+        detail="shadow smoke 已执行。",
+        validation=runtime.validate_shadow_manifest(),
+        smoke=smoke,
+    )
+
+
+@app.post("/api/kernel/shadow/promote", response_model=KernelRuntimeResponse)
+def kernel_shadow_promote() -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    result = runtime.promote_shadow_manifest()
+    return _kernel_runtime_response(
+        ok=bool(result.get("ok")),
+        detail="shadow manifest promote 完成。" if result.get("ok") else "shadow manifest promote 失败。",
+        validation=result.get("validation") if isinstance(result.get("validation"), dict) else {},
+    )
+
+
+@app.post("/api/kernel/rollback", response_model=KernelRuntimeResponse)
+def kernel_runtime_rollback() -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    result = runtime.rollback_active_manifest()
+    return _kernel_runtime_response(
+        ok=bool(result.get("ok")),
+        detail="active manifest 回滚完成。" if result.get("ok") else "active manifest 回滚失败。",
+        validation=result.get("validation") if isinstance(result.get("validation"), dict) else {},
     )
 
 
@@ -587,11 +696,33 @@ def _process_chat_request(
         if summarized:
             _emit_progress(progress_cb, "trace", message="历史上下文已自动压缩摘要。", run_id=run_id)
 
-        attachment_context = resolve_attachment_context(
-            session,
-            message=req.message,
-            requested_attachment_ids=req.attachment_ids,
-        )
+        runtime = get_kernel_runtime()
+        attachment_registry = runtime.registry
+        attachment_module = attachment_registry.attachment_context
+        attachment_selected_ref = str((attachment_registry.selected_refs or {}).get("attachment_context") or "")
+        attachment_fallback_ref = "attachment_context@1.0.0"
+        try:
+            attachment_context = attachment_module.resolve_attachment_context(
+                session=session,
+                message=req.message,
+                requested_attachment_ids=req.attachment_ids,
+            )
+            runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            attachment_context = session_context_impl.resolve_attachment_context(
+                session,
+                message=req.message,
+                requested_attachment_ids=req.attachment_ids,
+            )
         requested_attachment_ids = attachment_context["requested_attachment_ids"]
         clear_attachment_context = bool(attachment_context["clear_attachment_context"])
         attachment_context_mode = str(attachment_context["attachment_context_mode"] or "none")
@@ -613,20 +744,55 @@ def _process_chat_request(
         found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
         missing_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id not in found_attachment_ids]
         resolved_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id in found_attachment_ids]
-        apply_attachment_context_result(
-            session,
-            resolved_attachment_ids=resolved_attachment_ids,
-            attachment_context_mode=attachment_context_mode,
-            clear_attachment_context=clear_attachment_context,
-            requested_attachment_ids=requested_attachment_ids,
-        )
+        try:
+            attachment_module.apply_attachment_context_result(
+                session=session,
+                resolved_attachment_ids=resolved_attachment_ids,
+                attachment_context_mode=attachment_context_mode,
+                clear_attachment_context=clear_attachment_context,
+                requested_attachment_ids=requested_attachment_ids,
+            )
+            runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            session_context_impl.apply_attachment_context_result(
+                session,
+                resolved_attachment_ids=resolved_attachment_ids,
+                attachment_context_mode=attachment_context_mode,
+                clear_attachment_context=clear_attachment_context,
+                requested_attachment_ids=requested_attachment_ids,
+            )
         resolved_attachment_context_key = attachment_context_key or ""
         if resolved_attachment_ids:
             resolved_attachment_context_key = "|".join(normalize_attachment_ids(resolved_attachment_ids))
-        route_state_input, route_state_scope = resolve_scoped_route_state(
-            session,
-            attachment_ids=resolved_attachment_ids,
-        )
+        try:
+            route_state_input, route_state_scope = attachment_module.resolve_scoped_route_state(
+                session=session,
+                attachment_ids=resolved_attachment_ids,
+            )
+            runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            route_state_input, route_state_scope = session_context_impl.resolve_scoped_route_state(
+                session,
+                attachment_ids=resolved_attachment_ids,
+            )
 
         _emit_progress(progress_cb, "stage", code="agent_run_start", detail="开始模型推理与工具调度。", run_id=run_id)
         (
@@ -695,11 +861,28 @@ def _process_chat_request(
             attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
         )
         session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle)
-        store_scoped_route_state(
-            session,
-            attachment_ids=resolved_attachment_ids,
-            route_state=route_state,
-        )
+        try:
+            attachment_module.store_scoped_route_state(
+                session=session,
+                attachment_ids=resolved_attachment_ids,
+                route_state=route_state,
+            )
+            runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            session_context_impl.store_scoped_route_state(
+                session,
+                attachment_ids=resolved_attachment_ids,
+                route_state=route_state,
+            )
         session_store.save(session)
         _emit_progress(progress_cb, "stage", code="session_saved", detail="会话已写入本地存储。", run_id=run_id)
 
@@ -753,6 +936,7 @@ def _process_chat_request(
         )
         _emit_progress(progress_cb, "stage", code="stats_saved", detail="Token 统计已更新。", run_id=run_id)
         if config.enable_shadow_logging:
+            kernel_health = build_kernel_health_payload(get_kernel_runtime())
             shadow_path = shadow_log_store.append(
                 {
                     "run_id": run_id,
@@ -770,6 +954,8 @@ def _process_chat_request(
                     "active_roles": active_roles,
                     "current_role": current_role,
                     "token_usage": token_usage,
+                    "kernel_selected_modules": kernel_health.get("selected_modules") or {},
+                    "kernel_module_health": kernel_health.get("module_health") or {},
                     "message_preview": req.message[:500],
                     "response_preview": text[:500],
                 }

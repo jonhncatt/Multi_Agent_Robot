@@ -1,0 +1,6 @@
+id = "router_rules"
+version = "1.0.0"
+api_version = "1"
+kind = "router"
+entrypoint = "module.py:RouterRulesModule"
+capabilities = ["route"]

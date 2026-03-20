@@ -1,0 +1,6 @@
+id = "attachment_context"
+version = "1.0.0"
+api_version = "1"
+kind = "attachment_context"
+entrypoint = "module.py:AttachmentContextModule"
+capabilities = ["resolve_attachment_context", "route_state_scope"]

@@ -1,0 +1,6 @@
+id = "provider_openai_api"
+version = "1.0.0"
+api_version = "1"
+kind = "provider"
+entrypoint = "module.py:OpenAIAPIProviderModule"
+capabilities = ["build_runner"]

@@ -9,14 +9,10 @@ from typing import Any
 
 from app.agent import ExecutionState, OfficeAgent
 from app.config import load_config
+from app.core.bootstrap import build_kernel_runtime
 from app.models import ChatSettings, ToolEvent
-from app.session_context import (
-    apply_attachment_context_result,
-    normalize_attachment_ids,
-    resolve_attachment_context,
-    resolve_scoped_route_state,
-    store_scoped_route_state,
-)
+from app import session_context as session_context_impl
+from app.session_context import normalize_attachment_ids
 from app.storage import now_iso
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -319,7 +315,13 @@ def _attachment_catalog(entries: list[dict[str, Any]]) -> dict[str, dict[str, An
     return out
 
 
-def _run_conversation_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
+def _run_conversation_case(
+    case: dict[str, Any],
+    agent: OfficeAgent,
+    *,
+    attachment_module: Any,
+    kernel_runtime: Any,
+) -> dict[str, Any]:
     attachments_by_id = _attachment_catalog(case.get("attachments") or [])
     default_settings = ChatSettings(**(case.get("settings") or {}))
     session = {
@@ -333,6 +335,8 @@ def _run_conversation_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str
     turn_outputs: list[dict[str, Any]] = []
     final_payload: dict[str, Any] = {}
     started = time.perf_counter()
+    attachment_selected_ref = str((kernel_runtime.registry.selected_refs or {}).get("attachment_context") or "")
+    attachment_fallback_ref = "attachment_context@1.0.0"
 
     for turn_index, turn in enumerate(case.get("turns") or [], start=1):
         message = str(turn.get("message") or "")
@@ -340,11 +344,28 @@ def _run_conversation_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str
         turn_settings_data.update(turn.get("settings") or {})
         turn_settings = ChatSettings(**turn_settings_data)
 
-        attachment_context = resolve_attachment_context(
-            session,
-            message=message,
-            requested_attachment_ids=turn.get("attachment_ids"),
-        )
+        try:
+            attachment_context = attachment_module.resolve_attachment_context(
+                session=session,
+                message=message,
+                requested_attachment_ids=turn.get("attachment_ids"),
+            )
+            kernel_runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            kernel_runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            attachment_context = session_context_impl.resolve_attachment_context(
+                session,
+                message=message,
+                requested_attachment_ids=turn.get("attachment_ids"),
+            )
         requested_attachment_ids = attachment_context["requested_attachment_ids"]
         effective_attachment_ids = list(attachment_context["effective_attachment_ids"] or [])
         attachment_context_mode = str(attachment_context["attachment_context_mode"] or "none")
@@ -355,17 +376,52 @@ def _run_conversation_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str
         found_attachment_ids = {str(item.get("id") or "") for item in attachments}
         resolved_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id in found_attachment_ids]
         missing_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id not in found_attachment_ids]
-        apply_attachment_context_result(
-            session,
-            resolved_attachment_ids=resolved_attachment_ids,
-            attachment_context_mode=attachment_context_mode,
-            clear_attachment_context=clear_attachment_context,
-            requested_attachment_ids=requested_attachment_ids,
-        )
-        route_state_input, route_state_scope = resolve_scoped_route_state(
-            session,
-            attachment_ids=resolved_attachment_ids,
-        )
+        try:
+            attachment_module.apply_attachment_context_result(
+                session=session,
+                resolved_attachment_ids=resolved_attachment_ids,
+                attachment_context_mode=attachment_context_mode,
+                clear_attachment_context=clear_attachment_context,
+                requested_attachment_ids=requested_attachment_ids,
+            )
+            kernel_runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            kernel_runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            session_context_impl.apply_attachment_context_result(
+                session,
+                resolved_attachment_ids=resolved_attachment_ids,
+                attachment_context_mode=attachment_context_mode,
+                clear_attachment_context=clear_attachment_context,
+                requested_attachment_ids=requested_attachment_ids,
+            )
+        try:
+            route_state_input, route_state_scope = attachment_module.resolve_scoped_route_state(
+                session=session,
+                attachment_ids=resolved_attachment_ids,
+            )
+            kernel_runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            kernel_runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            route_state_input, route_state_scope = session_context_impl.resolve_scoped_route_state(
+                session,
+                attachment_ids=resolved_attachment_ids,
+            )
 
         route = agent._route_request_by_rules(
             user_message=message,
@@ -404,11 +460,28 @@ def _run_conversation_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str
                 "created_at": now_iso(),
             }
         )
-        store_scoped_route_state(
-            session,
-            attachment_ids=resolved_attachment_ids,
-            route_state=route_state,
-        )
+        try:
+            attachment_module.store_scoped_route_state(
+                session=session,
+                attachment_ids=resolved_attachment_ids,
+                route_state=route_state,
+            )
+            kernel_runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            kernel_runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            session_context_impl.store_scoped_route_state(
+                session,
+                attachment_ids=resolved_attachment_ids,
+                route_state=route_state,
+            )
 
         turn_payload = {
             "turn_index": turn_index,
@@ -449,8 +522,10 @@ def run_regression_evals(
     cases = json.loads(resolved_cases_path.read_text(encoding="utf-8"))
 
     cfg = load_config()
-    agent = OfficeAgent(cfg)
+    kernel_runtime = build_kernel_runtime(cfg)
+    agent = OfficeAgent(cfg, kernel_runtime=kernel_runtime)
     tools = agent.tools
+    attachment_module = kernel_runtime.registry.attachment_context
 
     results: list[dict[str, Any]] = []
     passes = 0
@@ -483,7 +558,12 @@ def run_regression_evals(
             elif kind == "agent":
                 payload = _run_agent_case(case, agent)
             elif kind == "conversation":
-                payload = _run_conversation_case(case, agent)
+                payload = _run_conversation_case(
+                    case,
+                    agent,
+                    attachment_module=attachment_module,
+                    kernel_runtime=kernel_runtime,
+                )
             else:
                 raise ValueError(f"Unknown eval kind: {kind}")
             errors = _assertions(payload, case.get("assert") or {})

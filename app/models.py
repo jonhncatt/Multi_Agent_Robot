@@ -208,6 +208,7 @@ class HealthResponse(BaseModel):
     app_version: str = ""
     build_version: str = ""
     model_default: str
+    auth_mode: str = ""
     execution_mode_default: Literal["host", "docker"] = "host"
     docker_available: bool = False
     docker_message: str | None = None
@@ -219,6 +220,43 @@ class HealthResponse(BaseModel):
     extra_allowed_roots_source: Literal["platform_default", "env_override"] | str = "platform_default"
     web_allow_all_domains: bool = True
     web_allowed_domains: list[str] = Field(default_factory=list)
+    kernel_active_manifest: dict[str, object] = Field(default_factory=dict)
+    kernel_shadow_manifest: dict[str, object] = Field(default_factory=dict)
+    kernel_shadow_validation: dict[str, object] = Field(default_factory=dict)
+    kernel_rollback_pointer: dict[str, object] = Field(default_factory=dict)
+    kernel_last_shadow_run: dict[str, object] = Field(default_factory=dict)
+    kernel_selected_modules: dict[str, str] = Field(default_factory=dict)
+    kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
+    kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
+
+
+class KernelManifestUpdateRequest(BaseModel):
+    router: str | None = None
+    policy: str | None = None
+    attachment_context: str | None = None
+    finalizer: str | None = None
+    tool_registry: str | None = None
+    providers: dict[str, str] = Field(default_factory=dict)
+
+
+class KernelShadowSmokeRequest(BaseModel):
+    message: str = "给我今天的新闻"
+    validate_provider: bool = True
+
+
+class KernelRuntimeResponse(BaseModel):
+    ok: bool
+    detail: str = ""
+    validation: dict[str, object] = Field(default_factory=dict)
+    smoke: dict[str, object] = Field(default_factory=dict)
+    kernel_active_manifest: dict[str, object] = Field(default_factory=dict)
+    kernel_shadow_manifest: dict[str, object] = Field(default_factory=dict)
+    kernel_shadow_validation: dict[str, object] = Field(default_factory=dict)
+    kernel_rollback_pointer: dict[str, object] = Field(default_factory=dict)
+    kernel_last_shadow_run: dict[str, object] = Field(default_factory=dict)
+    kernel_selected_modules: dict[str, str] = Field(default_factory=dict)
+    kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
+    kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
 
 
 class TokenStatsResponse(BaseModel):

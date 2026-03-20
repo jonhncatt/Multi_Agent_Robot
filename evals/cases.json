@@ -493,6 +493,62 @@
     }
   },
   {
+    "name": "helper_route_rules_web_news_brief",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "给我今天的新闻",
+      "attachment_metas": [],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "web_news",
+        "execution_policy": "web_news_brief",
+        "specialists.0": "researcher",
+        "use_planner": false,
+        "use_worker_tools": true,
+        "use_reviewer": false,
+        "use_revision": false,
+        "use_structurer": false,
+        "use_conflict_detector": false,
+        "use_web_prefetch": true
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_web_news_with_sources_stays_full_research",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "给我今天的新闻，并附上出处链接，比较不同媒体说法。",
+      "attachment_metas": [],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "web_research",
+        "execution_policy": "web_research_full_pipeline",
+        "specialists.0": "researcher",
+        "use_planner": true,
+        "use_worker_tools": true,
+        "use_reviewer": true,
+        "use_revision": true,
+        "use_structurer": true,
+        "use_conflict_detector": true,
+        "use_web_prefetch": true
+      }
+    }
+  },
+  {
     "name": "helper_sanitize_final_answer_removes_internal_meta_for_inline_xml",
     "kind": "helper",
     "helper": "_sanitize_final_answer_text",
@@ -2063,6 +2119,92 @@
           "| 姓名 | 分数 |",
           "| 张三 | 95 |",
           "| 李四 | 88 |"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_module_snapshot_exposes_selected_modules",
+    "kind": "helper",
+    "helper": "_debug_kernel_module_snapshot",
+    "args": {},
+    "assert": {
+      "equals": {
+        "selected_modules.router": "router_rules@1.0.0",
+        "selected_modules.policy": "policy_resolver@1.0.0",
+        "selected_modules.attachment_context": "attachment_context@1.0.0",
+        "selected_modules.finalizer": "finalizer@1.0.0",
+        "selected_modules.tool_registry": "tool_registry@1.0.0",
+        "selected_modules.provider:api_key": "provider_openai_api@1.0.0",
+        "selected_modules.provider:codex_auth": "provider_codex_auth@1.0.0"
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_module_snapshot_exposes_runtime_paths",
+    "kind": "helper",
+    "helper": "_debug_kernel_module_snapshot",
+    "args": {},
+    "assert": {
+      "contains": {
+        "runtime_files.active_manifest_path": [
+          "app/data/runtime/active_manifest.json"
+        ],
+        "runtime_files.module_health_path": [
+          "app/data/runtime/module_health.json"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_shadow_upgrade_flow_promotes_and_rolls_back",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_upgrade_flow",
+    "args": {},
+    "assert": {
+      "equals": {
+        "validation.ok": true,
+        "promotion.ok": true,
+        "rollback.ok": true,
+        "active_after.router": "router_rules@2.0.0",
+        "active_restored.router": "router_rules@1.0.0"
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_shadow_validation_rejects_broken_manifest",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_validation_rejects_broken_manifest",
+    "args": {},
+    "assert": {
+      "equals": {
+        "validation.ok": false,
+        "promotion.ok": false,
+        "active_after_attempt.router": "router_rules@1.0.0"
+      },
+      "contains": {
+        "validation.errors": [
+          "router_rules@999.0.0"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_shadow_stage_and_smoke",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_stage_and_smoke",
+    "args": {},
+    "assert": {
+      "equals": {
+        "stage.ok": true,
+        "stage.shadow_manifest.router": "router_rules@2.0.0",
+        "smoke.ok": true,
+        "smoke.route_task_type": "web_news",
+        "smoke.selected_modules.router": "router_rules@2.0.0"
+      },
+      "contains": {
+        "smoke.finalizer_preview": [
+          "| 姓名 | 分数 |"
         ]
       }
     }

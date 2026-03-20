@@ -1,0 +1,6 @@
+id = "provider_codex_auth"
+version = "1.0.0"
+api_version = "1"
+kind = "provider"
+entrypoint = "module.py:CodexAuthProviderModule"
+capabilities = ["build_runner"]

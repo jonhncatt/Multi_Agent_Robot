@@ -82,6 +82,12 @@ def _load_dotenv_if_present() -> None:
 @dataclass(slots=True)
 class AppConfig:
     workspace_root: Path
+    modules_dir: Path
+    runtime_dir: Path
+    active_manifest_path: Path
+    shadow_manifest_path: Path
+    rollback_pointer_path: Path
+    module_health_path: Path
     sessions_dir: Path
     uploads_dir: Path
     shadow_logs_dir: Path
@@ -219,6 +225,54 @@ def load_config() -> AppConfig:
     _load_dotenv_if_present()
 
     workspace_root = Path(_env("OFFICETOOL_WORKSPACE_ROOT", "OFFCIATOOL_WORKSPACE_ROOT", default=os.getcwd()) or os.getcwd()).resolve()
+    modules_dir = Path(
+        _env(
+            "OFFICETOOL_MODULES_DIR",
+            "OFFCIATOOL_MODULES_DIR",
+            default=str(workspace_root / "app" / "modules"),
+        )
+        or str(workspace_root / "app" / "modules")
+    ).resolve()
+    runtime_dir = Path(
+        _env(
+            "OFFICETOOL_RUNTIME_DIR",
+            "OFFCIATOOL_RUNTIME_DIR",
+            default=str(workspace_root / "app" / "data" / "runtime"),
+        )
+        or str(workspace_root / "app" / "data" / "runtime")
+    ).resolve()
+    active_manifest_path = Path(
+        _env(
+            "OFFICETOOL_ACTIVE_MANIFEST_PATH",
+            "OFFCIATOOL_ACTIVE_MANIFEST_PATH",
+            default=str(runtime_dir / "active_manifest.json"),
+        )
+        or str(runtime_dir / "active_manifest.json")
+    ).resolve()
+    shadow_manifest_path = Path(
+        _env(
+            "OFFICETOOL_SHADOW_MANIFEST_PATH",
+            "OFFCIATOOL_SHADOW_MANIFEST_PATH",
+            default=str(runtime_dir / "shadow_manifest.json"),
+        )
+        or str(runtime_dir / "shadow_manifest.json")
+    ).resolve()
+    rollback_pointer_path = Path(
+        _env(
+            "OFFICETOOL_ROLLBACK_POINTER_PATH",
+            "OFFCIATOOL_ROLLBACK_POINTER_PATH",
+            default=str(runtime_dir / "rollback_pointer.json"),
+        )
+        or str(runtime_dir / "rollback_pointer.json")
+    ).resolve()
+    module_health_path = Path(
+        _env(
+            "OFFICETOOL_MODULE_HEALTH_PATH",
+            "OFFCIATOOL_MODULE_HEALTH_PATH",
+            default=str(runtime_dir / "module_health.json"),
+        )
+        or str(runtime_dir / "module_health.json")
+    ).resolve()
     sessions_dir = Path(
         _env(
             "OFFICETOOL_SESSIONS_DIR",
@@ -252,6 +306,8 @@ def load_config() -> AppConfig:
         or str(workspace_root / "app" / "data" / "shadow_logs")
     ).resolve()
 
+    modules_dir.mkdir(parents=True, exist_ok=True)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
     sessions_dir.mkdir(parents=True, exist_ok=True)
     uploads_dir.mkdir(parents=True, exist_ok=True)
     token_stats_path.parent.mkdir(parents=True, exist_ok=True)
@@ -523,6 +579,12 @@ def load_config() -> AppConfig:
 
     return AppConfig(
         workspace_root=workspace_root,
+        modules_dir=modules_dir,
+        runtime_dir=runtime_dir,
+        active_manifest_path=active_manifest_path,
+        shadow_manifest_path=shadow_manifest_path,
+        rollback_pointer_path=rollback_pointer_path,
+        module_health_path=module_health_path,
         sessions_dir=sessions_dir,
         uploads_dir=uploads_dir,
         shadow_logs_dir=shadow_logs_dir,

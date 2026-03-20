@@ -1,0 +1,6 @@
+id = "policy_resolver"
+version = "1.0.0"
+api_version = "1"
+kind = "policy"
+entrypoint = "module.py:PolicyResolverModule"
+capabilities = ["normalize_route"]

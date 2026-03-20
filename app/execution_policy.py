@@ -33,6 +33,7 @@ _POLICY_SPECS: dict[str, ExecutionPolicySpec] = {
         structurer=True,
         conflict_detector=True,
     ),
+    "web_news_brief": ExecutionPolicySpec(planner="never"),
     "web_research_full_pipeline": ExecutionPolicySpec(
         planner="always",
         reviewer=True,

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field as dc_field, fields as dataclass_fields, is_dataclass
+from dataclasses import asdict, dataclass, field as dc_field, fields as dataclass_fields, is_dataclass, replace
 import json
 import os
 import re
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
 from app.config import AppConfig
 from app.codex_runner import CodexResponsesRunner, build_codex_input_payload
+from app.core.bootstrap import KernelRuntime, build_kernel_runtime
 from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.local_tools import LocalToolExecutor
 from app.models import AgentPanel, ChatSettings, ToolEvent
@@ -504,10 +506,11 @@ class ReadSessionHistoryArgs(BaseModel):
 
 
 class OfficeAgent:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, *, kernel_runtime: KernelRuntime | None = None) -> None:
         self.config = config
         self.tools = LocalToolExecutor(config)
         self._auth_manager = OpenAIAuthManager(config)
+        self._kernel_runtime = kernel_runtime or build_kernel_runtime(config)
 
         try:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -524,7 +527,26 @@ class OfficeAgent:
         self._ToolMessage = ToolMessage
         self._StructuredTool = StructuredTool
         self._ChatOpenAI = ChatOpenAI
-        self._lc_tools = self._build_langchain_tools()
+        tool_registry = getattr(self._kernel_runtime.registry, "tool_registry", None)
+        tool_registry_ref = str((self._kernel_runtime.registry.selected_refs or {}).get("tool_registry") or "")
+        fallback_tool_registry_ref = "tool_registry@1.0.0"
+        if tool_registry is not None and hasattr(tool_registry, "build_langchain_tools"):
+            try:
+                self._lc_tools = list(tool_registry.build_langchain_tools(agent=self))
+                self._record_module_success(
+                    kind="tool_registry",
+                    selected_ref=tool_registry_ref or fallback_tool_registry_ref,
+                )
+            except Exception as exc:
+                self._record_module_failure(
+                    kind="tool_registry",
+                    requested_ref=tool_registry_ref or fallback_tool_registry_ref,
+                    fallback_ref=fallback_tool_registry_ref,
+                    error=str(exc),
+                )
+                self._lc_tools = self._build_langchain_tools()
+        else:
+            self._lc_tools = self._build_langchain_tools()
         self._lc_tool_map = {getattr(tool, "name", ""): tool for tool in self._lc_tools}
         self._model_failover_lock = threading.Lock()
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
@@ -564,6 +586,124 @@ class OfficeAgent:
 
     def _debug_normalize_model_for_auth(self, model: str, auth_mode: str) -> dict[str, Any]:
         return {"normalized_model": normalize_model_for_auth_mode(model, auth_mode)}
+
+    def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
+        snapshot = self._kernel_runtime.health_snapshot()
+        return {
+            "active_manifest": dict(snapshot.active_manifest),
+            "selected_modules": dict(snapshot.selected_modules),
+            "module_health": dict(snapshot.module_health),
+            "runtime_files": dict(snapshot.runtime_files),
+        }
+
+    def _debug_kernel_shadow_upgrade_flow(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-") as tmp_dir:
+            runtime_dir = Path(tmp_dir).resolve()
+            cfg = replace(
+                self.config,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            shadow = runtime.load_shadow_manifest()
+            shadow.router = str(target_router_ref or shadow.router)
+            runtime.write_shadow_manifest(shadow)
+            validation = runtime.validate_shadow_manifest()
+            promotion = runtime.promote_shadow_manifest()
+            active_after = runtime.supervisor.load_active_manifest().to_dict()
+            rollback = runtime.rollback_active_manifest()
+            active_restored = runtime.supervisor.load_active_manifest().to_dict()
+            return {
+                "validation": validation,
+                "promotion": promotion,
+                "rollback": rollback,
+                "active_after": active_after,
+                "active_restored": active_restored,
+            }
+
+    def _debug_kernel_shadow_validation_rejects_broken_manifest(
+        self,
+        broken_router_ref: str = "router_rules@999.0.0",
+    ) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-bad-") as tmp_dir:
+            runtime_dir = Path(tmp_dir).resolve()
+            cfg = replace(
+                self.config,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            initial_active = runtime.supervisor.load_active_manifest().to_dict()
+            shadow = runtime.load_shadow_manifest()
+            shadow.router = str(broken_router_ref or shadow.router)
+            runtime.write_shadow_manifest(shadow)
+            validation = runtime.validate_shadow_manifest()
+            promotion = runtime.promote_shadow_manifest()
+            active_after_attempt = runtime.supervisor.load_active_manifest().to_dict()
+            return {
+                "initial_active": initial_active,
+                "validation": validation,
+                "promotion": promotion,
+                "active_after_attempt": active_after_attempt,
+            }
+
+    def _debug_kernel_shadow_stage_and_smoke(
+        self,
+        target_router_ref: str = "router_rules@2.0.0",
+    ) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-smoke-") as tmp_dir:
+            runtime_dir = Path(tmp_dir).resolve()
+            cfg = replace(
+                self.config,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            stage = runtime.stage_shadow_manifest(overrides={"router": str(target_router_ref)})
+            smoke = runtime.run_shadow_smoke(
+                user_message="给我今天的新闻",
+                validate_provider=False,
+            )
+            return {
+                "stage": stage,
+                "smoke": smoke,
+            }
+
+    def _module_registry(self):
+        return self._kernel_runtime.registry
+
+    def _record_module_failure(
+        self,
+        *,
+        kind: str,
+        requested_ref: str,
+        fallback_ref: str = "",
+        error: str,
+        mode: str | None = None,
+    ) -> None:
+        self._kernel_runtime.record_module_failure(
+            kind=kind,
+            requested_ref=requested_ref,
+            fallback_ref=fallback_ref,
+            error=error,
+            mode=mode,
+        )
+
+    def _record_module_success(self, *, kind: str, selected_ref: str, mode: str | None = None) -> None:
+        self._kernel_runtime.record_module_success(kind=kind, selected_ref=selected_ref, mode=mode)
+
+    def _ensure_openai_ca_env(self, ca_cert_path: str) -> None:
+        os.environ.setdefault("SSL_CERT_FILE", ca_cert_path)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_cert_path)
 
     def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
         turns = session.get("turns", [])
@@ -3738,6 +3878,53 @@ class OfficeAgent:
             return self._make_role_result(spec, context, fallback, raw_text)
 
     def _sanitize_final_answer_text(
+        self,
+        text: str,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        tool_events: list[ToolEvent] | None = None,
+        inline_followup_context: bool = False,
+    ) -> str:
+        registry = self._module_registry()
+        module = getattr(registry, "finalizer", None)
+        selected_ref = str((registry.selected_refs or {}).get("finalizer") or "")
+        fallback_ref = "finalizer@1.0.0"
+        if module is None or not hasattr(module, "sanitize"):
+            return self._sanitize_final_answer_text_impl(
+                text,
+                user_message=user_message,
+                attachment_metas=attachment_metas,
+                tool_events=tool_events,
+                inline_followup_context=inline_followup_context,
+            )
+        try:
+            sanitized = module.sanitize(
+                agent=self,
+                text=text,
+                user_message=user_message,
+                attachment_metas=attachment_metas,
+                tool_events=tool_events,
+                inline_followup_context=inline_followup_context,
+            )
+            self._record_module_success(kind="finalizer", selected_ref=selected_ref or fallback_ref)
+            return sanitized
+        except Exception as exc:
+            self._record_module_failure(
+                kind="finalizer",
+                requested_ref=selected_ref or fallback_ref,
+                fallback_ref=fallback_ref,
+                error=str(exc),
+            )
+            return self._sanitize_final_answer_text_impl(
+                text,
+                user_message=user_message,
+                attachment_metas=attachment_metas,
+                tool_events=tool_events,
+                inline_followup_context=inline_followup_context,
+            )
+
+    def _sanitize_final_answer_text_impl(
         self,
         text: str,
         *,
@@ -7718,6 +7905,7 @@ class OfficeAgent:
             "attachment_tooling": "understanding",
             "mixed_attachment": "understanding",
             "evidence_lookup": "evidence",
+            "web_news": "web",
             "web_research": "web",
             "code_lookup": "code_lookup",
             "grounded_code_generation": "generation",
@@ -7736,6 +7924,7 @@ class OfficeAgent:
             "attachment_tooling": "understanding_with_tools",
             "mixed_attachment": "llm_router_attachment_ambiguity",
             "evidence_lookup": "evidence_full_pipeline",
+            "web_news": "web_news_brief",
             "web_research": "web_research_full_pipeline",
             "code_lookup": "code_lookup_with_tools",
             "grounded_code_generation": "grounded_generation_with_tools",
@@ -7864,10 +8053,10 @@ class OfficeAgent:
             and not signals.get("web_request")
         ):
             return "understanding"
+        if signals.get("web_request") and not signals.get("has_attachments"):
+            return "web"
         if signals.get("spec_lookup_request") or signals.get("evidence_required"):
             return "evidence"
-        if signals.get("web_request"):
-            return "web"
         if signals.get("local_code_lookup_request"):
             return "code_lookup"
         inherited = str(signals.get("inherited_primary_intent") or "").strip() or self._infer_followup_primary_intent_from_state(
@@ -8225,6 +8414,26 @@ class OfficeAgent:
                 )
 
         if primary_intent == "web":
+            if bool(signals.get("web_news_brief_request")):
+                return self._normalize_route_decision(
+                    {
+                        "task_type": "web_news",
+                        "complexity": "medium",
+                        "use_planner": False,
+                        "use_worker_tools": True,
+                        "use_reviewer": False,
+                        "use_revision": False,
+                        "use_structurer": False,
+                        "use_web_prefetch": True,
+                        "use_conflict_detector": False,
+                        "specialists": ["researcher"],
+                        "execution_policy": "web_news_brief",
+                        "reason": "rules_web_news_brief",
+                        "summary": "检测到普通新闻/今日动态请求，启用轻量联网简报链路。",
+                    },
+                    fallback=fallback,
+                    settings=settings,
+                )
             return self._normalize_route_decision(
                 {
                     "task_type": "web_research",
@@ -8359,6 +8568,37 @@ class OfficeAgent:
         fallback: dict[str, Any],
         settings: ChatSettings,
     ) -> dict[str, Any]:
+        registry = self._module_registry()
+        module = getattr(registry, "policy", None)
+        selected_ref = str((registry.selected_refs or {}).get("policy") or "")
+        fallback_ref = "policy_resolver@1.0.0"
+        if module is None or not hasattr(module, "normalize_route"):
+            return self._normalize_route_decision_impl(route=route, fallback=fallback, settings=settings)
+        try:
+            normalized = module.normalize_route(
+                agent=self,
+                route=route,
+                fallback=fallback,
+                settings=settings,
+            )
+            self._record_module_success(kind="policy", selected_ref=selected_ref or fallback_ref)
+            return normalized
+        except Exception as exc:
+            self._record_module_failure(
+                kind="policy",
+                requested_ref=selected_ref or fallback_ref,
+                fallback_ref=fallback_ref,
+                error=str(exc),
+            )
+            return self._normalize_route_decision_impl(route=route, fallback=fallback, settings=settings)
+
+    def _normalize_route_decision_impl(
+        self,
+        route: dict[str, Any],
+        *,
+        fallback: dict[str, Any],
+        settings: ChatSettings,
+    ) -> dict[str, Any]:
         normalized = dict(fallback)
         normalized.update(route or {})
 
@@ -8426,6 +8666,53 @@ class OfficeAgent:
         route_state: dict[str, Any] | None = None,
         inline_followup_context: bool = False,
     ) -> dict[str, Any]:
+        registry = self._module_registry()
+        module = getattr(registry, "router", None)
+        selected_ref = str((registry.selected_refs or {}).get("router") or "")
+        fallback_ref = "router_rules@1.0.0"
+        if module is None or not hasattr(module, "route"):
+            return self._route_request_by_rules_impl(
+                user_message=user_message,
+                attachment_metas=attachment_metas,
+                settings=settings,
+                route_state=route_state,
+                inline_followup_context=inline_followup_context,
+            )
+        try:
+            routed = module.route(
+                agent=self,
+                user_message=user_message,
+                attachment_metas=attachment_metas,
+                settings=settings,
+                route_state=route_state,
+                inline_followup_context=inline_followup_context,
+            )
+            self._record_module_success(kind="router", selected_ref=selected_ref or fallback_ref)
+            return routed
+        except Exception as exc:
+            self._record_module_failure(
+                kind="router",
+                requested_ref=selected_ref or fallback_ref,
+                fallback_ref=fallback_ref,
+                error=str(exc),
+            )
+            return self._route_request_by_rules_impl(
+                user_message=user_message,
+                attachment_metas=attachment_metas,
+                settings=settings,
+                route_state=route_state,
+                inline_followup_context=inline_followup_context,
+            )
+
+    def _route_request_by_rules_impl(
+        self,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: ChatSettings,
+        route_state: dict[str, Any] | None = None,
+        inline_followup_context: bool = False,
+    ) -> dict[str, Any]:
         text = (user_message or "").strip().lower()
         context_dependent_followup = self._looks_like_context_dependent_followup(user_message)
         has_attachments = bool(attachment_metas)
@@ -8451,6 +8738,43 @@ class OfficeAgent:
             and not has_attachments
             and not inline_document_payload
             and not internal_ticket_reference
+        )
+        heavy_web_research_markers = (
+            "出处",
+            "来源",
+            "source",
+            "链接",
+            "link",
+            "比较",
+            "对比",
+            "compare",
+            "comparison",
+            "核对",
+            "核验",
+            "verify",
+            "verification",
+            "fact check",
+            "真假",
+            "是否属实",
+            "timeline",
+            "时间线",
+            "谣言",
+        )
+        explicit_news_brief_markers = (
+            "news",
+            "新闻",
+            "ニュース",
+            "headline",
+            "头条",
+            "热点",
+            "热搜",
+            "简报",
+            "汇总",
+        )
+        web_news_brief_request = (
+            news_request
+            and any(marker in text for marker in explicit_news_brief_markers)
+            and not any(marker in text for marker in heavy_web_research_markers)
         )
         web_request = (
             news_request
@@ -8509,6 +8833,7 @@ class OfficeAgent:
             "source_trace_request": source_trace_request,
             "explicit_tool_confirmation": explicit_tool_confirmation,
             "meeting_minutes_request": meeting_minutes_request,
+            "web_news_brief_request": web_news_brief_request,
             "web_request": web_request,
             "request_requires_tools": request_requires_tools,
             "local_code_lookup_request": local_code_lookup_request,
@@ -8737,6 +9062,12 @@ class OfficeAgent:
             return "本轮属于简单问答。直接回答，不要调用工具，不要追加多余审阅话术。"
         if task_type == "attachment_tooling":
             return "本轮附件需要工具预处理。先用必要工具完成读取/解包，再给结论。"
+        if task_type == "web_news":
+            return (
+                "本轮属于新闻简报任务。"
+                "优先抓取近期主要新闻，再直接给简明摘要。"
+                "不要改写成研究报告、冲突审计或证据仲裁格式。"
+            )
         if task_type == "web_research":
             return "本轮属于联网信息任务。优先用联网工具取证，再回答。"
         if task_type == "code_lookup":
@@ -8808,6 +9139,53 @@ class OfficeAgent:
 
     def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
         auth = self._auth_manager.require()
+        provider_mode = str(auth.mode or "").strip().lower()
+        registry = self._module_registry()
+        provider = registry.provider_for_mode(provider_mode) if registry is not None else None
+        selected_ref = str((registry.selected_refs or {}).get(f"provider:{provider_mode}") or "")
+        fallback_ref = (
+            "provider_codex_auth@1.0.0"
+            if provider_mode == "codex_auth"
+            else "provider_openai_api@1.0.0"
+        )
+        if provider is not None and hasattr(provider, "build_runner"):
+            try:
+                runner = provider.build_runner(
+                    agent=self,
+                    auth=auth,
+                    model=model,
+                    max_output_tokens=max_output_tokens,
+                    use_responses_api=use_responses_api,
+                )
+                self._record_module_success(
+                    kind="provider",
+                    selected_ref=selected_ref or fallback_ref,
+                    mode=provider_mode,
+                )
+                return runner
+            except Exception as exc:
+                self._record_module_failure(
+                    kind="provider",
+                    requested_ref=selected_ref or fallback_ref,
+                    fallback_ref=fallback_ref,
+                    error=str(exc),
+                    mode=provider_mode,
+                )
+        return self._build_llm_direct_fallback(
+            auth=auth,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            use_responses_api=use_responses_api,
+        )
+
+    def _build_llm_direct_fallback(
+        self,
+        *,
+        auth: Any,
+        model: str,
+        max_output_tokens: int,
+        use_responses_api: bool | None = None,
+    ):
         if auth.mode == "codex_auth":
             return CodexResponsesRunner(
                 auth_manager=self._auth_manager,
@@ -8829,9 +9207,7 @@ class OfficeAgent:
         if self.config.openai_base_url:
             kwargs["base_url"] = self._normalize_base_url(self.config.openai_base_url)
         if self.config.openai_ca_cert_path:
-            # Keep TLS behavior close to curl --cacert for corporate gateways.
-            os.environ.setdefault("SSL_CERT_FILE", self.config.openai_ca_cert_path)
-            os.environ.setdefault("REQUESTS_CA_BUNDLE", self.config.openai_ca_cert_path)
+            self._ensure_openai_ca_env(self.config.openai_ca_cert_path)
         return self._ChatOpenAI(**kwargs)
 
     def _invoke_chat_with_runner(
