@@ -2455,6 +2455,38 @@
     }
   },
   {
+    "name": "helper_debug_role_contract_matrix",
+    "kind": "helper",
+    "helper": "_debug_role_contract_matrix",
+    "args": {},
+    "assert": {
+      "equals": {
+        "ok": true,
+        "roles.0.ok": true,
+        "profiles.0.ok": true,
+        "profiles.1.ok": true,
+        "profiles.2.ok": true
+      },
+      "contains": {
+        "roles.0.role": [
+          "planner"
+        ],
+        "roles.4.role": [
+          "researcher"
+        ],
+        "profiles.0.profile_id": [
+          "explainer"
+        ],
+        "profiles.1.profile_id": [
+          "evidence"
+        ],
+        "profiles.2.profile_id": [
+          "patch_worker"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",

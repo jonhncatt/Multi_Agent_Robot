@@ -19,6 +19,10 @@ from app.agents.reviewer_helpers import (
     reviewer_readonly_tool_names as reviewer_readonly_tool_names_helper,
     summarize_reviewer_tool_result as summarize_reviewer_tool_result_helper,
 )
+from app.agents.role_contracts import (
+    validate_role_result as validate_role_result_helper,
+    validate_runtime_profile as validate_runtime_profile_helper,
+)
 from app.agents.role_catalog import ROLE_KINDS as _ROLE_KINDS, SPECIALIST_LABELS as _SPECIALIST_LABELS
 from app.agents.role_helpers import (
     make_default_role_result as make_default_role_result_helper,
@@ -26,6 +30,12 @@ from app.agents.role_helpers import (
     make_role_result as make_role_result_helper,
     make_role_spec as make_role_spec_helper,
     role_payload_dict as role_payload_dict_helper,
+)
+from app.agents.runtime_profiles import (
+    PATCH_WORKER_PROFILE,
+    build_runtime_profile_hint,
+    default_runtime_profile_for_route,
+    runtime_profile_spec,
 )
 from app.agents.specialist_role import (
     build_specialist_input_payload as build_specialist_input_payload_helper,
@@ -929,6 +939,93 @@ class OfficeAgent:
                 "package_runs": runtime.list_package_runs(limit=5),
                 "shadow_manifest_after": runtime.load_shadow_manifest().to_dict(),
             }
+
+    def _debug_role_contract_matrix(self) -> dict[str, Any]:
+        route = {
+            "task_type": "attachment_tooling",
+            "primary_intent": "understanding",
+            "execution_policy": "attachment_tooling",
+            "runtime_profile": default_runtime_profile_for_route(
+                {
+                    "task_type": "attachment_tooling",
+                    "primary_intent": "understanding",
+                    "execution_policy": "attachment_tooling",
+                }
+            ),
+        }
+        role_payloads = {
+            "planner": {
+                "objective": "整理文档重点",
+                "constraints": ["不要输出思维链"],
+                "plan": ["先看附件摘要", "再给解释"],
+                "watchouts": ["不要误判成取证链"],
+                "success_signals": ["回答清楚整体思路"],
+            },
+            "reviewer": {
+                "verdict": "pass",
+                "confidence": "medium",
+                "summary": "结构完整。",
+                "strengths": ["覆盖了主要问题"],
+                "risks": [],
+                "followups": [],
+            },
+            "revision": {
+                "changed": True,
+                "summary": "已按 reviewer 调整措辞。",
+                "key_changes": ["补充了限制说明"],
+                "final_answer": "这是修订后的答复。",
+            },
+            "conflict_detector": {
+                "has_conflict": False,
+                "confidence": "medium",
+                "summary": "未发现明显冲突。",
+                "concerns": [],
+                "suggested_checks": [],
+            },
+        }
+        specialist_payloads = {
+            role: self._specialist_fallback(
+                specialist=role,
+                requested_model=self.config.default_model,
+                attachment_metas=[],
+                initial_triage_request=False,
+            )
+            for role in ("researcher", "file_reader", "summarizer", "fixer")
+        }
+        roles: list[dict[str, Any]] = []
+        for role, payload in {**role_payloads, **specialist_payloads}.items():
+            output_keys_map = {
+                "planner": ["objective", "constraints", "plan", "watchouts", "success_signals"],
+                "reviewer": ["verdict", "confidence", "summary", "strengths", "risks", "followups"],
+                "revision": ["changed", "summary", "key_changes", "final_answer"],
+                "conflict_detector": ["has_conflict", "confidence", "summary", "concerns", "suggested_checks"],
+                "researcher": ["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
+                "file_reader": ["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
+                "summarizer": ["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
+                "fixer": ["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
+            }
+            result = self._make_default_role_result(
+                role,
+                payload=payload,
+                requested_model=self.config.default_model,
+                user_message="解释一下文档整体思路",
+                history_summary="上一轮已经读了附件摘要。",
+                route=route,
+                description=f"{role} contract test",
+                output_keys=output_keys_map.get(role, []),
+            )
+            validation = validate_role_result_helper(result)
+            roles.append(validation)
+        profiles = [
+            validate_runtime_profile_helper(runtime_profile_spec("explainer")),
+            validate_runtime_profile_helper(runtime_profile_spec("evidence")),
+            validate_runtime_profile_helper(PATCH_WORKER_PROFILE),
+        ]
+        return {
+            "ok": all(bool(item.get("ok")) for item in roles) and all(bool(item.get("ok")) for item in profiles),
+            "roles": roles,
+            "profiles": profiles,
+        }
 
     def _module_registry(self):
         return self._kernel_runtime.registry
@@ -5856,6 +5953,17 @@ class OfficeAgent:
                 )
             )
 
+        runtime_profile_hint = build_runtime_profile_hint(updated_route)
+        if runtime_profile_hint:
+            prompt_injections.append(
+                HookPromptInjection(
+                    position="front",
+                    title="Hook(before_worker_prompt) 注入 Runtime Profile",
+                    content=runtime_profile_hint,
+                    trace_note="多 Role: Coordinator 已将 runtime profile 注入 Worker 请求。",
+                )
+            )
+
         raw_spec_lookup_request = self._looks_like_spec_lookup_request(planner_user_message, attachment_metas)
         raw_evidence_required_mode = self._requires_evidence_mode(planner_user_message, attachment_metas)
         route_task_type = str(updated_route.get("task_type") or "").strip().lower()
@@ -6157,6 +6265,7 @@ class OfficeAgent:
             f"task_type: {route.get('task_type')}",
             f"primary_intent: {route.get('primary_intent')}",
             f"execution_policy: {route.get('execution_policy')}",
+            f"runtime_profile: {route.get('runtime_profile')}",
             f"complexity: {route.get('complexity')}",
             f"source: {route.get('source')}",
             f"specialists: {', '.join(route.get('specialists') or []) or '(none)'}",
@@ -7908,9 +8017,11 @@ class OfficeAgent:
             task_type=task_type,
         )
         execution_policy = str(route.get("execution_policy") or "").strip() or self._task_type_to_execution_policy(task_type)
+        runtime_profile = str(route.get("runtime_profile") or "").strip() or default_runtime_profile_for_route(route)
         return {
             "primary_intent": primary_intent,
             "execution_policy": execution_policy,
+            "runtime_profile": runtime_profile,
             "task_type": task_type,
             "use_worker_tools": bool(route.get("use_worker_tools")),
             "evidence_mode": task_type == "evidence_lookup",
@@ -8550,6 +8661,10 @@ class OfficeAgent:
         normalized["execution_policy"] = (
             str(normalized.get("execution_policy") or fallback.get("execution_policy") or "").strip()
             or self._task_type_to_execution_policy(normalized["task_type"])
+        )
+        normalized["runtime_profile"] = (
+            str(normalized.get("runtime_profile") or fallback.get("runtime_profile") or "").strip()
+            or default_runtime_profile_for_route(normalized)
         )
 
         for key in (
