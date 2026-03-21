@@ -234,6 +234,8 @@ class HealthResponse(BaseModel):
     kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
     kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
     kernel_tool_registry: dict[str, object] = Field(default_factory=dict)
+    assistant_overlay_profile: dict[str, object] = Field(default_factory=dict)
+    assistant_evolution_recent: list[dict[str, object]] = Field(default_factory=list)
 
 
 class KernelManifestUpdateRequest(BaseModel):
@@ -329,6 +331,15 @@ class KernelRuntimeResponse(BaseModel):
     kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
     kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
     kernel_tool_registry: dict[str, object] = Field(default_factory=dict)
+    assistant_overlay_profile: dict[str, object] = Field(default_factory=dict)
+    assistant_evolution_recent: list[dict[str, object]] = Field(default_factory=list)
+
+
+class EvolutionRuntimeResponse(BaseModel):
+    ok: bool
+    detail: str = ""
+    assistant_overlay_profile: dict[str, object] = Field(default_factory=dict)
+    assistant_evolution_recent: list[dict[str, object]] = Field(default_factory=list)
 
 
 class TokenStatsResponse(BaseModel):

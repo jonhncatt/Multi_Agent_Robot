@@ -2748,6 +2748,33 @@
     }
   },
   {
+    "name": "helper_debug_evolution_turn_update_accumulates_overlay_signals",
+    "kind": "helper",
+    "helper": "_debug_evolution_turn_update",
+    "args": {},
+    "assert": {
+      "equals": {
+        "overlay_profile.turns_observed": 1,
+        "event.primary_intent": "understanding",
+        "event.runtime_profile": "explainer",
+        "recent_events.0.primary_intent": "understanding"
+      },
+      "contains_any": {
+        "router_top_signal": [
+          "understanding",
+          "attachment_tooling"
+        ],
+        "finalizer_top_signal": [
+          "table_output",
+          "mail_output"
+        ]
+      },
+      "min_value": {
+        "event.attachment_count": 1
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",

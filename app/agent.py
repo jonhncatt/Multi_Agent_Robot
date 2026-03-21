@@ -5,6 +5,7 @@ import json
 import os
 import re
 import threading
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -98,6 +99,7 @@ from app.core.kernel_debug_support import (
     debug_kernel_shadow_validation_rejects_broken_manifest as debug_kernel_shadow_validation_rejects_broken_manifest_helper,
 )
 from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
+from app.evolution import EvolutionStore
 from app.local_tools import LocalToolExecutor
 from app.models import AgentPanel, ChatSettings, ToolEvent
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
@@ -701,6 +703,42 @@ class OfficeAgent:
             payload.setdefault("selected_ref", selected_ref)
             return payload
         return {"selected_ref": selected_ref, "tool_count": len(self._lc_tools)}
+
+    def _debug_evolution_overlay_snapshot(self) -> dict[str, Any]:
+        store = EvolutionStore(self.config.overlay_profile_path, self.config.evolution_logs_dir)
+        return store.runtime_payload(limit=6)
+
+    def _debug_evolution_turn_update(self) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-evolution-") as tmp_dir:
+            base = Path(tmp_dir).resolve()
+            store = EvolutionStore(base / "overlay_profile.json", base / "logs")
+            event = store.record_turn(
+                session_id="session-evolution-demo",
+                user_message="请把这份 TCG 设计文档解释一下，并整理成表格后写成邮件。",
+                assistant_text="我先解释整体设计，再给你一张表格，最后整理成邮件。",
+                route_state={
+                    "primary_intent": "understanding",
+                    "task_type": "attachment_tooling",
+                    "execution_policy": "attachment_holistic_understanding_with_tools",
+                    "runtime_profile": "explainer",
+                },
+                answer_bundle={"summary": "TCG 设计文档整体思路与关键表格输出。", "citations": []},
+                attachment_context_mode="explicit",
+                attachment_count=1,
+                settings={"response_style": "normal"},
+                effective_model="gpt-5.1-chat",
+                turn_count=2,
+            )
+            snapshot = store.runtime_payload(limit=4)
+            overlay = dict(snapshot.get("overlay_profile") or {})
+            module_affinity = dict(overlay.get("module_affinity") or {})
+            return {
+                "event": event,
+                "overlay_profile": overlay,
+                "recent_events": list(snapshot.get("recent_events") or []),
+                "router_top_signal": str(((module_affinity.get("router") or [{}])[0] or {}).get("name") or ""),
+                "finalizer_top_signal": str(((module_affinity.get("finalizer") or [{}])[0] or {}).get("name") or ""),
+            }
 
     def _debug_kernel_shadow_upgrade_flow(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
         return debug_kernel_shadow_upgrade_flow_helper(self, target_router_ref)

@@ -21,6 +21,7 @@ from app.config import load_config
 from app.core.bootstrap import build_kernel_runtime
 from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
+from app.evolution import EvolutionStore
 from app.models import (
     ChatRequest,
     ChatResponse,
@@ -29,6 +30,7 @@ from app.models import (
     EvalCaseResult,
     EvalRunRequest,
     EvalRunResponse,
+    EvolutionRuntimeResponse,
     HealthResponse,
     KernelManifestUpdateRequest,
     KernelShadowPipelineRequest,
@@ -65,6 +67,7 @@ session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
 shadow_log_store = ShadowLogStore(config.shadow_logs_dir)
+evolution_store = EvolutionStore(config.overlay_profile_path, config.evolution_logs_dir)
 kernel_runtime = build_kernel_runtime(config)
 _agent: OfficeAgent | None = None
 APP_VERSION = "0.3.5"
@@ -181,6 +184,10 @@ def get_kernel_runtime():
     return kernel_runtime
 
 
+def get_evolution_store() -> EvolutionStore:
+    return evolution_store
+
+
 def get_agent() -> OfficeAgent:
     global _agent
     if _agent is None:
@@ -223,6 +230,7 @@ def health() -> HealthResponse:
     docker_ok, docker_msg = agent.tools.docker_status()
     auth_summary = OpenAIAuthManager(config).auth_summary()
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
+    evolution_payload = get_evolution_store().runtime_payload(limit=10)
     tool_registry = agent._debug_tool_registry_snapshot()
     return HealthResponse(
         ok=True,
@@ -255,6 +263,8 @@ def health() -> HealthResponse:
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
         kernel_tool_registry=dict(tool_registry or {}),
+        assistant_overlay_profile=dict(evolution_payload.get("overlay_profile") or {}),
+        assistant_evolution_recent=list(evolution_payload.get("recent_events") or []),
     )
 
 
@@ -271,6 +281,7 @@ def _kernel_runtime_response(
     patch_worker: dict[str, object] | None = None,
 ) -> KernelRuntimeResponse:
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
+    evolution_payload = get_evolution_store().runtime_payload(limit=10)
     tool_registry = get_agent()._debug_tool_registry_snapshot()
     return KernelRuntimeResponse(
         ok=ok,
@@ -296,6 +307,19 @@ def _kernel_runtime_response(
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
         kernel_tool_registry=dict(tool_registry or {}),
+        assistant_overlay_profile=dict(evolution_payload.get("overlay_profile") or {}),
+        assistant_evolution_recent=list(evolution_payload.get("recent_events") or []),
+    )
+
+
+@app.get("/api/evolution/runtime", response_model=EvolutionRuntimeResponse)
+def evolution_runtime_state(limit: int = 10) -> EvolutionRuntimeResponse:
+    payload = get_evolution_store().runtime_payload(limit=limit)
+    return EvolutionRuntimeResponse(
+        ok=True,
+        detail="当前个体覆层与最近进化日志。",
+        assistant_overlay_profile=dict(payload.get("overlay_profile") or {}),
+        assistant_evolution_recent=list(payload.get("recent_events") or []),
     )
 
 
@@ -1313,6 +1337,31 @@ def _process_chat_request(
             model=selected_model,
         )
         _emit_progress(progress_cb, "stage", code="stats_saved", detail="Token 统计已更新。", run_id=run_id)
+        try:
+            evolution_event = get_evolution_store().record_turn(
+                session_id=session["id"],
+                user_message=req.message,
+                assistant_text=text,
+                route_state=route_state,
+                answer_bundle=answer_bundle,
+                attachment_context_mode=attachment_context_mode,
+                attachment_count=len(resolved_attachment_ids),
+                settings=req.settings.model_dump(),
+                effective_model=selected_model,
+                turn_count=len(session.get("turns", [])),
+            )
+            evolution_terms = list(evolution_event.get("domain_terms") or [])
+            evolution_msg = (
+                "个体覆层已更新: "
+                f"intent={evolution_event.get('primary_intent') or 'standard'}"
+                + (f"，terms={', '.join(evolution_terms[:3])}" if evolution_terms else "")
+            )
+            execution_trace.append(evolution_msg)
+            _emit_progress(progress_cb, "trace", message=evolution_msg, index=len(execution_trace), run_id=run_id)
+        except Exception as exc:
+            evolution_warn = f"个体覆层更新失败: {exc}"
+            execution_trace.append(evolution_warn)
+            _emit_progress(progress_cb, "trace", message=evolution_warn, index=len(execution_trace), run_id=run_id)
         if config.enable_shadow_logging:
             kernel_health = build_kernel_health_payload(get_kernel_runtime())
             shadow_path = shadow_log_store.append(

@@ -46,6 +46,15 @@ const runAgentPanelsView = document.getElementById("runAgentPanelsView");
 const runAnswerBundleView = document.getElementById("runAnswerBundleView");
 const runLlmFlowView = document.getElementById("runLlmFlowView");
 const runRoleBoard = document.getElementById("runRoleBoard");
+const kernelLiveLabel = document.getElementById("kernelLiveLabel");
+const kernelLiveMeta = document.getElementById("kernelLiveMeta");
+const kernelCoreMetrics = document.getElementById("kernelCoreMetrics");
+const shadowLabMetrics = document.getElementById("shadowLabMetrics");
+const evolutionMetrics = document.getElementById("evolutionMetrics");
+const moduleBay = document.getElementById("moduleBay");
+const moduleBayMeta = document.getElementById("moduleBayMeta");
+const evolutionFeed = document.getElementById("evolutionFeed");
+const evolutionFeedMeta = document.getElementById("evolutionFeedMeta");
 const runtimeDebugSections = Array.from(document.querySelectorAll(".runtime-panel .debug-only"));
 
 const RUN_FLOW_STEPS = [
@@ -1211,6 +1220,238 @@ function renderAppVersion(health = {}) {
   const appVersion = String(health.app_version || "").trim();
   appVersionView.textContent = buildVersion || (appVersion ? `v${appVersion}` : "版本未知");
   appVersionView.title = buildVersion || appVersion || "版本未知";
+}
+
+const MODULE_LABELS = {
+  router: { title: "Router", desc: "全局语义分诊与最小链路选择。" },
+  policy: { title: "Policy", desc: "执行策略与 gate（闸门）配置。" },
+  attachment_context: { title: "Attachment", desc: "附件上下文、自动关联与 scoped route state。" },
+  finalizer: { title: "Finalizer", desc: "最终输出整理、表格/邮件/证据包收口。" },
+  tool_registry: { title: "Tools", desc: "工具注册表与执行能力描述。" },
+  "provider:api_key": { title: "Provider / API", desc: "公司 API 或标准 OpenAI API 通道。" },
+  "provider:codex_auth": { title: "Provider / Codex", desc: "本地 Codex auth 调试通道。" },
+};
+
+function formatRelativeTime(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "未知";
+  try {
+    const ts = new Date(value);
+    if (Number.isNaN(ts.getTime())) return value;
+    const diffSec = Math.max(0, Math.floor((Date.now() - ts.getTime()) / 1000));
+    if (diffSec < 60) return `${diffSec}s 前`;
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m 前`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h 前`;
+    return `${Math.floor(diffSec / 86400)}d 前`;
+  } catch {
+    return value;
+  }
+}
+
+function normalizeCounterItems(items) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      name: String(item?.name || "").trim(),
+      count: Number(item?.count || 0),
+    }))
+    .filter((item) => item.name);
+}
+
+function pickTopCounterName(items, fallback = "none") {
+  const normalized = normalizeCounterItems(items);
+  return normalized.length ? `${normalized[0].name} · ${normalized[0].count}` : fallback;
+}
+
+function renderKernelStatGrid(container, items) {
+  if (!container) return;
+  container.innerHTML = "";
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const cell = document.createElement("div");
+    cell.className = "kernel-stat";
+
+    const label = document.createElement("div");
+    label.className = "kernel-stat-label";
+    label.textContent = String(item?.label || "");
+    cell.appendChild(label);
+
+    const value = document.createElement("div");
+    value.className = "kernel-stat-value";
+    value.textContent = String(item?.value || "-");
+    cell.appendChild(value);
+
+    const meta = String(item?.meta || "").trim();
+    if (meta) {
+      const metaNode = document.createElement("div");
+      metaNode.className = "kernel-stat-meta";
+      metaNode.textContent = meta;
+      cell.appendChild(metaNode);
+    }
+
+    container.appendChild(cell);
+  });
+}
+
+function renderModuleBay(health = {}) {
+  if (!moduleBay) return;
+  const selected = health?.kernel_selected_modules || {};
+  const moduleHealth = health?.kernel_module_health || {};
+  const overlay = health?.assistant_overlay_profile || {};
+  const moduleAffinity = overlay?.module_affinity || {};
+  const entries = Object.entries(selected);
+
+  moduleBay.innerHTML = "";
+  if (!entries.length) {
+    moduleBay.textContent = "模块舱为空。";
+    if (moduleBayMeta) moduleBayMeta.textContent = "0 modules";
+    return;
+  }
+
+  if (moduleBayMeta) {
+    moduleBayMeta.textContent = `${entries.length} 个模块在线`;
+  }
+
+  entries.forEach(([key, ref]) => {
+    const meta = MODULE_LABELS[key] || { title: key, desc: "未命名模块。" };
+    const healthItem = moduleHealth?.[key] || {};
+    const status = String(healthItem?.status || "active").trim().toLowerCase() || "active";
+    const failureCount = Number(healthItem?.failure_count || 0);
+    const overlayItems = normalizeCounterItems(moduleAffinity?.[key.replace("provider:", "")] || moduleAffinity?.[key] || []);
+
+    const card = document.createElement("article");
+    card.className = `module-card status-${status}`;
+
+    const head = document.createElement("div");
+    head.className = "module-card-head";
+    head.innerHTML = `
+      <div>
+        <div class="module-card-title">${meta.title}</div>
+        <div class="module-card-ref">${String(ref || "-")}</div>
+      </div>
+      <span class="module-status-badge">${status}</span>
+    `;
+    card.appendChild(head);
+
+    const desc = document.createElement("div");
+    desc.className = "module-card-desc";
+    desc.textContent = meta.desc;
+    card.appendChild(desc);
+
+    const stats = document.createElement("div");
+    stats.className = "module-card-stats";
+    stats.innerHTML = `
+      <span>failure=${failureCount}</span>
+      <span>selected=${String(healthItem?.selected_ref || ref || "-")}</span>
+    `;
+    card.appendChild(stats);
+
+    if (overlayItems.length) {
+      const signals = document.createElement("div");
+      signals.className = "module-card-signals";
+      overlayItems.slice(0, 3).forEach((item) => {
+        const chip = document.createElement("span");
+        chip.className = "signal-chip";
+        chip.textContent = `${item.name} · ${item.count}`;
+        signals.appendChild(chip);
+      });
+      card.appendChild(signals);
+    }
+
+    const errorText = String(healthItem?.last_error || "").trim();
+    if (errorText) {
+      const errorNode = document.createElement("div");
+      errorNode.className = "module-card-error";
+      errorNode.textContent = `last_error: ${errorText}`;
+      card.appendChild(errorNode);
+    }
+
+    moduleBay.appendChild(card);
+  });
+}
+
+function renderEvolutionFeed(events = []) {
+  if (!evolutionFeed) return;
+  const items = Array.isArray(events) ? events : [];
+  evolutionFeed.innerHTML = "";
+  if (!items.length) {
+    evolutionFeed.textContent = "还没有进化记录。";
+    if (evolutionFeedMeta) evolutionFeedMeta.textContent = "0 events";
+    return;
+  }
+  if (evolutionFeedMeta) {
+    evolutionFeedMeta.textContent = `${items.length} 条最近记录`;
+  }
+  items.slice(0, 8).forEach((item) => {
+    const node = document.createElement("article");
+    node.className = "evolution-event";
+    const terms = Array.isArray(item?.domain_terms) ? item.domain_terms.filter(Boolean).slice(0, 4) : [];
+    node.innerHTML = `
+      <div class="evolution-event-head">
+        <span class="evolution-event-title">${String(item?.primary_intent || "standard")}</span>
+        <span class="evolution-event-time">${formatRelativeTime(item?.created_at)}</span>
+      </div>
+      <div class="evolution-event-summary">${String(item?.summary || "").trim() || "本轮记录了新的适应信号。"}</div>
+      <div class="evolution-event-meta">profile=${String(item?.runtime_profile || "-")} · task=${String(item?.task_type || "-")}</div>
+      <div class="module-card-signals">${terms.map((term) => `<span class="signal-chip">${term}</span>`).join("")}</div>
+    `;
+    evolutionFeed.appendChild(node);
+  });
+}
+
+function renderKernelConsole(health = {}) {
+  const selected = health?.kernel_selected_modules || {};
+  const overlay = health?.assistant_overlay_profile || {};
+  const recentEvents = health?.assistant_evolution_recent || [];
+  const validation = health?.kernel_shadow_validation || {};
+  const promoteCheck = health?.kernel_shadow_promote_check || {};
+  const lastUpgrade = health?.kernel_last_upgrade_run || {};
+  const lastRepair = health?.kernel_last_repair_run || {};
+  const lastPatch = health?.kernel_last_patch_worker_run || {};
+  const lastPackage = health?.kernel_last_package_run || {};
+  const toolRegistry = health?.kernel_tool_registry || {};
+  const authMode = String(health?.auth_mode || "").trim() || "unknown";
+  const turnCount = Number(overlay?.turns_observed || 0);
+
+  if (kernelLiveLabel) {
+    kernelLiveLabel.textContent = Object.keys(selected).length ? "主核在线" : "主核待机";
+  }
+  if (kernelLiveMeta) {
+    kernelLiveMeta.textContent =
+      `modules=${Object.keys(selected).length} · auth=${authMode} · overlay_turns=${turnCount}`;
+  }
+
+  renderKernelStatGrid(kernelCoreMetrics, [
+    { label: "Active Manifest", value: String(health?.build_version || "runtime"), meta: `${Object.keys(selected).length} modules live` },
+    { label: "Provider", value: authMode, meta: `${Number(toolRegistry?.tool_count || 0)} tools registered` },
+    { label: "Router Bias", value: pickTopCounterName(overlay?.module_affinity?.router || [], "none"), meta: `top intent=${pickTopCounterName(overlay?.intent_counts || [], "none")}` },
+    { label: "Explainer Bias", value: pickTopCounterName(overlay?.module_affinity?.explainer || [], "none"), meta: `profile=${pickTopCounterName(overlay?.runtime_profile_counts || [], "none")}` },
+  ]);
+
+  renderKernelStatGrid(shadowLabMetrics, [
+    { label: "Validate", value: validation?.ok ? "PASS" : "CHECK", meta: String(validation?.reason || validation?.detail || "shadow validation") },
+    { label: "Promote Gate", value: promoteCheck?.ok ? "OPEN" : "HOLD", meta: String(promoteCheck?.reason || "compatibility gate") },
+    { label: "Last Upgrade", value: String(lastUpgrade?.run_id || "-").slice(0, 12) || "-", meta: formatRelativeTime(lastUpgrade?.finished_at || lastUpgrade?.started_at) },
+    { label: "Patch Worker", value: String(lastPatch?.stop_reason || (lastPatch?.ok ? "pipeline_ok" : "-")), meta: `rounds=${Number(lastPatch?.round_count || 0)}` },
+    { label: "Repair", value: String(lastRepair?.strategy || "-"), meta: formatRelativeTime(lastRepair?.finished_at) },
+    { label: "Package", value: String(lastPackage?.run_id || "-").slice(0, 12) || "-", meta: formatRelativeTime(lastPackage?.finished_at) },
+  ]);
+
+  renderKernelStatGrid(evolutionMetrics, [
+    { label: "Turns Observed", value: String(turnCount), meta: `updated=${formatRelativeTime(overlay?.updated_at)}` },
+    { label: "Top Terms", value: pickTopCounterName(overlay?.domain_terms || [], "none"), meta: "长期对话累积的领域词" },
+    { label: "Finalizer Bias", value: pickTopCounterName(overlay?.module_affinity?.finalizer || [], "none"), meta: `style=${pickTopCounterName(overlay?.response_style_counts || [], "normal")}` },
+    { label: "Last Signal", value: String(overlay?.last_signal?.primary_intent || "-"), meta: String(overlay?.last_signal?.summary || "暂无最近信号") },
+  ]);
+
+  renderModuleBay(health);
+  renderEvolutionFeed(recentEvents);
+}
+
+async function refreshSystemDashboard() {
+  const health = await fetch("/api/health").then((r) => r.json());
+  renderAppVersion(health);
+  renderBackendPolicy(health);
+  renderKernelConsole(health);
+  return health;
 }
 
 function currentSessionKey() {
@@ -2526,6 +2767,7 @@ async function sendMessage() {
         session: data.session_token_totals || {},
         global: data.global_token_totals || {},
       });
+      await refreshSystemDashboard().catch(() => {});
       setRunStage("完成", "本轮已完成", "done", "done");
     }
   } catch (err) {
@@ -2689,8 +2931,7 @@ if (deleteSessionBtn) {
   renderAgentPanels([], [], new Set(), null, new Map());
   renderLlmFlow([]);
   try {
-    const health = await fetch("/api/health").then((r) => r.json());
-    renderAppVersion(health);
+    const health = await refreshSystemDashboard();
     modelInput.placeholder = health.model_default || MODE_PRESETS.general.model;
     if (!modelInput.value) {
       modelInput.value = health.model_default || MODE_PRESETS.general.model;
@@ -2727,6 +2968,9 @@ if (deleteSessionBtn) {
       );
     }
     await refreshTokenStatsFromServer();
+    window.setInterval(() => {
+      refreshSystemDashboard().catch(() => {});
+    }, 15000);
   } catch {
     addBubble("system", "健康检查失败，请确认后端已运行。", null);
   }

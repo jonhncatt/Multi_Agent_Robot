@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>openclaw agent</title>
+    <title>Officetool Kernel Console</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
@@ -15,8 +15,8 @@
       <aside class="panel">
         <div class="brand-head">
           <div>
-            <h1>openclaw agent</h1>
-            <p class="hint">办公室用多 Role 工作流，支持图片/文档和本地工具执行。</p>
+            <h1>Officetool Kernel Console</h1>
+            <p class="hint">主核稳定运行，模块独立协作，支持图片/文档、本地工具与影子升级。</p>
           </div>
           <div id="appVersionView" class="version-badge">版本加载中</div>
         </div>
@@ -118,6 +118,59 @@
             <span id="runStageBadge" class="stage-badge stage-idle">空闲</span>
             <span id="runStageText" class="runtime-head-text">等待发送请求</span>
           </div>
+          <section class="kernel-console-shell">
+            <div class="kernel-console-head">
+              <div>
+                <div class="kernel-console-kicker">Stable Kernel Runtime</div>
+                <div class="kernel-console-title">主核 / 模块舱 / 影子实验台</div>
+                <div class="kernel-console-subtitle">主核保持稳定，模块按能力分舱，升级和修复全部先在 shadow 中验证。</div>
+              </div>
+              <div class="kernel-live-pill">
+                <span class="kernel-live-dot"></span>
+                <div>
+                  <div id="kernelLiveLabel" class="kernel-live-label">主核待机</div>
+                  <div id="kernelLiveMeta" class="kernel-live-meta">等待健康数据</div>
+                </div>
+              </div>
+            </div>
+            <div class="kernel-console-grid">
+              <article class="kernel-console-card">
+                <div class="kernel-card-kicker">Stable Kernel</div>
+                <div class="kernel-card-title">主核反应堆</div>
+                <div id="kernelCoreMetrics" class="kernel-stat-grid"></div>
+              </article>
+              <article class="kernel-console-card">
+                <div class="kernel-card-kicker">Shadow Lab</div>
+                <div class="kernel-card-title">影子实验台</div>
+                <div id="shadowLabMetrics" class="kernel-stat-grid"></div>
+              </article>
+              <article class="kernel-console-card">
+                <div class="kernel-card-kicker">Adaptive Overlay</div>
+                <div class="kernel-card-title">个体进化层</div>
+                <div id="evolutionMetrics" class="kernel-stat-grid"></div>
+              </article>
+            </div>
+            <article class="kernel-console-card module-bay-shell">
+              <div class="kernel-card-head">
+                <div>
+                  <div class="kernel-card-kicker">Module Bay</div>
+                  <div class="kernel-card-title">模块舱</div>
+                </div>
+                <div id="moduleBayMeta" class="kernel-card-meta">等待健康数据</div>
+              </div>
+              <div id="moduleBay" class="module-bay"></div>
+            </article>
+            <article class="kernel-console-card evolution-feed-shell">
+              <div class="kernel-card-head">
+                <div>
+                  <div class="kernel-card-kicker">Evolution Log</div>
+                  <div class="kernel-card-title">进化日志</div>
+                </div>
+                <div id="evolutionFeedMeta" class="kernel-card-meta">尚无记录</div>
+              </div>
+              <div id="evolutionFeed" class="evolution-feed"></div>
+            </article>
+          </section>
           <section class="role-board-shell">
             <div class="role-board-head">
               <div class="role-board-title">Role 视图</div>

@@ -84,10 +84,13 @@ class AppConfig:
     workspace_root: Path
     modules_dir: Path
     runtime_dir: Path
+    evolution_dir: Path
     active_manifest_path: Path
     shadow_manifest_path: Path
     rollback_pointer_path: Path
     module_health_path: Path
+    overlay_profile_path: Path
+    evolution_logs_dir: Path
     sessions_dir: Path
     uploads_dir: Path
     shadow_logs_dir: Path
@@ -241,6 +244,14 @@ def load_config() -> AppConfig:
         )
         or str(workspace_root / "app" / "data" / "runtime")
     ).resolve()
+    evolution_dir = Path(
+        _env(
+            "OFFICETOOL_EVOLUTION_DIR",
+            "OFFCIATOOL_EVOLUTION_DIR",
+            default=str(workspace_root / "app" / "data" / "evolution"),
+        )
+        or str(workspace_root / "app" / "data" / "evolution")
+    ).resolve()
     active_manifest_path = Path(
         _env(
             "OFFICETOOL_ACTIVE_MANIFEST_PATH",
@@ -272,6 +283,22 @@ def load_config() -> AppConfig:
             default=str(runtime_dir / "module_health.json"),
         )
         or str(runtime_dir / "module_health.json")
+    ).resolve()
+    overlay_profile_path = Path(
+        _env(
+            "OFFICETOOL_OVERLAY_PROFILE_PATH",
+            "OFFCIATOOL_OVERLAY_PROFILE_PATH",
+            default=str(evolution_dir / "overlay_profile.json"),
+        )
+        or str(evolution_dir / "overlay_profile.json")
+    ).resolve()
+    evolution_logs_dir = Path(
+        _env(
+            "OFFICETOOL_EVOLUTION_LOGS_DIR",
+            "OFFCIATOOL_EVOLUTION_LOGS_DIR",
+            default=str(evolution_dir / "logs"),
+        )
+        or str(evolution_dir / "logs")
     ).resolve()
     sessions_dir = Path(
         _env(
@@ -308,10 +335,13 @@ def load_config() -> AppConfig:
 
     modules_dir.mkdir(parents=True, exist_ok=True)
     runtime_dir.mkdir(parents=True, exist_ok=True)
+    evolution_dir.mkdir(parents=True, exist_ok=True)
     sessions_dir.mkdir(parents=True, exist_ok=True)
     uploads_dir.mkdir(parents=True, exist_ok=True)
     token_stats_path.parent.mkdir(parents=True, exist_ok=True)
     shadow_logs_dir.mkdir(parents=True, exist_ok=True)
+    overlay_profile_path.parent.mkdir(parents=True, exist_ok=True)
+    evolution_logs_dir.mkdir(parents=True, exist_ok=True)
 
     allowed_commands_raw = _env(
         "OFFICETOOL_ALLOWED_COMMANDS",
@@ -581,10 +611,13 @@ def load_config() -> AppConfig:
         workspace_root=workspace_root,
         modules_dir=modules_dir,
         runtime_dir=runtime_dir,
+        evolution_dir=evolution_dir,
         active_manifest_path=active_manifest_path,
         shadow_manifest_path=shadow_manifest_path,
         rollback_pointer_path=rollback_pointer_path,
         module_health_path=module_health_path,
+        overlay_profile_path=overlay_profile_path,
+        evolution_logs_dir=evolution_logs_dir,
         sessions_dir=sessions_dir,
         uploads_dir=uploads_dir,
         shadow_logs_dir=shadow_logs_dir,
