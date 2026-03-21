@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from app.agents.conflict_detector_role import run_conflict_detector_role
-from app.agents.planner_role import run_planner_role
-from app.agents.reviewer_role import run_reviewer_role
-from app.agents.revision_role import run_revision_role
-from app.agents.role_catalog import ROLE_KINDS, SPECIALIST_LABELS
-from app.agents.specialist_role import run_specialist_with_context
-from app.agents.structurer_role import run_structurer_role
+from packages.office_modules.conflict_detector_role import run_conflict_detector_role
+from packages.office_modules.planner_role import run_planner_role
+from packages.office_modules.reviewer_role import run_reviewer_role
+from packages.office_modules.revision_role import run_revision_role
+from packages.office_modules.role_catalog import ROLE_KINDS, SPECIALIST_LABELS
+from packages.office_modules.specialist_role import run_specialist_with_context
+from packages.office_modules.structurer_role import run_structurer_role
 from packages.agent_core.role_registry import RegisteredRole, RoleHandler, RoleRegistry
 
 

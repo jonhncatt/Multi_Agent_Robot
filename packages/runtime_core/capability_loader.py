@@ -42,3 +42,18 @@ _DEFAULT_LOADER = CapabilityModuleLoader()
 
 def load_capability_bundle(module_path: str, *, config: Any | None = None, force_reload: bool = False) -> CapabilityBundle:
     return _DEFAULT_LOADER.load(module_path, config=config, force_reload=force_reload)
+
+
+def load_capability_bundles(
+    module_paths: list[str] | tuple[str, ...],
+    *,
+    config: Any | None = None,
+    force_reload: bool = False,
+) -> list[CapabilityBundle]:
+    bundles: list[CapabilityBundle] = []
+    for raw in module_paths:
+        module_path = str(raw or "").strip()
+        if not module_path:
+            continue
+        bundles.append(load_capability_bundle(module_path, config=config, force_reload=force_reload))
+    return bundles

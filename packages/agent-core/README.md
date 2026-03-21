@@ -11,3 +11,7 @@
 说明：
 - 这里是“多 agent 引擎”，不是具体 office 角色包。
 - 具体 roles / tools / prompts 由 capability modules 提供。
+- 当前已承接：
+  - `RoleSpec / RoleContext / RoleResult`
+  - `RoleRegistry / RuntimeController`
+  - capability runtime 装配支撑

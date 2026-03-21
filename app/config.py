@@ -83,6 +83,7 @@ def _load_dotenv_if_present() -> None:
 class AppConfig:
     workspace_root: Path
     modules_dir: Path
+    capability_modules: list[str]
     runtime_dir: Path
     evolution_dir: Path
     active_manifest_path: Path
@@ -236,6 +237,14 @@ def load_config() -> AppConfig:
         )
         or str(workspace_root / "app" / "modules")
     ).resolve()
+    capability_modules = _split_csv(
+        _env(
+            "OFFICETOOL_CAPABILITY_MODULES",
+            "OFFCIATOOL_CAPABILITY_MODULES",
+            default="packages.office_modules",
+        )
+        or "packages.office_modules"
+    )
     runtime_dir = Path(
         _env(
             "OFFICETOOL_RUNTIME_DIR",
@@ -610,6 +619,7 @@ def load_config() -> AppConfig:
     return AppConfig(
         workspace_root=workspace_root,
         modules_dir=modules_dir,
+        capability_modules=capability_modules,
         runtime_dir=runtime_dir,
         evolution_dir=evolution_dir,
         active_manifest_path=active_manifest_path,

@@ -13,3 +13,4 @@
 说明：
 - 这里不承接具体 office 角色和工具。
 - 它负责把 `agent-core` 和 `capability-modules` 粘起来。
+- 当前已支持按顺序加载多个 capability modules，并把它们交给上层做 registry / tools 装配。

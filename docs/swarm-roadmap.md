@@ -56,6 +56,12 @@
 
 补充：当前仓库正在把多 role runtime 正式抽成 `agent-core`，并把 office 领域 roles / tools / prompts 收敛为 `capability modules`。这意味着后续 Stage 4/5 的并行与聚合，不再依赖单体 `app/agent.py` 的硬编码岗位定义。
 
+当前已落地的第一批迁移包括：
+
+- `packages/agent_core/*`：承接 role runtime / registry / controller / capability orchestration
+- `packages/office_modules/*`：承接 office roles / tools / profiles / support helpers
+- `packages/runtime_core/*`：新增 capability loader，并支持多 capability module 顺序装配
+
 ## 当前架构
 
 当前架构仍然是一个由后端编排的多 Role 串行流水线：

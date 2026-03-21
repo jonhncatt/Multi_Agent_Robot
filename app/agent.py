@@ -151,6 +151,7 @@ from app.router_intent_support import (
     requires_evidence_mode as requires_evidence_mode_helper,
 )
 from packages.agent_core import (
+    AgentCapabilityRuntime,
     HookDebugEntry,
     HookPromptInjection,
     HookResult,
@@ -160,8 +161,8 @@ from packages.agent_core import (
     RoleRuntimeController,
     RoleSpec,
     RunState,
+    build_agent_capability_runtime,
 )
-from packages.runtime_core import load_capability_bundle
 
 
 _STYLE_HINTS = {
@@ -600,11 +601,11 @@ class ReadSessionHistoryArgs(BaseModel):
 class OfficeAgent:
     def __init__(self, config: AppConfig, *, kernel_runtime: KernelRuntime | None = None) -> None:
         self.config = config
-        self._capability_bundle = load_capability_bundle("packages.office_modules", config=config)
-        tool_factory = self._capability_bundle.tool_executor_factory
-        if tool_factory is None:
-            raise RuntimeError("office capability bundle does not provide tool_executor_factory")
-        self.tools = tool_factory(config)
+        self._capability_runtime: AgentCapabilityRuntime = build_agent_capability_runtime(
+            config,
+            config.capability_modules,
+        )
+        self.tools = self._capability_runtime.tools
         self._auth_manager = OpenAIAuthManager(config)
         self._kernel_runtime = kernel_runtime or build_kernel_runtime(config)
         self._product_profile_key = str(os.environ.get("OFFICETOOL_APP_PROFILE") or "").strip().lower() or "kernel_robot"
@@ -645,11 +646,8 @@ class OfficeAgent:
         else:
             self._lc_tools = self._build_langchain_tools()
         self._lc_tool_map = {getattr(tool, "name", ""): tool for tool in self._lc_tools}
-        role_registry_builder = self._capability_bundle.build_role_registry
-        if role_registry_builder is None:
-            raise RuntimeError("office capability bundle does not provide build_role_registry")
-        self._role_registry = role_registry_builder()
-        self._role_runtime_controller = RoleRuntimeController(self._role_registry)
+        self._role_registry = self._capability_runtime.role_registry
+        self._role_runtime_controller = self._capability_runtime.runtime_controller
         self._model_failover_lock = threading.Lock()
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
 
@@ -657,14 +655,26 @@ class OfficeAgent:
         return self._auth_manager.auth_summary()
 
     def _debug_capability_bundle_snapshot(self) -> dict[str, Any]:
-        bundle = self._capability_bundle
         return {
-            "module_id": bundle.module_id,
-            "version": bundle.version,
-            "manifest": dict(bundle.manifest),
-            "metadata": dict(bundle.metadata),
-            "has_tool_executor_factory": bundle.tool_executor_factory is not None,
-            "has_role_registry_builder": bundle.build_role_registry is not None,
+            "module_paths": list(self._capability_runtime.module_paths),
+            "modules": list(self._capability_runtime.metadata.get("modules") or []),
+            "primary_tool_module": self._capability_runtime.metadata.get("primary_tool_module"),
+            "extra_tool_modules": list(self._capability_runtime.metadata.get("extra_tool_modules") or []),
+            "role_sources": dict(self._capability_runtime.metadata.get("role_sources") or {}),
+        }
+
+    def _debug_capability_multi_module_snapshot(self) -> dict[str, Any]:
+        runtime = build_agent_capability_runtime(
+            self.config,
+            ["packages.office_modules", "packages.office_addons"],
+        )
+        return {
+            "module_paths": list(runtime.module_paths),
+            "module_count": len(runtime.bundles),
+            "primary_tool_module": runtime.metadata.get("primary_tool_module"),
+            "extra_tool_modules": list(runtime.metadata.get("extra_tool_modules") or []),
+            "module_ids": [item.get("module_id") for item in runtime.metadata.get("modules") or []],
+            "role_sources": dict(runtime.metadata.get("role_sources") or {}),
         }
 
     def _debug_codex_input_payload(self, messages: list[dict[str, Any]]) -> dict[str, Any]:

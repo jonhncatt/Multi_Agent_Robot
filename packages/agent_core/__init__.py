@@ -10,9 +10,11 @@ from .role_runtime import (
     RunState,
     TaskNode,
 )
+from .orchestration import AgentCapabilityRuntime, build_agent_capability_runtime
 from .runtime_controller import RoleExecution, RoleRuntimeController
 
 __all__ = [
+    "AgentCapabilityRuntime",
     "HookDebugEntry",
     "HookPromptInjection",
     "HookResult",
@@ -27,4 +29,5 @@ __all__ = [
     "RoleSpec",
     "RunState",
     "TaskNode",
+    "build_agent_capability_runtime",
 ]

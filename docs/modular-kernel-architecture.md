@@ -20,6 +20,12 @@
 - `kernel modules`：主核级模块，例如 router / policy / provider / tool_registry / finalizer
 - `capability modules`：能力包，例如 office 的 tools / roles / prompts / profiles / workflows
 
+当前已经开始落地的统一三层是：
+
+- `runtime-core`：加载、监督、shadow、promote、rollback，以及 capability loader
+- `agent-core`：多 agent runtime、registry、controller、共享编排支撑
+- `capability-modules`：office 具体能力包，目前为 `packages/office_modules`
+
 当前系统已经不是单体脚本，而是一个分层运行时：
 
 - `stable kernel` 负责加载、调度、健康检查、降级和回滚
@@ -83,6 +89,13 @@ flowchart TD
 - workflows
 
 以后多 agent 不会被削弱，而是会以 capability module 的形式装载和替换。
+
+当前已经支持：
+
+- `OFFICETOOL_CAPABILITY_MODULES` 配置多个 capability module
+- loader 按顺序加载多个能力包
+- role registry 由多个能力包合并
+- tool executor 当前由第一个提供工具宿主的能力包担任，其余能力包可先提供 roles / prompts / profiles
 
 ### Shadow
 

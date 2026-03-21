@@ -2831,6 +2831,26 @@
     }
   },
   {
+    "name": "helper_debug_capability_multi_module_snapshot_loads_office_and_addon_modules",
+    "kind": "helper",
+    "helper": "_debug_capability_multi_module_snapshot",
+    "args": {},
+    "assert": {
+      "equals": {
+        "module_count": 2,
+        "primary_tool_module": "office_modules"
+      },
+      "contains_any": {
+        "module_ids.0": [
+          "office_modules"
+        ],
+        "module_ids.1": [
+          "office_addons"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",
