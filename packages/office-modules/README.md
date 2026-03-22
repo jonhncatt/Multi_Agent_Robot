@@ -6,6 +6,8 @@ office 领域能力包。
 - tools
 - roles
 - agent module
+- output module
+- memory module
 - prompts / profiles
 - workflows
 - manifest.json
@@ -16,4 +18,10 @@ office 领域能力包。
 - 当前具体 office role 实现已经开始从 `app/agents/*` 迁入这里，`app/agents/*` 只保留兼容导出层。
 - 当前默认导出：
   - `Office Agent Module`
-  - `Office Tool Module`
+  - `Workspace Tool Module`
+  - `File Tool Module`
+  - `Web Tool Module`
+  - `Write Tool Module`
+  - `Session Tool Module`
+  - `Output Module`
+  - `Overlay Memory Module`

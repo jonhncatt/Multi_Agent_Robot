@@ -1342,64 +1342,50 @@ function renderModuleBay(health = {}) {
   const selected = health?.kernel_selected_modules || {};
   const moduleHealth = health?.kernel_module_health || {};
   const hostRuntime = health?.kernel_host_runtime || {};
-  const primaryAgent = hostRuntime?.primary_agent_module || {};
-  const primaryTool = hostRuntime?.primary_tool_module || {};
+  const agentModules = Array.isArray(hostRuntime?.agent_modules) ? hostRuntime.agent_modules : [];
+  const toolModules = Array.isArray(hostRuntime?.tool_modules) ? hostRuntime.tool_modules : [];
+  const outputModules = Array.isArray(hostRuntime?.output_modules) ? hostRuntime.output_modules : [];
+  const memoryModules = Array.isArray(hostRuntime?.memory_modules) ? hostRuntime.memory_modules : [];
   const overlay = health?.assistant_overlay_profile || {};
   const moduleAffinity = overlay?.module_affinity || {};
   const entries = Object.entries(selected);
+  const capabilityEntries = [
+    ...agentModules.map((item) => ({ kind: "Agent Module", stats: [`roles=${Array.isArray(item?.roles) ? item.roles.length : 0}`], signals: Array.isArray(item?.profiles) ? item.profiles : [], ...item })),
+    ...toolModules.map((item) => ({ kind: "Tool Module", stats: [`tools=${Array.isArray(item?.tool_names) ? item.tool_names.length : 0}`], signals: Array.isArray(item?.tool_names) ? item.tool_names.slice(0, 4) : [], ...item })),
+    ...outputModules.map((item) => ({ kind: "Output Module", stats: [`outputs=${Array.isArray(item?.output_kinds) ? item.output_kinds.length : 0}`], signals: Array.isArray(item?.output_kinds) ? item.output_kinds : [], ...item })),
+    ...memoryModules.map((item) => ({ kind: "Memory Module", stats: [`signals=${Array.isArray(item?.signal_kinds) ? item.signal_kinds.length : 0}`], signals: Array.isArray(item?.signal_kinds) ? item.signal_kinds : [], ...item })),
+  ];
 
   moduleBay.innerHTML = "";
-  if (!entries.length && !primaryAgent?.module_id && !primaryTool?.module_id) {
+  if (!entries.length && !capabilityEntries.length) {
     moduleBay.textContent = "模块舱为空。";
     if (moduleBayMeta) moduleBayMeta.textContent = "0 modules";
     return;
   }
 
   if (moduleBayMeta) {
-    const capabilityCount = [primaryAgent?.module_id, primaryTool?.module_id].filter(Boolean).length;
+    const capabilityCount = capabilityEntries.length;
     moduleBayMeta.textContent = `${entries.length} 个 kernel 模块 · ${capabilityCount} 个 capability 模块`;
   }
 
-  const capabilityCards = [
-    {
-      title: "Agent Module",
-      ref: String(primaryAgent?.module_id || "-"),
-      desc: String(primaryAgent?.description || "当前由主核装载的默认智能体模块。"),
-      stats: [
-        `title=${String(primaryAgent?.title || "-")}`,
-        `roles=${Array.isArray(primaryAgent?.roles) ? primaryAgent.roles.length : 0}`,
-      ],
-      signals: Array.isArray(primaryAgent?.profiles) ? primaryAgent.profiles : [],
-    },
-    {
-      title: "Tool Module",
-      ref: String(primaryTool?.module_id || "-"),
-      desc: String(primaryTool?.description || "当前由主核装载的默认工具模块。"),
-      stats: [
-        `title=${String(primaryTool?.title || "-")}`,
-        `tools=${Array.isArray(primaryTool?.tool_names) ? primaryTool.tool_names.length : 0}`,
-      ],
-      signals: Array.isArray(primaryTool?.tool_names) ? primaryTool.tool_names.slice(0, 4) : [],
-    },
-  ].filter((item) => item.ref && item.ref !== "-");
-
-  capabilityCards.forEach((item) => {
+  capabilityEntries.forEach((item) => {
     const card = document.createElement("article");
     card.className = "module-card status-active capability-card";
     card.innerHTML = `
       <div class="module-card-head">
         <div>
-          <div class="module-card-title">${item.title}</div>
-          <div class="module-card-ref">${item.ref}</div>
+          <div class="module-card-title">${String(item.kind || "Module")}</div>
+          <div class="module-card-ref">${String(item.module_id || "-")}</div>
         </div>
         <span class="module-status-badge">MODULE</span>
       </div>
-      <div class="module-card-desc">${item.desc}</div>
+      <div class="module-card-desc">${String(item.description || item.title || "模块描述缺失。")}</div>
       <div class="module-card-stats">
-        ${item.stats.map((stat) => `<span>${stat}</span>`).join("")}
+        <span>title=${String(item.title || "-")}</span>
+        ${(Array.isArray(item.stats) ? item.stats : []).map((stat) => `<span>${stat}</span>`).join("")}
       </div>
       <div class="module-card-signals">
-        ${item.signals.map((signal) => `<span class="signal-chip">${String(signal)}</span>`).join("")}
+        ${(Array.isArray(item.signals) ? item.signals : []).map((signal) => `<span class="signal-chip">${String(signal)}</span>`).join("")}
       </div>
     `;
     moduleBay.appendChild(card);
@@ -1679,6 +1665,8 @@ function renderKernelConsole(health = {}) {
   const hostRuntime = health?.kernel_host_runtime || {};
   const primaryAgent = hostRuntime?.primary_agent_module || {};
   const primaryTool = hostRuntime?.primary_tool_module || {};
+  const primaryOutput = hostRuntime?.primary_output_module || {};
+  const primaryMemory = hostRuntime?.primary_memory_module || {};
   const blackboard = hostRuntime?.blackboard || {};
   const overlay = health?.assistant_overlay_profile || {};
   const recentEvents = health?.assistant_evolution_recent || [];
@@ -1705,8 +1693,8 @@ function renderKernelConsole(health = {}) {
     { label: "Provider", value: authMode, meta: `${Number(toolRegistry?.tool_count || 0)} tools registered` },
     { label: "Agent Module", value: String(primaryAgent?.module_id || "-"), meta: String(primaryAgent?.title || "未装载") },
     { label: "Tool Module", value: String(primaryTool?.module_id || "-"), meta: String(primaryTool?.title || "未装载") },
-    { label: "Router Bias", value: pickTopCounterName(overlay?.module_affinity?.router || [], "none"), meta: `top intent=${pickTopCounterName(overlay?.intent_counts || [], "none")}` },
-    { label: "Explainer Bias", value: pickTopCounterName(overlay?.module_affinity?.explainer || [], "none"), meta: `profile=${pickTopCounterName(overlay?.runtime_profile_counts || [], "none")}` },
+    { label: "Output Module", value: String(primaryOutput?.module_id || "-"), meta: String(primaryOutput?.title || "未装载") },
+    { label: "Memory Module", value: String(primaryMemory?.module_id || "-"), meta: String(primaryMemory?.title || "未装载") },
   ]);
 
   renderKernelStatGrid(shadowLabMetrics, [

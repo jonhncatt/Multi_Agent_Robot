@@ -2838,7 +2838,7 @@
     "assert": {
       "equals": {
         "module_count": 2,
-        "primary_tool_module": "office_tools"
+        "primary_tool_module": "workspace_tools"
       },
       "contains_any": {
         "module_ids.0": [
@@ -2858,7 +2858,9 @@
     "assert": {
       "equals": {
         "primary_agent_module.module_id": "office_agent",
-        "primary_tool_module.module_id": "office_tools"
+        "primary_tool_module.module_id": "workspace_tools",
+        "primary_output_module.module_id": "output_finalizer",
+        "primary_memory_module.module_id": "overlay_memory"
       },
       "contains_any": {
         "capability_modules.0": [

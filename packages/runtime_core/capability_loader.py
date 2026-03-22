@@ -34,6 +34,26 @@ class ToolModule:
 
 
 @dataclass(frozen=True, slots=True)
+class OutputModule:
+    module_id: str
+    title: str
+    description: str = ""
+    default: bool = False
+    output_kinds: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryModule:
+    module_id: str
+    title: str
+    description: str = ""
+    default: bool = False
+    signal_kinds: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class CapabilityBundle:
     module_id: str
     version: str
@@ -42,6 +62,8 @@ class CapabilityBundle:
     tool_executor_factory: ToolExecutorFactory | None = None
     agent_modules: tuple[AgentModule, ...] = ()
     tool_modules: tuple[ToolModule, ...] = ()
+    output_modules: tuple[OutputModule, ...] = ()
+    memory_modules: tuple[MemoryModule, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

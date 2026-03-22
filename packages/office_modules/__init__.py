@@ -7,6 +7,8 @@ from typing import Any
 from packages.runtime_core.capability_loader import CapabilityBundle
 
 from .agent_module import build_office_agent_modules
+from .memory_module import build_office_memory_modules
+from .output_module import build_office_output_modules
 from .roles import build_office_role_registry
 from .tools import build_office_tool_modules, get_tool_executor
 
@@ -23,7 +25,9 @@ def build_capability_bundle(*, config: Any | None = None) -> CapabilityBundle:
     manifest = read_office_manifest()
     metadata = {
         "agent_modules": list(manifest.get("agent_modules") or []),
+        "memory_modules": list(manifest.get("memory_modules") or []),
         "profiles": list(manifest.get("profiles") or []),
+        "output_modules": list(manifest.get("output_modules") or []),
         "tools": list(manifest.get("tools") or []),
         "tool_modules": list(manifest.get("tool_modules") or []),
         "roles": list(manifest.get("roles") or []),
@@ -36,6 +40,8 @@ def build_capability_bundle(*, config: Any | None = None) -> CapabilityBundle:
         tool_executor_factory=get_tool_executor,
         agent_modules=build_office_agent_modules(),
         tool_modules=build_office_tool_modules(),
+        output_modules=build_office_output_modules(),
+        memory_modules=build_office_memory_modules(),
         metadata=metadata,
     )
 
@@ -47,7 +53,9 @@ def load_office_capability_bundle(*, config: Any | None = None) -> CapabilityBun
 __all__ = [
     "build_capability_bundle",
     "build_office_agent_modules",
+    "build_office_memory_modules",
     "build_office_role_registry",
+    "build_office_output_modules",
     "build_office_tool_modules",
     "get_tool_executor",
     "load_office_capability_bundle",

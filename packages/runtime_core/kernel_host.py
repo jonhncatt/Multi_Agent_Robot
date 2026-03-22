@@ -23,8 +23,12 @@ class KernelHost:
         self.capability_runtime = capability_runtime or build_agent_capability_runtime(config, config.capability_modules)
         self.agent_modules = tuple(self.capability_runtime.agent_modules)
         self.tool_modules = tuple(self.capability_runtime.tool_modules)
+        self.output_modules = tuple(self.capability_runtime.output_modules)
+        self.memory_modules = tuple(self.capability_runtime.memory_modules)
         self.primary_agent_module = self.capability_runtime.primary_agent_module
         self.primary_tool_module = self.capability_runtime.primary_tool_module
+        self.primary_output_module = self.capability_runtime.primary_output_module
+        self.primary_memory_module = self.capability_runtime.primary_memory_module
         if self.primary_agent_module is None:
             raise RuntimeError("No AgentModule is available in capability runtime")
         if self.primary_tool_module is None:
@@ -62,6 +66,8 @@ class KernelHost:
             attachment_ids=[str((item or {}).get("id") or "").strip() for item in (attachment_metas or []) if str((item or {}).get("id") or "").strip()],
             selected_agent_module_id=self.primary_agent_module.module_id,
             selected_tool_module_id=self.primary_tool_module.module_id,
+            selected_output_module_id=self.primary_output_module.module_id if self.primary_output_module else "",
+            selected_memory_module_id=self.primary_memory_module.module_id if self.primary_memory_module else "",
             selected_capability_modules=[item.module_id for item in self.capability_runtime.bundles],
         )
 
@@ -109,6 +115,16 @@ class KernelHost:
 
     def _debug_kernel_host_snapshot(self) -> dict[str, Any]:
         return {
+            "agent_modules": [
+                {
+                    "module_id": item.module_id,
+                    "title": item.title,
+                    "description": item.description,
+                    "roles": list(item.roles),
+                    "profiles": list(item.profiles),
+                }
+                for item in self.agent_modules
+            ],
             "primary_agent_module": {
                 "module_id": self.primary_agent_module.module_id,
                 "title": self.primary_agent_module.title,
@@ -118,6 +134,15 @@ class KernelHost:
             }
             if self.primary_agent_module
             else {},
+            "tool_modules": [
+                {
+                    "module_id": item.module_id,
+                    "title": item.title,
+                    "description": item.description,
+                    "tool_names": list(item.tool_names),
+                }
+                for item in self.tool_modules
+            ],
             "primary_tool_module": {
                 "module_id": self.primary_tool_module.module_id,
                 "title": self.primary_tool_module.title,
@@ -125,6 +150,40 @@ class KernelHost:
                 "tool_names": list(self.primary_tool_module.tool_names),
             }
             if self.primary_tool_module
+            else {},
+            "output_modules": [
+                {
+                    "module_id": item.module_id,
+                    "title": item.title,
+                    "description": item.description,
+                    "output_kinds": list(item.output_kinds),
+                }
+                for item in self.output_modules
+            ],
+            "memory_modules": [
+                {
+                    "module_id": item.module_id,
+                    "title": item.title,
+                    "description": item.description,
+                    "signal_kinds": list(item.signal_kinds),
+                }
+                for item in self.memory_modules
+            ],
+            "primary_output_module": {
+                "module_id": self.primary_output_module.module_id,
+                "title": self.primary_output_module.title,
+                "description": self.primary_output_module.description,
+                "output_kinds": list(self.primary_output_module.output_kinds),
+            }
+            if self.primary_output_module
+            else {},
+            "primary_memory_module": {
+                "module_id": self.primary_memory_module.module_id,
+                "title": self.primary_memory_module.title,
+                "description": self.primary_memory_module.description,
+                "signal_kinds": list(self.primary_memory_module.signal_kinds),
+            }
+            if self.primary_memory_module
             else {},
             "capability_modules": list(self.capability_runtime.metadata.get("module_paths") or []),
             "loaded_capability_bundles": [item.get("module_id") for item in self.capability_runtime.metadata.get("modules") or []],

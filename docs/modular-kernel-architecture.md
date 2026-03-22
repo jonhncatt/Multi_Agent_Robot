@@ -47,6 +47,19 @@
 - `AgentModule` / `ToolModule`：`packages/runtime_core/capability_loader.py`
 - 默认办公 `AgentModule`：`packages/office_modules/agent_module.py`
 - 默认办公 `ToolModule`：`packages/office_modules/tools.py`
+- 默认办公 `OutputModule`：`packages/office_modules/output_module.py`
+- 默认办公 `MemoryModule`：`packages/office_modules/memory_module.py`
+
+当前对外可见的 capability modules 已开始细化为：
+
+- `office_agent`
+- `workspace_tools`
+- `file_tools`
+- `web_tools`
+- `write_tools`
+- `session_tools`
+- `output_finalizer`
+- `overlay_memory`
 
 ```mermaid
 flowchart TD

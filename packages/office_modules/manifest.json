@@ -5,10 +5,20 @@
     "local_tool_executor"
   ],
   "tool_modules": [
-    "office_tools"
+    "workspace_tools",
+    "file_tools",
+    "web_tools",
+    "write_tools",
+    "session_tools"
   ],
   "agent_modules": [
     "office_agent"
+  ],
+  "output_modules": [
+    "output_finalizer"
+  ],
+  "memory_modules": [
+    "overlay_memory"
   ],
   "roles": [
     "router",

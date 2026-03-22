@@ -22,7 +22,7 @@ def _build_office_agent_runtime(
         tool_executor=tool_executor,
         host=host,
         selected_agent_module_id="office_agent",
-        selected_tool_module_id="office_tools",
+        selected_tool_module_id="workspace_tools",
     )
 
 

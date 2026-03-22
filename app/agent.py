@@ -677,8 +677,12 @@ class OfficeAgent:
             "modules": list(self._capability_runtime.metadata.get("modules") or []),
             "agent_modules": list(self._capability_runtime.metadata.get("agent_modules") or []),
             "tool_modules": list(self._capability_runtime.metadata.get("tool_modules") or []),
+            "output_modules": list(self._capability_runtime.metadata.get("output_modules") or []),
+            "memory_modules": list(self._capability_runtime.metadata.get("memory_modules") or []),
             "primary_agent_module": self._selected_agent_module_id,
             "primary_tool_module": self._selected_tool_module_id or self._capability_runtime.metadata.get("primary_tool_module"),
+            "primary_output_module": self._capability_runtime.metadata.get("primary_output_module"),
+            "primary_memory_module": self._capability_runtime.metadata.get("primary_memory_module"),
             "extra_tool_modules": list(self._capability_runtime.metadata.get("extra_tool_modules") or []),
             "role_sources": dict(self._capability_runtime.metadata.get("role_sources") or {}),
         }

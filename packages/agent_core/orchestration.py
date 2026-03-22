@@ -5,7 +5,14 @@ from typing import Any
 
 from packages.agent_core.role_registry import RegisteredRole, RoleRegistry
 from packages.agent_core.runtime_controller import RoleRuntimeController
-from packages.runtime_core.capability_loader import AgentModule, CapabilityBundle, ToolModule, load_capability_bundles
+from packages.runtime_core.capability_loader import (
+    AgentModule,
+    CapabilityBundle,
+    MemoryModule,
+    OutputModule,
+    ToolModule,
+    load_capability_bundles,
+)
 
 
 @dataclass(slots=True)
@@ -16,8 +23,12 @@ class AgentCapabilityRuntime:
     runtime_controller: RoleRuntimeController
     agent_modules: tuple[AgentModule, ...]
     tool_modules: tuple[ToolModule, ...]
+    output_modules: tuple[OutputModule, ...]
+    memory_modules: tuple[MemoryModule, ...]
     primary_agent_module: AgentModule | None
     primary_tool_module: ToolModule | None
+    primary_output_module: OutputModule | None
+    primary_memory_module: MemoryModule | None
     tools: Any
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -89,6 +100,32 @@ def _collect_tool_modules(bundles: list[CapabilityBundle]) -> tuple[list[ToolMod
     return modules, primary
 
 
+def _collect_output_modules(bundles: list[CapabilityBundle]) -> tuple[list[OutputModule], OutputModule | None]:
+    modules: list[OutputModule] = []
+    primary: OutputModule | None = None
+    for bundle in bundles:
+        for item in bundle.output_modules:
+            modules.append(item)
+            if primary is None and item.default:
+                primary = item
+    if primary is None and modules:
+        primary = modules[0]
+    return modules, primary
+
+
+def _collect_memory_modules(bundles: list[CapabilityBundle]) -> tuple[list[MemoryModule], MemoryModule | None]:
+    modules: list[MemoryModule] = []
+    primary: MemoryModule | None = None
+    for bundle in bundles:
+        for item in bundle.memory_modules:
+            modules.append(item)
+            if primary is None and item.default:
+                primary = item
+    if primary is None and modules:
+        primary = modules[0]
+    return modules, primary
+
+
 def build_agent_capability_runtime(config: Any, module_paths: list[str] | tuple[str, ...]) -> AgentCapabilityRuntime:
     normalized_paths = tuple(str(item or "").strip() for item in module_paths if str(item or "").strip())
     if not normalized_paths:
@@ -101,6 +138,8 @@ def build_agent_capability_runtime(config: Any, module_paths: list[str] | tuple[
     role_registry, role_sources = _merge_role_registries(bundles)
     agent_modules, primary_agent_module = _collect_agent_modules(bundles)
     tool_modules, primary_tool_module = _collect_tool_modules(bundles)
+    output_modules, primary_output_module = _collect_output_modules(bundles)
+    memory_modules, primary_memory_module = _collect_memory_modules(bundles)
     if not tool_modules or primary_tool_module is None or primary_tool_module.build_executor is None:
         raise RuntimeError("No capability module provides a ToolModule")
 
@@ -137,8 +176,26 @@ def build_agent_capability_runtime(config: Any, module_paths: list[str] | tuple[
             }
             for item in tool_modules
         ],
+        "output_modules": [
+            {
+                "module_id": item.module_id,
+                "title": item.title,
+                "output_kinds": list(item.output_kinds),
+            }
+            for item in output_modules
+        ],
+        "memory_modules": [
+            {
+                "module_id": item.module_id,
+                "title": item.title,
+                "signal_kinds": list(item.signal_kinds),
+            }
+            for item in memory_modules
+        ],
         "primary_agent_module": primary_agent_module.module_id if primary_agent_module else "",
         "primary_tool_module": primary_tool_module.module_id,
+        "primary_output_module": primary_output_module.module_id if primary_output_module else "",
+        "primary_memory_module": primary_memory_module.module_id if primary_memory_module else "",
         "extra_tool_modules": [item.module_id for item in tool_modules[1:]],
         "role_sources": role_sources,
     }
@@ -149,8 +206,12 @@ def build_agent_capability_runtime(config: Any, module_paths: list[str] | tuple[
         runtime_controller=runtime_controller,
         agent_modules=tuple(agent_modules),
         tool_modules=tuple(tool_modules),
+        output_modules=tuple(output_modules),
+        memory_modules=tuple(memory_modules),
         primary_agent_module=primary_agent_module,
         primary_tool_module=primary_tool_module,
+        primary_output_module=primary_output_module,
+        primary_memory_module=primary_memory_module,
         tools=tools,
         metadata=metadata,
     )

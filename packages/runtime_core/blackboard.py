@@ -26,6 +26,8 @@ class Blackboard:
     attachment_ids: list[str] = field(default_factory=list)
     selected_agent_module_id: str = ""
     selected_tool_module_id: str = ""
+    selected_output_module_id: str = ""
+    selected_memory_module_id: str = ""
     selected_capability_modules: list[str] = field(default_factory=list)
     status: str = "created"
     created_at: str = field(default_factory=_now_iso)
@@ -49,6 +51,8 @@ class Blackboard:
         attachment_ids: list[str] | None,
         selected_agent_module_id: str,
         selected_tool_module_id: str,
+        selected_output_module_id: str = "",
+        selected_memory_module_id: str = "",
         selected_capability_modules: list[str] | None = None,
     ) -> "Blackboard":
         return cls(
@@ -58,6 +62,8 @@ class Blackboard:
             attachment_ids=[str(item or "").strip() for item in (attachment_ids or []) if str(item or "").strip()],
             selected_agent_module_id=str(selected_agent_module_id or "").strip(),
             selected_tool_module_id=str(selected_tool_module_id or "").strip(),
+            selected_output_module_id=str(selected_output_module_id or "").strip(),
+            selected_memory_module_id=str(selected_memory_module_id or "").strip(),
             selected_capability_modules=[
                 str(item or "").strip() for item in (selected_capability_modules or []) if str(item or "").strip()
             ],
@@ -114,6 +120,8 @@ class Blackboard:
             "attachment_ids": list(self.attachment_ids),
             "selected_agent_module_id": self.selected_agent_module_id,
             "selected_tool_module_id": self.selected_tool_module_id,
+            "selected_output_module_id": self.selected_output_module_id,
+            "selected_memory_module_id": self.selected_memory_module_id,
             "selected_capability_modules": list(self.selected_capability_modules),
             "effective_model": self.effective_model,
             "route_state": dict(self.route_state),
