@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agents.runtime_profiles import RuntimeProfile
-from app.role_runtime import RoleContext, RoleResult, RoleSpec
+from packages.office_modules.runtime_profiles import RuntimeProfile
+from packages.agent_core.role_runtime import RoleContext, RoleResult, RoleSpec
 
 
 def validate_role_spec(spec: RoleSpec) -> dict[str, Any]:

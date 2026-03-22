@@ -13,12 +13,12 @@ from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
-from app.agents.reviewer_helpers import (
+from packages.office_modules.reviewer_helpers import (
     normalize_reviewer_verdict as normalize_reviewer_verdict_helper,
     reviewer_readonly_tool_names as reviewer_readonly_tool_names_helper,
     summarize_reviewer_tool_result as summarize_reviewer_tool_result_helper,
 )
-from app.agents.answer_bundle_support import (
+from packages.office_modules.answer_bundle_support import (
     augment_bundle_warnings as augment_bundle_warnings_helper,
     citation_kind as citation_kind_helper,
     citation_strength as citation_strength_helper,
@@ -28,19 +28,19 @@ from app.agents.answer_bundle_support import (
     split_claim_candidates as split_claim_candidates_helper,
     strip_answer_bundle_meta as strip_answer_bundle_meta_helper,
 )
-from app.agents.citation_support import (
+from packages.office_modules.citation_support import (
     domain_from_url as domain_from_url_helper,
     extract_citations_from_tool_result as extract_citations_from_tool_result_helper,
     finalize_citation_candidates as finalize_citation_candidates_helper,
     merge_citation_candidates as merge_citation_candidates_helper,
 )
-from app.agents.planning_support import (
+from packages.office_modules.planning_support import (
     build_execution_plan as build_execution_plan_helper,
     summarize_attachment_metas_for_agents as summarize_attachment_metas_for_agents_helper,
 )
-from app.agents.planner_role import run_planner_role as run_planner_role_helper
-from app.agents.conflict_detector_role import run_conflict_detector_role as run_conflict_detector_role_helper
-from app.agents.review_support import (
+from packages.office_modules.planner_role import run_planner_role as run_planner_role_helper
+from packages.office_modules.conflict_detector_role import run_conflict_detector_role as run_conflict_detector_role_helper
+from packages.office_modules.review_support import (
     format_tool_event_for_review as format_tool_event_for_review_helper,
     has_successful_local_file_access as has_successful_local_file_access_helper,
     prepare_tool_result_for_llm as prepare_tool_result_for_llm_helper,
@@ -50,10 +50,10 @@ from app.agents.review_support import (
     summarize_write_tool_events as summarize_write_tool_events_helper,
     text_acknowledges_written_targets as text_acknowledges_written_targets_helper,
 )
-from app.agents.reviewer_role import run_reviewer_role as run_reviewer_role_helper
-from app.agents.revision_role import run_revision_role as run_revision_role_helper
-from app.agents.role_catalog import ROLE_KINDS as _ROLE_KINDS, SPECIALIST_LABELS as _SPECIALIST_LABELS
-from app.agents.role_helpers import (
+from packages.office_modules.reviewer_role import run_reviewer_role as run_reviewer_role_helper
+from packages.office_modules.revision_role import run_revision_role as run_revision_role_helper
+from packages.office_modules.role_catalog import ROLE_KINDS as _ROLE_KINDS, SPECIALIST_LABELS as _SPECIALIST_LABELS
+from packages.office_modules.role_helpers import (
     make_default_role_result as make_default_role_result_helper,
     make_role_context as make_role_context_helper,
     make_role_result as make_role_result_helper,
@@ -64,12 +64,12 @@ from app.agents.role_debug_support import (
     debug_role_contract_matrix as debug_role_contract_matrix_helper,
     debug_role_execution_smoke_matrix as debug_role_execution_smoke_matrix_helper,
 )
-from app.agents.runtime_profiles import (
+from packages.office_modules.runtime_profiles import (
     build_runtime_profile_hint,
     default_runtime_profile_for_route,
 )
-from app.agents.structurer_role import run_structurer_role as run_structurer_role_helper
-from app.agents.specialist_role import (
+from packages.office_modules.structurer_role import run_structurer_role as run_structurer_role_helper
+from packages.office_modules.specialist_role import (
     build_specialist_input_payload as build_specialist_input_payload_helper,
     format_specialist_system_hint as format_specialist_system_hint_helper,
     normalize_specialist_brief_payload as normalize_specialist_brief_payload_helper,

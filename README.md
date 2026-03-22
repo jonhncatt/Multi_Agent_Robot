@@ -3,10 +3,12 @@
 一个可在办公室高频使用的本地 Agent 工具，核心能力：
 
 - 对话 + 上传图片/文档（支持拖拽）
-- 可选本地工具执行（读写文件、白名单命令、联网抓取）
+- `KernelHost` 主核启动后，按模块装配能力，不再把所有能力硬编码在单体入口里
+- `AgentModule / ToolModule / OutputModule / MemoryModule` 都是可升级模块
+- 可选本地工具执行（读写文件、白名单命令、联网抓取），并且已经按 `workspace / file / web / write / session` 分成具体 `ToolModule`
 - 会话自动摘要压缩，避免上下文无限增长
 - 页面显示“执行轨迹”，可见每次调用实际做了什么
-- 多 Agent 透明层：`Router -> Planner -> Worker -> Reviewer -> Revision`，按任务类型动态裁剪链路，可见分诊、执行计划、审阅结论与最终修订
+- `OfficeAgentModule` 内部继续保留多 agent 工作单元：`Router -> Planner -> Worker -> Reviewer -> Revision`
 - 页面侧栏显示当前版本号/构建号，便于区分线上实例
 - 一键“沙盒演练”（按当前执行环境做只读健康检查，先验环境再跑复杂任务）
 - 对话请求支持流式进度（SSE），可实时看到后端阶段、工具调用与执行轨迹更新
@@ -24,6 +26,7 @@
 - [1. 快速启动](#1-快速启动)
 - [2. 功能说明](#2-功能说明)
 - [3. 目录结构](#3-目录结构)
+- [架构关系](#架构关系)
 - [4. 办公场景建议](#4-办公场景建议)
 - [5. 注意事项](#5-注意事项)
 - [Swarm Roadmap](docs/swarm-roadmap.md)
@@ -47,6 +50,14 @@ cp .env.example .env
 ```
 
 打开浏览器：<http://127.0.0.1:8080>
+
+如需实验运行时视图，也可以单独启动：
+
+```bash
+./run-role-agent-lab.sh
+```
+
+实验台地址：<http://127.0.0.1:8081>
 
 - 应用会自动读取项目根目录 `.env`，无需再手动 `export` 或 `setx`
 - 未配置 `OPENAI_API_KEY` 也会启动并监听端口，但 `/api/chat` 会报错直到配置好 key
@@ -209,6 +220,43 @@ cd $HOME\Desktop\officetool
 - 大文件建议让助手按块读取（例如每次 `max_chars=200000`，再用下一块 `start_char=end_char` 继续）
 - 前端默认走 `/api/chat/stream` 实时流式接口；如需非流式可继续使用 `/api/chat`
 
+### 架构关系
+
+当前最重要的 4 个对象是：
+
+- `KernelHost`：稳定主核，只负责启动、装配、调度、保护和回滚
+- `AgentModule`：会思考、会规划、会驱动内部多 agent 工作单元的能力模块
+- `ToolModule`：会执行动作的能力模块
+- `Blackboard`：一次请求的共享状态面板，记录本轮到底用了哪个模块、走了什么计划、出了什么错误
+
+当前默认装配的模块：
+
+- `office_agent`
+- `workspace_tools`
+- `file_tools`
+- `web_tools`
+- `write_tools`
+- `session_tools`
+- `output_finalizer`
+- `overlay_memory`
+
+最重要的一点：
+
+- `planner / reviewer / revision / structurer` 仍然存在
+- 但它们不再是用户主视角的一级模块
+- 它们是 `office_agent` 内部的工作单元
+
+当前真实运行关系：
+
+```text
+HTTP / UI
+  -> KernelHost
+  -> 选择主 AgentModule / ToolModule / OutputModule / MemoryModule
+  -> 创建 Blackboard
+  -> 由 AgentModule 在 Blackboard 上驱动内部多 agent 工作流
+  -> ToolExecutionBus 按 ToolModule 路由具体工具调用
+```
+
 ### Regression Evals
 
 - 回归测试脚本：`python3 scripts/run_evals.py`
@@ -253,8 +301,9 @@ cd $HOME\Desktop\officetool
 
 ### 多 Agent 透明层
 
+- 这层现在是 `office_agent` 内部的运行机制，不再是系统最外层的主架构概念
 - `Router`：先做规则分诊；命中模糊场景时再调用轻量 LLM Router，决定是否需要 Planner、工具链、Reviewer 与 Structurer
-- `Researcher / FileReader / Summarizer`：可复用专门角色模板，按任务动态实例化，给 `Worker` 提供更窄职责的简报
+- `Researcher / FileReader / Summarizer`：按任务动态实例化，给 `Worker` 提供更窄职责的简报
 - `Planner`：先提炼目标、约束、执行计划，不直接调工具
 - `Worker`：沿用主 Agent 工具循环，负责取证、执行、生成答复
 - `Reviewer`：在最终答复后做一次独立审阅，给出置信度、风险与后续建议
@@ -262,13 +311,11 @@ cd $HOME\Desktop\officetool
 - 简单理解/小附件摘要会直接走 `Router -> Worker`
 - 联网查证/规范定位会保留 `Planner -> Worker -> Reviewer`，必要时再进 `Revision`
 - 阶段 3 起，简单理解会优先挂 `Summarizer`，联网查证优先挂 `Researcher`，附件定位优先挂 `FileReader`
-- 页面“多 Agent 透明层”面板会展示：
-  - Execution Plan
-  - Router 分诊摘要
-  - Planner 摘要
-  - Worker 执行概览
-  - Reviewer 审阅结论
-  - Revision 修订说明
+- 页面里仍可查看这层的执行摘要，但 Kernel 视图优先展示：
+  - 当前主核
+  - 当前主模块
+  - Blackboard 状态
+  - 本轮实际激活的 `ToolModule`
 - 这些摘要会通过 SSE 实时更新，不必等到整轮结束
 - 这里展示的是“决策摘要”，不是原始思维链
 
@@ -306,21 +353,26 @@ cd $HOME\Desktop\officetool
 
 ```text
 app/
-  agent.py         # 模型调用 + 工具循环 + 会话摘要
+  main.py          # FastAPI 壳子，默认启动 KernelHost
+  agent.py         # 当前默认 OfficeAgent 运行体（逐步继续瘦身）
   attachments.py   # 文档抽取、图片读取
   config.py        # 配置项
-  local_tools.py   # 本地工具执行安全层
+  local_tools.py   # 底层工具执行安全层（逐步继续下沉到 ToolModule）
   sandbox.py       # Docker 沙盒执行管理（会话级容器）
-  main.py          # FastAPI 路由
   models.py        # API 数据模型
   storage.py       # 会话与上传持久化
   static/
     index.html
     styles.css
     app.js
-  data/
-    sessions/      # 会话存储（运行后生成）
-    uploads/       # 上传文件与索引（运行后生成）
+packages/
+  runtime_core/    # KernelHost / Blackboard / capability loader / ToolExecutionBus
+  agent_core/      # 多 agent runtime / role registry / runtime controller
+  office_modules/  # office_agent / tool modules / output module / memory module
+app/data/
+  apps/
+    kernel_robot/  # 默认主核运行态（运行后生成）
+    role_agent_lab/# 实验运行态（运行后生成）
 ```
 
 ## 4. 办公场景建议

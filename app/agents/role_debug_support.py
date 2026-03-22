@@ -4,7 +4,11 @@ from typing import Any
 
 from app.agents.role_contracts import validate_role_result, validate_runtime_profile
 from app.agents.role_smoke import run_role_execution_smoke
-from app.agents.runtime_profiles import PATCH_WORKER_PROFILE, default_runtime_profile_for_route, runtime_profile_spec
+from packages.office_modules.runtime_profiles import (
+    PATCH_WORKER_PROFILE,
+    default_runtime_profile_for_route,
+    runtime_profile_spec,
+)
 
 
 def debug_role_contract_matrix(agent: Any) -> dict[str, Any]:

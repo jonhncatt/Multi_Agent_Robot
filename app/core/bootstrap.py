@@ -10,7 +10,7 @@ import tempfile
 from typing import Any
 from uuid import uuid4
 
-from app.agents.runtime_profiles import PATCH_WORKER_PROFILE
+from packages.office_modules.runtime_profiles import PATCH_WORKER_PROFILE
 from app.config import AppConfig
 from app.core.module_code import sync_python_module_version
 from app.core.module_loader import ModuleLoader

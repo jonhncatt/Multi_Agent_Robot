@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.agents.runtime_profiles import RUNTIME_PROFILES
+from packages.office_modules.runtime_profiles import RUNTIME_PROFILES
 from app.config import AppConfig
 from app.core.module_code import read_python_module_version
 from app.core.module_loader import ModuleLoader

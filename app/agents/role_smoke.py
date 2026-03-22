@@ -4,12 +4,12 @@ import json
 from dataclasses import replace
 from typing import Any
 
-from app.agents.planner_role import run_planner_role
-from app.agents.reviewer_role import run_reviewer_role
-from app.agents.revision_role import run_revision_role
+from packages.office_modules.planner_role import run_planner_role
+from packages.office_modules.reviewer_role import run_reviewer_role
+from packages.office_modules.revision_role import run_revision_role
 from app.agents.role_contracts import validate_role_result, validate_runtime_profile
-from app.agents.runtime_profiles import PATCH_WORKER_PROFILE, runtime_profile_spec
-from app.agents.structurer_role import run_structurer_role
+from packages.office_modules.runtime_profiles import PATCH_WORKER_PROFILE, runtime_profile_spec
+from packages.office_modules.structurer_role import run_structurer_role
 from app.models import ChatSettings
 
 

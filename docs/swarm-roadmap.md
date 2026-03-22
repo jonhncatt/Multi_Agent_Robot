@@ -26,6 +26,13 @@
 
 当前实现已经不是旧文档描述的“阶段 1 到阶段 2 之前”。
 
+当前需要额外说明的一点：
+
+- 这条路线已经不再把 `role` 当作系统最外层模块边界
+- 最外层统一收敛成：`KernelHost -> AgentModule / ToolModule / OutputModule / MemoryModule -> Blackboard`
+- `Router / Planner / Worker / Reviewer / Revision / Structurer` 继续存在，但它们是 `office_agent` 这种 `AgentModule` 内部的工作单元
+- `Role-Agent Lab` 现在更像同一套核心运行时的实验视图，不再是终局产品形态
+
 当前主链路已经具备：
 
 - `Router`
@@ -56,6 +63,16 @@
 
 补充：当前仓库正在把多 role runtime 正式抽成 `agent-core`，并把 office 领域 roles / tools / prompts 收敛为 `capability modules`。这意味着后续 Stage 4/5 的并行与聚合，不再依赖单体 `app/agent.py` 的硬编码岗位定义。
 
+另外，当前还已经开始把工具执行也收敛到真实 `ToolModule`：
+
+- `workspace_tools`
+- `file_tools`
+- `web_tools`
+- `write_tools`
+- `session_tools`
+
+这些模块现在不只是 UI 分组，而是通过 `ToolExecutionBus` 真正进入执行路径；`Blackboard` 也会记录 `tool_module_usage`。
+
 当前已落地的第一批迁移包括：
 
 - `packages/agent_core/*`：承接 role runtime / registry / controller / capability orchestration
@@ -74,6 +91,15 @@
 4. `Specialist` 在需要时生成专门简报
 5. `Worker` 执行主任务与工具循环
 6. `Conflict Detector / Reviewer / Revision / Structurer` 按路由配置参与后处理
+
+但从系统最外层看，当前已经开始收敛成更简单的宿主模型：
+
+1. `KernelHost` 启动
+2. `KernelHost` 装载主 `AgentModule`
+3. `KernelHost` 装载多个 `ToolModule`
+4. 每轮请求创建 `Blackboard`
+5. `AgentModule` 在 `Blackboard` 上驱动内部多 role 工作单元
+6. `ToolExecutionBus` 按 `ToolModule` 路由具体动作
 
 这个系统已经具备较强的可观测性和一定的动态分流能力，但本质上仍然是：
 
