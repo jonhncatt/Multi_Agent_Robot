@@ -3,8 +3,55 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.models import ToolEvent
+
+
+_TRACKING_QUERY_KEYS = {
+    "fbclid",
+    "gclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "oc",
+    "ref",
+    "ref_src",
+    "source",
+}
+
+
+def _normalize_url(raw_url: str) -> str:
+    raw = str(raw_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return raw
+    if not parsed.scheme or not parsed.netloc:
+        return raw
+    query_pairs: list[tuple[str, str]] = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=False):
+        lowered = str(key or "").strip().lower()
+        if lowered.startswith("utm_") or lowered in _TRACKING_QUERY_KEYS:
+            continue
+        query_pairs.append((key, value))
+    return urlunparse(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            parsed.path or "/",
+            "",
+            urlencode(query_pairs, doseq=True),
+            "",
+        )
+    ).rstrip("?")
+
+
+def _short_url(agent: Any, raw_url: str, limit: int = 80) -> str:
+    normalized = _normalize_url(raw_url)
+    return agent._shorten(normalized or str(raw_url or "").strip(), limit)
 
 
 def summarize_validation_context(agent: Any, tool_events: list[ToolEvent]) -> dict[str, Any]:
@@ -42,7 +89,7 @@ def summarize_validation_context(agent: Any, tool_events: list[ToolEvent]) -> di
             source_format = str(parsed.get("source_format") or parsed.get("content_type") or "").strip()
             parts = [detail]
             if url:
-                parts.append(f"url={agent._shorten(url, 80)}")
+                parts.append(f"url={_short_url(agent, url, 80)}")
             if source_format:
                 parts.append(f"format={source_format}")
             detail = ", ".join(parts)
@@ -51,7 +98,7 @@ def summarize_validation_context(agent: Any, tool_events: list[ToolEvent]) -> di
             path = str(parsed.get("path") or "").strip()
             parts = [detail]
             if url:
-                parts.append(f"url={agent._shorten(url, 80)}")
+                parts.append(f"url={_short_url(agent, url, 80)}")
             if path:
                 parts.append(f"path={agent._shorten(path, 80)}")
             detail = ", ".join(parts)

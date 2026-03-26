@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.bootstrap import AgentOSRuntime, assemble_runtime
 from app.config import load_config
 from app.core.bootstrap import build_kernel_runtime
 from app.core.healthcheck import build_kernel_health_payload
@@ -62,7 +63,7 @@ from app.product_profiles import ensure_product_profile_env
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
-from packages.runtime_core.kernel_host import KernelHost
+from packages.runtime_core.kernel_host import KernelHost as LegacyKernelHost
 
 PRODUCT_PROFILE = ensure_product_profile_env()
 config = load_config()
@@ -72,7 +73,12 @@ token_stats_store = TokenStatsStore(config.token_stats_path)
 shadow_log_store = ShadowLogStore(config.shadow_logs_dir)
 evolution_store = EvolutionStore(config.overlay_profile_path, config.evolution_logs_dir)
 kernel_runtime = build_kernel_runtime(config)
-_agent: KernelHost | None = None
+agent_os_runtime: AgentOSRuntime = assemble_runtime(
+    config,
+    kernel_runtime=kernel_runtime,
+    legacy_host_factory=lambda: LegacyKernelHost(config, kernel_runtime=get_kernel_runtime()),
+)
+_agent: LegacyKernelHost | None = None
 APP_VERSION = "0.3.5"
 
 
@@ -191,10 +197,19 @@ def get_evolution_store() -> EvolutionStore:
     return evolution_store
 
 
-def get_agent() -> KernelHost:
+def get_agent_os_runtime() -> AgentOSRuntime:
+    return agent_os_runtime
+
+
+def get_agent() -> LegacyKernelHost:
     global _agent
+    legacy = get_agent_os_runtime().get_legacy_host()
+    if legacy is not None:
+        _agent = legacy
+        return legacy
     if _agent is None:
-        _agent = KernelHost(config, kernel_runtime=get_kernel_runtime())
+        _agent = LegacyKernelHost(config, kernel_runtime=get_kernel_runtime())
+        get_agent_os_runtime().bind_legacy_host(_agent)
     return _agent
 
 app = FastAPI(title=PRODUCT_PROFILE.app_title, version=APP_VERSION)
@@ -234,6 +249,7 @@ def health() -> HealthResponse:
     auth_summary = OpenAIAuthManager(config).auth_summary()
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
     host_runtime = agent._debug_kernel_host_snapshot()
+    host_runtime["agent_os_runtime"] = get_agent_os_runtime().snapshot()
     role_lab_runtime = agent._debug_role_lab_runtime_snapshot()
     evolution_payload = get_evolution_store().runtime_payload(limit=10)
     tool_registry = agent._debug_tool_registry_snapshot()

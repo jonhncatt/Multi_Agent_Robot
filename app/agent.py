@@ -1389,7 +1389,11 @@ class OfficeAgent:
         managed_role_executions: dict[str, RoleExecution] = {}
         coordinator_node_id = ""
         coordinator_instance_id = ""
-        allowed_roots_text = ", ".join(str(p) for p in get_access_roots(self.config))
+        access_roots = [str(p) for p in get_access_roots(self.config)]
+        compact_roots = [self._shorten(item, 80) for item in access_roots[:4]]
+        if len(access_roots) > 4:
+            compact_roots.append(f"...(+{len(access_roots) - 4})")
+        allowed_roots_text = ", ".join(compact_roots) or "(none)"
         session_tools_hint = (
             "当用户提到“之前/上次会话里说过什么”时，可调用 list_sessions 和 read_session_history 主动检索历史，不要先让用户手工找 session_id。\n"
             if self.config.enable_session_tools
@@ -1486,7 +1490,7 @@ class OfficeAgent:
 
         def _normalize_role_status(value: str) -> str:
             status = str(value or "").strip().lower()
-            if status in {"idle", "seen", "active", "current"}:
+            if status in {"idle", "seen", "active", "current", "done", "skipped", "failed"}:
                 return status
             return "seen"
 
@@ -1521,8 +1525,13 @@ class OfficeAgent:
             active_roles.clear()
             active_roles.update(normalized)
             current_role = str(current or "").strip().lower() or (next(iter(sorted(active_roles))) if active_roles else None)
-            for role_key in previous_active | set(role_states.keys()):
-                if role_key not in active_roles:
+            for role_key in previous_active:
+                if role_key in active_roles:
+                    continue
+                previous_status = str((role_states.get(role_key) or {}).get("status") or "").strip().lower()
+                if previous_status in {"active", "current"}:
+                    _upsert_role_state(role_key, status="done", phase="完成")
+                elif not previous_status:
                     _upsert_role_state(role_key, status="seen")
             for role_key in active_roles:
                 is_current = role_key == current_role
@@ -1538,8 +1547,26 @@ class OfficeAgent:
 
         def clear_role_activity(*, final_status: str | None = None, summary_text: str = "") -> None:
             nonlocal current_role
+            terminal_role_status = "seen"
+            terminal_phase = ""
             for role_key in list(active_roles):
-                _upsert_role_state(role_key, status="seen")
+                if final_status:
+                    normalized_terminal = str(final_status or "").strip().lower()
+                    if normalized_terminal == "completed":
+                        terminal_role_status = "done"
+                        terminal_phase = "完成"
+                    elif normalized_terminal == "failed":
+                        terminal_role_status = "failed"
+                        terminal_phase = "失败"
+                    elif normalized_terminal == "cancelled":
+                        terminal_role_status = "skipped"
+                        terminal_phase = "已取消"
+                _upsert_role_state(
+                    role_key,
+                    status=terminal_role_status,
+                    phase=terminal_phase if terminal_phase else None,
+                    detail=summary_text if terminal_role_status in {"failed", "skipped"} and summary_text else None,
+                )
             active_roles.clear()
             current_role = None
             if run_state is not None and run_state.ended_at <= 0 and final_status:
@@ -3396,6 +3423,9 @@ class OfficeAgent:
             route=route,
             spec_lookup_request=spec_lookup_request,
             evidence_required_mode=evidence_required_mode,
+            attachment_metas=attachment_metas,
+            tool_events=tool_events,
+            response_text=text,
         )
         record_pipeline_hook(
             phase="before_reviewer",
@@ -3485,6 +3515,7 @@ class OfficeAgent:
                     add_panel("conflict_detector", "Conflict Detector", conflict_summary, conflict_bullets)
                 else:
                     add_trace("Router 已跳过 Conflict Detector。")
+                    _upsert_role_state("conflict_detector", status="skipped", phase="已跳过", detail="task not conflict-sensitive")
 
                 set_role_activity(
                     "coordinator",
@@ -3689,7 +3720,8 @@ class OfficeAgent:
                         text = "模型未返回可见文本。"
                     continue
 
-                if review_hook["use_revision"]:
+                should_run_revision = bool(review_hook["use_revision"]) and reviewer_verdict in {"warn", "block"}
+                if should_run_revision:
                     set_role_activity(
                         "coordinator",
                         "revision",
@@ -3786,10 +3818,18 @@ class OfficeAgent:
                     )
                     add_panel("revision", "Revision", revision_summary, revision_bullets)
                 else:
-                    add_trace("Hook(before_reviewer): 已跳过 Revision。")
+                    if bool(review_hook["use_revision"]) and reviewer_verdict == "pass":
+                        add_trace("Hook(before_reviewer): Reviewer=pass，已跳过 Revision。")
+                        _upsert_role_state("revision", status="skipped", phase="已跳过", detail="reviewer=pass")
+                    else:
+                        add_trace("Hook(before_reviewer): 已跳过 Revision。")
+                        _upsert_role_state("revision", status="skipped", phase="已跳过", detail="review chain disabled")
                 break
         else:
             add_trace("Hook(before_reviewer): 已跳过 Conflict Detector / Reviewer / Revision。")
+            _upsert_role_state("conflict_detector", status="skipped", phase="已跳过", detail="review chain disabled")
+            _upsert_role_state("reviewer", status="skipped", phase="已跳过", detail="review chain disabled")
+            _upsert_role_state("revision", status="skipped", phase="已跳过", detail="review chain disabled")
 
         text = self._sanitize_final_answer_text(
             text,
@@ -3822,6 +3862,7 @@ class OfficeAgent:
             add_debug=add_debug,
         )
         if not structurer_hook["use_structurer"]:
+            _upsert_role_state("structurer", status="skipped", phase="已跳过", detail="policy/task disabled")
             clear_role_activity(final_status="completed", summary_text="completed_without_structurer")
             return (
                 text,
@@ -3841,6 +3882,7 @@ class OfficeAgent:
                 self._build_session_route_state(route) if route else {},
             )
         if not structurer_hook["should_emit_answer_bundle"]:
+            _upsert_role_state("structurer", status="skipped", phase="已跳过", detail="no citations to structure")
             clear_role_activity(final_status="completed", summary_text="completed_without_answer_bundle")
             return (
                 text,
@@ -5387,17 +5429,41 @@ class OfficeAgent:
         route: dict[str, Any],
         spec_lookup_request: bool,
         evidence_required_mode: bool,
+        attachment_metas: list[dict[str, Any]],
+        tool_events: list[ToolEvent],
+        response_text: str,
     ) -> HookResult:
+        def _should_run_review_chain() -> tuple[bool, str]:
+            task_type = str(route.get("task_type") or "standard").strip().lower() or "standard"
+            if bool(route.get("force_review_chain")):
+                return True, "force_review_chain=true"
+            if spec_lookup_request or evidence_required_mode:
+                return True, "spec/evidence mode requires review chain"
+            if task_type in {"evidence_lookup", "web_research"}:
+                return True, f"task_type={task_type}"
+            web_tool_prefixes = ("search_web", "fetch_web", "download_web_file")
+            has_web_tool_evidence = any(
+                str(getattr(event, "name", "") or "").strip().startswith(web_tool_prefixes)
+                for event in tool_events
+            )
+            if has_web_tool_evidence and len(str(response_text or "").strip()) >= 120:
+                return True, "web tool evidence detected"
+            if bool(attachment_metas) and bool(tool_events) and task_type == "attachment_tooling":
+                return True, "attachment_tooling with tool evidence"
+            return False, f"task_type={task_type} not in strict review-required set"
+
         execution_policy = str(route.get("execution_policy") or "").strip().lower()
         policy_spec = execution_policy_spec(execution_policy)
         reviewer_requested = bool(route.get("use_reviewer"))
-        reviewer_enabled = reviewer_requested and policy_spec.reviewer
+        reviewer_policy_enabled = reviewer_requested and policy_spec.reviewer
+        review_chain_required, review_reason = _should_run_review_chain()
+        reviewer_enabled = reviewer_policy_enabled and review_chain_required
         conflict_detector_enabled = reviewer_enabled and policy_spec.conflict_detector and bool(route.get("use_conflict_detector"))
         revision_enabled = reviewer_enabled and policy_spec.revision and bool(route.get("use_revision"))
         trace_notes: list[str] = []
         debug_entries: list[dict[str, str]] = []
 
-        if reviewer_requested and not reviewer_enabled:
+        if reviewer_requested and not reviewer_policy_enabled:
             trace_notes.append("Hook(before_reviewer): 当前 execution_policy 不允许 Reviewer，已跳过审阅链。")
             debug_entries.append(
                 HookDebugEntry(
@@ -5406,6 +5472,21 @@ class OfficeAgent:
                     detail=(
                         f"execution_policy={execution_policy or '(empty)'}\n"
                         f"task_type={str(route.get('task_type') or 'standard')}"
+                    ),
+                )
+            )
+        elif reviewer_requested and reviewer_policy_enabled and not review_chain_required:
+            trace_notes.append(
+                "Hook(before_reviewer): 当前任务不属于严格取证/高风险审阅范围，已跳过 Reviewer/Revision。"
+            )
+            debug_entries.append(
+                HookDebugEntry(
+                    stage="backend_hook",
+                    title="Hook(before_reviewer) 按条件跳过审阅链",
+                    detail=(
+                        f"execution_policy={execution_policy or '(empty)'}\n"
+                        f"task_type={str(route.get('task_type') or 'standard')}\n"
+                        f"reason={review_reason}"
                     ),
                 )
             )
@@ -7323,6 +7404,16 @@ class OfficeAgent:
             and bool(normalized["use_worker_tools"])
         )
         normalized["default_root_search"] = raw_default_root_search and bool(normalized["use_worker_tools"])
+        review_chain_required = bool(
+            normalized["spec_lookup_request"]
+            or normalized["evidence_required_mode"]
+            or route_task_type in {"evidence_lookup", "web_research"}
+        )
+        if not review_chain_required:
+            normalized["use_reviewer"] = False
+            normalized["use_revision"] = False
+            normalized["use_structurer"] = False
+            normalized["use_conflict_detector"] = False
 
         normalized["reason"] = str(normalized.get("reason") or fallback.get("reason") or "").strip()
         normalized["source"] = str(normalized.get("source") or fallback.get("source") or "rules").strip() or "rules"
@@ -8375,6 +8466,7 @@ class OfficeAgent:
         conflict_realtime_only: bool,
         web_tools_success: bool,
         attachment_context_available: bool = False,
+        worker_evidence_available: bool = False,
     ) -> str:
         return normalize_reviewer_verdict_helper(
             self,
@@ -8388,6 +8480,7 @@ class OfficeAgent:
             conflict_realtime_only=conflict_realtime_only,
             web_tools_success=web_tools_success,
             attachment_context_available=attachment_context_available,
+            worker_evidence_available=worker_evidence_available,
         )
 
     def _summarize_reviewer_tool_result(self, *, name: str, result: dict[str, Any]) -> str:

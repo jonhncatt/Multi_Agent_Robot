@@ -1,25 +1,15 @@
-# Officetool (Office Agent)
+# Officetool (Agent OS)
 
-一个可在办公室高频使用的本地 Agent 工具，核心能力：
+这是一个 **Agent OS 风格** 的本地 Agent 系统。项目标准世界观如下：
 
-- 对话 + 上传图片/文档（支持拖拽）
-- `KernelHost` 主核启动后，按模块装配能力，不再把所有能力硬编码在单体入口里
-- `AgentModule / ToolModule / OutputModule / MemoryModule` 都是可升级模块
-- 可选本地工具执行（读写文件、白名单命令、联网抓取），并且已经按 `workspace / file / web / write / session` 分成具体 `ToolModule`
-- 会话自动摘要压缩，避免上下文无限增长
-- 页面显示“执行轨迹”，可见每次调用实际做了什么
-- `OfficeAgentModule` 内部继续保留多 agent 工作单元：`Router -> Planner -> Worker -> Reviewer -> Revision`
-- 页面侧栏显示当前版本号/构建号，便于区分线上实例
-- 一键“沙盒演练”（按当前执行环境做只读健康检查，先验环境再跑复杂任务）
-- 对话请求支持流式进度（SSE），可实时看到后端阶段、工具调用与执行轨迹更新
-- 页面展示 Token 统计（本轮/会话累计/全局累计），除非手动清除会一直累积
-- 可控输出长度（short/normal/long）和 token 上限
-- 模型故障转移（fallback）+ 冷却，主模型失败时自动切换
-- 会话级串行执行队列，避免同一会话并发请求互相覆盖
-- 工具结果自动软/硬裁剪 + 旧工具上下文裁剪，降低长会话膨胀
-- LLM 驱动层使用 `langchain_openai`（支持 OpenAI 兼容网关）
-- 附件链路带“未找到附件”显式告警，避免只看到“上传成功”但上下文没带上
-- 输入框支持 `Enter` 直接发送，`Shift+Enter` 换行
+1. `KernelHost` 是稳定内核，只负责装载、调度、隔离、健康与回滚，不承载业务 prompt/角色逻辑。
+2. 模块（Module）是可升级能力单元，分为 `system_modules` 与 `business_modules`。
+3. `office_module` 是一个业务模块，不是系统主核。
+4. `Router / Planner / Worker / Reviewer / Revision` 是 `office_module` 内部角色，不是一级模块。
+5. Tool 是统一能力接口（如 `workspace.read` / `web.search` / `write.patch`）。
+6. Provider 是 Tool 的实现者（如 `LocalWorkspaceProvider` / `HttpWebProvider`），可替换、可健康检查、可隔离失效。
+
+详细启动方式、功能说明和 API 兼容行为见下文。
 
 ## 目录
 
@@ -222,39 +212,30 @@ cd $HOME\Desktop\officetool
 
 ### 架构关系
 
-当前最重要的 4 个对象是：
+当前运行关系按 Agent OS 分层：
 
-- `KernelHost`：稳定主核，只负责启动、装配、调度、保护和回滚
-- `AgentModule`：会思考、会规划、会驱动内部多 agent 工作单元的能力模块
-- `ToolModule`：会执行动作的能力模块
-- `Blackboard`：一次请求的共享状态面板，记录本轮到底用了哪个模块、走了什么计划、出了什么错误
+- `kernel/`：`KernelHost + Registry + Lifecycle + ToolBus + EventBus`，只负责运行秩序，不承载业务 prompt。
+- `contracts/`：统一契约（`ModuleManifest`、`TaskRequest/Response`、`ToolCall/Result`、`HealthReport`）。
+- `system_modules/`：系统能力（`memory_module`、`output_module`、`tool_runtime_module`、`policy_module`）。
+- `business_modules/`：业务能力（`office_module` + `research/coding/adaptation` 骨架）。
+- `tool_providers/`：Tool 的具体实现（workspace/file/web/write/session）。
+- `bootstrap/assemble.py`：统一装配入口（注册模块、注册 provider、init kernel）。
 
-当前默认装配的模块：
+`office_module` 对外是单一业务模块接口 `invoke(TaskRequest)`，对内保留：
 
-- `office_agent`
-- `workspace_tools`
-- `file_tools`
-- `web_tools`
-- `write_tools`
-- `session_tools`
-- `output_finalizer`
-- `overlay_memory`
+- `Router -> Planner -> Worker -> Reviewer -> Revision`
 
-最重要的一点：
+但这些 role 只属于 `office_module/roles`，不作为 Kernel 一级装载单元。
 
-- `planner / reviewer / revision / structurer` 仍然存在
-- 但它们不再是用户主视角的一级模块
-- 它们是 `office_agent` 内部的工作单元
-
-当前真实运行关系：
+当前主链路：
 
 ```text
 HTTP / UI
   -> KernelHost
-  -> 选择主 AgentModule / ToolModule / OutputModule / MemoryModule
-  -> 创建 Blackboard
-  -> 由 AgentModule 在 Blackboard 上驱动内部多 agent 工作流
-  -> ToolExecutionBus 按 ToolModule 路由具体工具调用
+  -> 通过 contracts 选择 BusinessModule
+  -> BusinessModule 按内部 workflow 调度 role agents
+  -> 所有工具调用统一走 ToolBus
+  -> ToolBus 按 tool name 路由到 Provider
 ```
 
 ### Regression Evals
@@ -353,22 +334,19 @@ HTTP / UI
 
 ```text
 app/
-  main.py          # FastAPI 壳子，默认启动 KernelHost
-  agent.py         # 当前默认 OfficeAgent 运行体（逐步继续瘦身）
-  attachments.py   # 文档抽取、图片读取
-  config.py        # 配置项
-  local_tools.py   # 底层工具执行安全层（逐步继续下沉到 ToolModule）
-  sandbox.py       # Docker 沙盒执行管理（会话级容器）
-  models.py        # API 数据模型
-  storage.py       # 会话与上传持久化
-  static/
-    index.html
-    styles.css
-    app.js
-packages/
-  runtime_core/    # KernelHost / Blackboard / capability loader / ToolExecutionBus
-  agent_core/      # 多 agent runtime / role registry / runtime controller
-  office_modules/  # office_agent / tool modules / output module / memory module
+  kernel/                # 最小稳定内核（registry/lifecycle/tool_bus/health/compatibility）
+  contracts/             # 模块、任务、工具、健康检查统一契约
+  system_modules/        # memory/output/tool_runtime/policy
+  business_modules/      # office + research/coding/adaptation 骨架
+    office_module/
+      roles/             # Router/Planner/Worker/Reviewer/Revision（仅内部可见）
+  tool_providers/        # workspace/file/web/write/session provider
+  bootstrap/             # assemble.py 统一装配入口
+  adapters/              # llm/storage/auth/http 适配层预留
+  api/                   # API 命名空间（当前主入口兼容 app/main.py）
+  main.py                # FastAPI 主入口（兼容现有外部 API）
+  agent.py               # 现有 OfficeAgent 运行体（迁移中）
+  local_tools.py         # 现有底层工具执行器（被 provider 复用）
 app/data/
   apps/
     kernel_robot/  # 默认主核运行态（运行后生成）

@@ -64,7 +64,7 @@ class AgentPanel(BaseModel):
 
 class RoleRuntimeState(BaseModel):
     role: str
-    status: Literal["idle", "seen", "active", "current"] = "idle"
+    status: Literal["idle", "seen", "active", "current", "done", "skipped", "failed"] = "idle"
     phase: str = ""
     detail: str = ""
 

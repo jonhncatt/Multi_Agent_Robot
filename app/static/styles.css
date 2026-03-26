@@ -448,6 +448,19 @@ body.panel-debug-off .role-card {
   box-shadow: 0 0 0 1px rgba(30, 122, 77, 0.24), 0 14px 30px rgba(22, 84, 54, 0.24);
 }
 
+.role-card.is-done {
+  border-color: #6e9fc9;
+}
+
+.role-card.is-skipped {
+  border-color: #bba76a;
+}
+
+.role-card.is-failed {
+  border-color: #c97b6d;
+  box-shadow: 0 0 0 1px rgba(201, 123, 109, 0.22), 0 12px 26px rgba(145, 69, 58, 0.2);
+}
+
 .role-card.is-active::before {
   content: "";
   position: absolute;
@@ -568,6 +581,27 @@ body.panel-debug-off .role-card {
   border-color: #97b2e1;
   color: #214d93;
   font-weight: 600;
+}
+
+.role-state.done {
+  background: #e8f2fc;
+  border-color: #8fb2d1;
+  color: #235a8b;
+  font-weight: 600;
+}
+
+.role-state.skipped {
+  background: #f8f2df;
+  border-color: #d1bf8d;
+  color: #775e19;
+  font-weight: 600;
+}
+
+.role-state.failed {
+  background: #fbecea;
+  border-color: #d79f95;
+  color: #8b2f22;
+  font-weight: 700;
 }
 
 .role-state.idle {

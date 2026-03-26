@@ -91,6 +91,12 @@ def run_reviewer_role(
         "不得仅因为 raw_user_message 里出现“查看/查找旧文件”之类的短跟进措辞，就误判为偏离任务。"
         "如果任务是 spec_lookup，那么没有 search_text_in_file + read_text_file 的取证链时通常应为 block；"
         "如果已经有命中和相关信息，但缺少页码/章节/命中片段等可复核表达，通常应为 warn，而不是 block。"
+        "如果无法完全证明某个技术成因（例如为何出现空指针、为何函数为空实现），"
+        "不能直接写成“调查结果不采用”或全盘否定；"
+        "你必须保留已确认事实，并把未证实部分明确标注为“当前证据不足/需继续核对”。"
+        "当现有附件或工具结果已经显示某变量被赋值时，不得反向断言“未赋值”；"
+        "最多只能指出“仍需核对后续覆盖、调用链或分支条件”。"
+        "如果结论与现象存在张力，也应在 followups 中明确写出“代码实现可能存在缺陷/与预期不一致”的调查方向。"
         "如果 evidence_required_mode=true，那么你必须优先使用只读工具做独立复核。"
         "优先考虑 fact_check_file、read_section_by_heading、search_text_in_file、table_extract、search_codebase、search_web、fetch_web。"
         "你还要使用自己的通识和领域知识做冲突检测："
@@ -258,6 +264,7 @@ def run_reviewer_role(
             conflict_realtime_only=agent._conflict_is_realtime_capability_warning(context.conflict_brief),
             web_tools_success=bool(validation_context["web_tools_success"]),
             attachment_context_available=bool(context.attachment_metas) or local_access_succeeded,
+            worker_evidence_available=bool(context.tool_events),
         )
         confidence = str(parsed.get("confidence") or "medium").strip().lower()
         if confidence not in {"high", "medium", "low"}:

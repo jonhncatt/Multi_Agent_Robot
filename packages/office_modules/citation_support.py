@@ -2,7 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+
+_TRACKING_QUERY_KEYS = {
+    "fbclid",
+    "gclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "oc",
+    "ref",
+    "ref_src",
+    "source",
+}
 
 
 def domain_from_url(raw_url: str) -> str | None:
@@ -11,6 +24,35 @@ def domain_from_url(raw_url: str) -> str | None:
     except Exception:
         host = ""
     return host or None
+
+
+def normalize_source_url(raw_url: str) -> str | None:
+    raw = str(raw_url or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return raw
+    if not parsed.scheme or not parsed.netloc:
+        return raw
+    query_pairs: list[tuple[str, str]] = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=False):
+        lowered = str(key or "").strip().lower()
+        if lowered.startswith("utm_") or lowered in _TRACKING_QUERY_KEYS:
+            continue
+        query_pairs.append((key, value))
+    normalized = urlunparse(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            parsed.path or "/",
+            "",
+            urlencode(query_pairs, doseq=True),
+            "",
+        )
+    ).rstrip("?")
+    return normalized or raw
 
 
 def extract_citations_from_tool_result(
@@ -31,7 +73,8 @@ def extract_citations_from_tool_result(
         for row in list(result.get("results") or [])[:4]:
             if not isinstance(row, dict):
                 continue
-            url = str(row.get("url") or "").strip()
+            raw_url = str(row.get("canonical_url") or row.get("final_url") or row.get("url") or "").strip()
+            url = str(normalize_source_url(raw_url) or raw_url).strip()
             title = str(row.get("title") or "").strip()
             snippet = str(row.get("snippet") or "").strip()
             domain = str(row.get("domain") or domain_from_url(url) or "").strip() or None
@@ -56,7 +99,11 @@ def extract_citations_from_tool_result(
         return out
 
     if name == "fetch_web":
-        url = str(result.get("url") or arguments.get("url") or "").strip()
+        canonical_url = normalize_source_url(str(result.get("canonical_url") or "").strip())
+        url = str(
+            normalize_source_url(str(canonical_url or result.get("url") or arguments.get("url") or "").strip())
+            or ""
+        ).strip()
         excerpt = str(result.get("content") or "").strip()
         out.append(
             {
@@ -67,7 +114,7 @@ def extract_citations_from_tool_result(
                 "url": url or None,
                 "title": str(result.get("title") or "").strip() or None,
                 "domain": str(result.get("domain") or domain_from_url(url) or "").strip() or None,
-                "locator": str(result.get("canonical_url") or "").strip() or None,
+                "locator": canonical_url if canonical_url and canonical_url != url else None,
                 "excerpt": agent._shorten(excerpt, 320),
                 "published_at": str(result.get("published_at") or "").strip() or None,
                 "warning": str(result.get("warning") or "").strip() or None,
@@ -253,6 +300,7 @@ def finalize_citation_candidates(agent: Any, citations: list[dict[str, Any]]) ->
 
     out: list[dict[str, Any]] = []
     for idx, item in enumerate(sorted(prepared, key=sort_key, reverse=True)[:12], start=1):
+        normalized_url = normalize_source_url(str(item.get("url") or "").strip())
         out.append(
             {
                 "id": f"c{idx}",
@@ -261,9 +309,9 @@ def finalize_citation_candidates(agent: Any, citations: list[dict[str, Any]]) ->
                 "tool": str(item.get("tool") or "").strip(),
                 "label": str(item.get("label") or "").strip() or f"source_{idx}",
                 "path": str(item.get("path") or "").strip() or None,
-                "url": str(item.get("url") or "").strip() or None,
+                "url": normalized_url or None,
                 "title": str(item.get("title") or "").strip() or None,
-                "domain": str(item.get("domain") or "").strip() or None,
+                "domain": str(item.get("domain") or domain_from_url(normalized_url or "") or "").strip() or None,
                 "locator": str(item.get("locator") or "").strip() or None,
                 "excerpt": agent._shorten(str(item.get("excerpt") or "").strip(), 360),
                 "published_at": str(item.get("published_at") or "").strip() or None,

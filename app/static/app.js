@@ -445,11 +445,16 @@ function renderRoleBoard(panels = [], activeRoles = new Set(), currentRole = nul
   ROLE_DEFS.forEach((meta) => {
     const panel = panelMap.get(meta.id);
     const roleState = roleStates instanceof Map ? roleStates.get(meta.id) : null;
+    const runtimeStatus = String(roleState?.status || "").trim().toLowerCase();
     const isActive = activeRoles instanceof Set ? activeRoles.has(meta.id) : false;
     const isCurrent = normalizeRoleId(currentRole) === meta.id;
-    const isSeen = Boolean(panel) || isActive;
+    const hasRuntimeState = ["seen", "active", "current", "done", "skipped", "failed"].includes(runtimeStatus);
+    const isSeen = Boolean(panel) || isActive || hasRuntimeState;
     const card = document.createElement("article");
     card.className = `role-card${isSeen ? " is-seen" : ""}${isActive ? " is-active" : ""}${isCurrent ? " is-current" : ""}`;
+    if (runtimeStatus === "failed") card.classList.add("is-failed");
+    if (runtimeStatus === "done") card.classList.add("is-done");
+    if (runtimeStatus === "skipped") card.classList.add("is-skipped");
     const kindKey = normalizeRoleKind(panel?.kind, meta.kindKey);
     const kindLabel = ROLE_KIND_LABELS[kindKey] || meta.kindLabel;
 
@@ -478,8 +483,29 @@ function renderRoleBoard(panels = [], activeRoles = new Set(), currentRole = nul
     kindRow.appendChild(kindNode);
 
     const stateNode = document.createElement("span");
-    stateNode.className = `role-state ${isCurrent ? "current" : isActive ? "active" : isSeen ? "seen" : "idle"}`;
-    stateNode.textContent = isCurrent ? "主工作中" : isActive ? "协同中" : isSeen ? "已参与" : "待命";
+    let stateClass = "idle";
+    let stateLabel = "待命";
+    if (isCurrent || runtimeStatus === "current") {
+      stateClass = "current";
+      stateLabel = "主工作中";
+    } else if (isActive || runtimeStatus === "active") {
+      stateClass = "active";
+      stateLabel = "协同中";
+    } else if (runtimeStatus === "failed") {
+      stateClass = "failed";
+      stateLabel = "失败";
+    } else if (runtimeStatus === "done") {
+      stateClass = "done";
+      stateLabel = "已完成";
+    } else if (runtimeStatus === "skipped") {
+      stateClass = "skipped";
+      stateLabel = "已跳过";
+    } else if (runtimeStatus === "seen" || isSeen) {
+      stateClass = "seen";
+      stateLabel = "已参与";
+    }
+    stateNode.className = `role-state ${stateClass}`;
+    stateNode.textContent = stateLabel;
     kindRow.appendChild(stateNode);
 
     metaNode.appendChild(kindRow);

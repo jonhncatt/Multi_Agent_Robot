@@ -32,20 +32,22 @@ def normalize_reviewer_verdict(
     conflict_realtime_only: bool,
     web_tools_success: bool,
     attachment_context_available: bool = False,
+    worker_evidence_available: bool = False,
 ) -> str:
     verdict = str(raw_verdict or "pass").strip().lower()
+    partial_evidence_available = bool(attachment_context_available or worker_evidence_available)
     if verdict == "needs_attention":
         if (conflict_has_conflict and not (conflict_realtime_only and web_tools_success)) or (
-            spec_lookup_request and "search_text_in_file" not in set(readonly_checks)
+            spec_lookup_request and "search_text_in_file" not in set(readonly_checks) and not partial_evidence_available
         ):
             return "block"
-        if attachment_context_available and not readonly_checks:
+        if partial_evidence_available and not readonly_checks:
             return "warn"
         return "warn"
     if verdict in {"pass", "warn", "block"}:
         if verdict == "block" and conflict_realtime_only and web_tools_success:
             return "warn"
-        if verdict == "block" and attachment_context_available and not readonly_checks and not conflict_has_conflict:
+        if verdict == "block" and partial_evidence_available and not readonly_checks and not conflict_has_conflict:
             return "warn"
         return verdict
 
@@ -55,8 +57,12 @@ def normalize_reviewer_verdict(
     if conflict_has_conflict and not (conflict_realtime_only and web_tools_success):
         return "block"
     if spec_lookup_request and "search_text_in_file" not in readonly_set:
+        if partial_evidence_available:
+            return "warn"
         return "block"
     if evidence_required_mode and not readonly_set:
+        if partial_evidence_available:
+            return "warn"
         return "block"
     if has_risks or has_followups:
         return "warn"
