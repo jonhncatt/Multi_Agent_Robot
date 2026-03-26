@@ -102,6 +102,7 @@ from app.core.kernel_debug_support import (
 from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_classifier import IntentClassifier
 from app.policy_router import PolicyRouter
+from app.route_verifier import RouteVerifier
 from app.evolution import EvolutionStore
 from app.models import AgentPanel, ChatSettings, ToolEvent
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
@@ -6644,16 +6645,22 @@ class OfficeAgent:
     def _task_type_to_primary_intent(self, task_type: str) -> str:
         normalized = str(task_type or "").strip().lower()
         mapping = {
+            "understanding": "understanding",
             "simple_understanding": "understanding",
             "inline_document_understanding": "understanding",
             "attachment_tooling": "understanding",
+            "attachment_understanding": "understanding",
             "mixed_attachment": "understanding",
             "evidence_lookup": "evidence",
             "web_news": "web",
             "web_research": "web",
             "code_lookup": "code_lookup",
+            "grounded_generation": "generation",
             "grounded_code_generation": "generation",
+            "generation": "generation",
             "code_generation": "generation",
+            "mixed_intent": "standard",
+            "followup_transform": "standard",
             "meeting_minutes": "meeting_minutes",
             "simple_qa": "qa",
             "general_qa": "qa",
@@ -6663,22 +6670,28 @@ class OfficeAgent:
     def _task_type_to_execution_policy(self, task_type: str) -> str:
         normalized = str(task_type or "").strip().lower()
         mapping = {
+            "understanding": "understanding_direct",
             "simple_understanding": "understanding_direct",
             "inline_document_understanding": "inline_document_understanding_direct",
-            "attachment_tooling": "understanding_with_tools",
+            "attachment_tooling": "attachment_tooling_generic",
+            "attachment_understanding": "attachment_holistic_understanding_with_tools",
             "mixed_attachment": "llm_router_attachment_ambiguity",
             "evidence_lookup": "evidence_full_pipeline",
             "web_news": "web_news_brief",
             "web_research": "web_research_full_pipeline",
             "code_lookup": "code_lookup_with_tools",
+            "grounded_generation": "grounded_generation_pipeline",
             "grounded_code_generation": "grounded_generation_with_tools",
+            "generation": "direct_generation",
             "code_generation": "generation_with_tools",
+            "mixed_intent": "mixed_intent_planner_pipeline",
+            "followup_transform": "followup_transform_pipeline",
             "meeting_minutes": "meeting_minutes_output",
             "simple_qa": "qa_direct",
             "general_qa": "llm_router_general_ambiguity",
-            "standard": "standard_full_pipeline",
+            "standard": "standard_safe_pipeline",
         }
-        return mapping.get(normalized, "standard_full_pipeline")
+        return mapping.get(normalized, "standard_safe_pipeline")
 
     def _default_execution_policy_for_intent(self, primary_intent: str) -> str:
         normalized = str(primary_intent or "").strip().lower()
@@ -6687,12 +6700,12 @@ class OfficeAgent:
             "evidence": "evidence_full_pipeline",
             "web": "web_research_full_pipeline",
             "code_lookup": "code_lookup_with_tools",
-            "generation": "generation_with_tools",
-            "meeting_minutes": "meeting_minutes_output",
+            "generation": "direct_generation",
+            "meeting_minutes": "meeting_minutes_pipeline",
             "qa": "qa_direct",
-            "standard": "standard_full_pipeline",
+            "standard": "standard_safe_pipeline",
         }
-        return mapping.get(normalized, "standard_full_pipeline")
+        return mapping.get(normalized, "standard_safe_pipeline")
 
     def _normalize_primary_intent(self, value: str, *, task_type: str = "") -> str:
         normalized = str(value or "").strip().lower()
@@ -6727,6 +6740,11 @@ class OfficeAgent:
             "task_type": task_type,
             "use_worker_tools": bool(route.get("use_worker_tools")),
             "evidence_mode": task_type == "evidence_lookup",
+            "working_set": list(route.get("secondary_intents") or []),
+            "active_artifacts": list(route.get("specialists") or []),
+            "active_entities": list(route.get("secondary_intents") or []),
+            "last_route_policy": execution_policy,
+            "last_answer_shape": str(route.get("task_type") or ""),
         }
 
     def _infer_followup_primary_intent_from_state(
@@ -6956,7 +6974,9 @@ class OfficeAgent:
         review_chain_required = bool(
             normalized["spec_lookup_request"]
             or normalized["evidence_required_mode"]
-            or route_task_type in {"evidence_lookup", "web_research"}
+            or route_task_type in {"evidence_lookup", "web_research", "grounded_generation", "mixed_intent"}
+            or str(normalized.get("execution_policy") or "").strip().lower()
+            in {"grounded_generation_pipeline", "mixed_intent_planner_pipeline"}
         )
         if not review_chain_required:
             normalized["use_reviewer"] = False
@@ -6986,6 +7006,9 @@ class OfficeAgent:
 
     def _policy_router(self) -> PolicyRouter:
         return PolicyRouter(self)
+
+    def _route_verifier(self) -> RouteVerifier:
+        return RouteVerifier()
 
     def _route_request_by_rules(
         self,
@@ -7050,27 +7073,41 @@ class OfficeAgent:
             route_state=route_state,
             inline_followup_context=inline_followup_context,
         )
-        rules_intent = self._intent_classifier().classify_rules(
+        classifier = self._intent_classifier()
+        frame = classifier.resolve_frame(
             user_message=user_message,
-            attachment_metas=attachment_metas,
             route_state=route_state,
             signals=signals,
         )
-        policy_router = self._policy_router()
-        fallback = policy_router.build_fallback(
-            intent=rules_intent,
+        decision, _ = classifier.classify_decision(
+            requested_model="",
             user_message=user_message,
+            summary="",
             attachment_metas=attachment_metas,
+            settings=settings,
+            route_state=route_state,
+            signals=signals,
+            force_rules_only=True,
+        )
+        policy_router = self._policy_router()
+        fallback = policy_router.build_fallback_from_decision(
+            decision=decision,
+            frame=frame,
             settings=settings,
             signals=signals,
         )
-        route = policy_router.route(
-            intent=rules_intent,
-            user_message=user_message,
-            attachment_metas=attachment_metas,
+        route = policy_router.route_from_decision(
+            decision=decision,
+            frame=frame,
             settings=settings,
             signals=signals,
             fallback=fallback,
+        )
+        route, _ = self._route_verifier().verify(
+            decision=decision,
+            route=route,
+            signals=signals,
+            frame=frame,
         )
         return route
 
@@ -7096,7 +7133,13 @@ class OfficeAgent:
             route_state=route_state,
             inline_followup_context=inline_followup_context,
         )
-        classified_intent, raw = self._intent_classifier().classify(
+        classifier = self._intent_classifier()
+        frame = classifier.resolve_frame(
+            user_message=user_message,
+            route_state=route_state,
+            signals=signals,
+        )
+        intent_decision, raw = classifier.classify_decision(
             requested_model=requested_model,
             user_message=user_message,
             summary=summary,
@@ -7106,22 +7149,26 @@ class OfficeAgent:
             signals=signals,
         )
         policy_router = self._policy_router()
-        fallback = policy_router.build_fallback(
-            intent=classified_intent,
-            user_message=user_message,
-            attachment_metas=attachment_metas,
+        fallback = policy_router.build_fallback_from_decision(
+            decision=intent_decision,
+            frame=frame,
             settings=settings,
             signals=signals,
         )
-        route = policy_router.route(
-            intent=classified_intent,
-            user_message=user_message,
-            attachment_metas=attachment_metas,
+        route = policy_router.route_from_decision(
+            decision=intent_decision,
+            frame=frame,
             settings=settings,
             signals=signals,
             fallback=fallback,
-            source_override=str(classified_intent.source or ""),
+            source_override=str(intent_decision.source or ""),
             force_disable_llm_router=True,
+        )
+        route, _ = self._route_verifier().verify(
+            decision=intent_decision,
+            route=route,
+            signals=signals,
+            frame=frame,
         )
         route, raw = self._apply_route_runtime_overrides(
             route=route,

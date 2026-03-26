@@ -54,6 +54,42 @@ class RequestSignals(BaseModel):
         return payload
 
 
+class IntentScore(BaseModel):
+    intent: str
+    score: float
+    evidence: list[str] = Field(default_factory=list)
+
+
+class IntentDecision(BaseModel):
+    candidates: list[IntentScore] = Field(default_factory=list)
+    top_intent: str = "standard"
+    second_intent: str = ""
+    confidence: float = 0.0
+    margin: float = 0.0
+    mixed_intent: bool = False
+    requires_clarifying_route: bool = False
+    inherited_from_state: str = ""
+    requires_tools: bool = False
+    requires_grounding: bool = False
+    requires_web: bool = False
+    requires_local_lookup: bool = False
+    action_type: str = "answer"
+    reason_short: str = ""
+    source: str = "rules"
+    classifier_model: str = ""
+    escalation_reason: str = ""
+
+
+class ConversationFrame(BaseModel):
+    dominant_intent: str = "standard"
+    working_set: list[str] = Field(default_factory=list)
+    active_artifacts: list[str] = Field(default_factory=list)
+    active_entities: list[str] = Field(default_factory=list)
+    pending_transform: str = ""
+    last_answer_shape: str = ""
+    last_route_policy: str = ""
+
+
 class IntentClassification(BaseModel):
     primary_intent: PrimaryIntent = "standard"
     secondary_intents: list[str] = Field(default_factory=list)
@@ -107,6 +143,11 @@ class RouteDecision(BaseModel):
     mixed_intent: bool = False
     inherited_from_state: str = ""
     escalation_reason: str = ""
+    intent_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    intent_margin: float = 0.0
+    frame_dominant_intent: str = ""
+    route_verified: bool = False
+    verifier_notes: list[str] = Field(default_factory=list)
     spec_lookup_request: bool = False
     evidence_required_mode: bool = False
     default_root_search: bool = False
@@ -114,4 +155,5 @@ class RouteDecision(BaseModel):
     def to_route_dict(self) -> dict[str, Any]:
         payload = self.model_dump()
         payload["intent_confidence"] = max(0.0, min(1.0, float(payload.get("intent_confidence") or 0.0)))
+        payload["intent_margin"] = max(0.0, min(1.0, float(payload.get("intent_margin") or 0.0)))
         return payload

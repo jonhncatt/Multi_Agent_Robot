@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.intent_constants import SHORT_FOLLOWUP_MAX_LEN
 from app.intent_schema import RequestSignals
 
 
@@ -219,12 +220,14 @@ class RouterSignalExtractor:
             return True
         if len(compact) <= 28 and (reference_followup_like or transform_followup_like):
             return True
+        if len(compact) <= SHORT_FOLLOWUP_MAX_LEN and context_dependent_followup and reference_followup_like:
+            return True
         return False
 
     def _ambiguity_score(self, signals: RequestSignals) -> float:
         score = 0.0
         text_len = len(str(signals.text or "").strip())
-        if signals.inherited_primary_intent and text_len <= 42:
+        if signals.inherited_primary_intent and text_len <= SHORT_FOLLOWUP_MAX_LEN:
             score += 0.28
         if signals.context_dependent_followup:
             score += 0.2

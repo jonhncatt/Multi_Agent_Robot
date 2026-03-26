@@ -57,6 +57,20 @@ _POLICY_SPECS: dict[str, ExecutionPolicySpec] = {
         structurer=True,
         conflict_detector=False,
     ),
+    "mixed_intent_planner_pipeline": ExecutionPolicySpec(
+        planner="always",
+        reviewer=True,
+        revision=True,
+        structurer=False,
+        conflict_detector=True,
+    ),
+    "followup_transform_pipeline": ExecutionPolicySpec(
+        planner="always",
+        reviewer=False,
+        revision=False,
+        structurer=False,
+        conflict_detector=False,
+    ),
     "standard_full_pipeline": ExecutionPolicySpec(
         planner="always",
         reviewer=True,
