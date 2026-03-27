@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 from app.codex_runner import build_codex_input_payload
 from app.evolution import EvolutionStore
 from app.openai_auth import normalize_model_for_auth_mode
-from packages.agent_core import build_agent_capability_runtime
+from packages.agent_core import RoleContext, RoleResult, RunState, build_agent_capability_runtime
 
 
 def compact_legacy_session(agent: Any, session: dict[str, Any], keep_last_turns: int) -> bool:
@@ -174,6 +176,178 @@ def legacy_evolution_turn_update() -> dict[str, Any]:
         }
 
 
+def legacy_role_lab_multi_instance_batch(agent: Any) -> dict[str, Any]:
+    registry_role = agent._role_registry.require("researcher")
+    original_handler = registry_role.handler
+
+    def _fake_researcher(current_agent: Any, *, context: RoleContext) -> RoleResult:
+        spec = current_agent._make_role_spec(
+            "researcher",
+            description="多实例联网取证试运行。",
+            output_keys=["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
+        )
+        suffix = str(context.extra.get("slot") or "").strip() or "slot"
+        payload = {
+            "summary": f"research batch {suffix}",
+            "bullets": [f"处理 {suffix}", "已形成独立子任务结果。"],
+            "worker_hint": f"整合 {suffix} 的结果。",
+            "queries": [f"query-{suffix}"],
+            "scope": "多实例试运行",
+            "stop_rules": ["不要直接输出最终答案。"],
+            "usage": current_agent._empty_usage(),
+            "effective_model": current_agent.config.default_model,
+            "notes": [],
+        }
+        return current_agent._make_role_result(spec, context, payload, json.dumps(payload, ensure_ascii=False))
+
+    registry_role.handler = _fake_researcher
+    try:
+        run_state = RunState.create(
+            run_id=f"role_lab_demo_{int(time.time() * 1000)}",
+            session_id="session-role-lab-demo",
+            task_type="role_lab_demo",
+            root_role="coordinator",
+            root_role_kind="processor",
+            meta={"profile": "role_agent_lab"},
+        )
+        parent_node = run_state.root_node_id
+        contexts: list[RoleContext] = []
+        metas: list[dict[str, Any]] = []
+        for slot in ("A", "B"):
+            context = agent._make_role_context(
+                "researcher",
+                requested_model=agent.config.default_model,
+                user_message=f"请并行搜索来源 {slot}",
+                effective_user_message=f"请并行搜索来源 {slot}",
+                history_summary="role-agent lab multi-instance demo",
+                route={
+                    "task_type": "web_research",
+                    "primary_intent": "web",
+                    "execution_policy": "web_research_full_pipeline",
+                    "runtime_profile": "evidence",
+                },
+                extra={"slot": slot},
+            )
+            contexts.append(context)
+            metas.append({"slot": slot})
+        agent._role_runtime_controller.execute_batch(
+            agent=agent,
+            role="researcher",
+            contexts=contexts,
+            run_state=run_state,
+            parent_node_id=parent_node,
+            phase="multi_instance_demo",
+            metas=metas,
+            max_workers=2,
+        )
+        run_state.finish(status="completed")
+        snapshot = agent._role_runtime_controller.capture_run_state(run_state)
+        return {
+            "ok": True,
+            "stage4_readiness": agent._role_runtime_controller.stage4_readiness(),
+            "runtime": snapshot,
+            "instance_ids": [item.get("instance_id") for item in snapshot.get("instances") or []],
+            "node_roles": [item.get("role") for item in snapshot.get("nodes") or []],
+            "instance_count": int((snapshot.get("run") or {}).get("instance_count") or 0),
+        }
+    finally:
+        registry_role.handler = original_handler
+
+
+def legacy_role_lab_worker_branch_graph(agent: Any) -> dict[str, Any]:
+    run_state = RunState.create(
+        run_id=f"role_lab_worker_graph_{int(time.time() * 1000)}",
+        session_id="session-role-lab-worker-graph",
+        task_type="role_lab_worker_graph",
+        root_role="coordinator",
+        root_role_kind="processor",
+        meta={"profile": "role_agent_lab"},
+    )
+    worker_execution = agent._role_runtime_controller.begin_managed(
+        role="worker",
+        run_state=run_state,
+        parent_node_id=run_state.root_node_id,
+        phase="attempt_1",
+        tool_mode="uses_tools",
+        meta={"attempt": 1, "debug": True},
+    )
+    branch_group = f"{worker_execution.node_id}:tool_batch:1"
+    branch_ok = agent._role_runtime_controller.begin_task_node(
+        run_state=run_state,
+        role="worker",
+        parent_node_id=worker_execution.node_id,
+        phase="tool_call:read_text_file",
+        role_kind="processor",
+        node_type="branch",
+        meta={"branch_group": branch_group, "tool_name": "read_text_file", "batch_index": 1},
+    )
+    agent._role_runtime_controller.complete_task_node(
+        branch_ok,
+        run_state=run_state,
+        summary="read_text_file completed",
+    )
+    branch_retry = agent._role_runtime_controller.begin_task_node(
+        run_state=run_state,
+        role="worker",
+        parent_node_id=worker_execution.node_id,
+        phase="tool_call:search_web",
+        role_kind="processor",
+        node_type="branch",
+        meta={"branch_group": branch_group, "tool_name": "search_web", "batch_index": 2},
+    )
+    agent._role_runtime_controller.begin_task_node(
+        run_state=run_state,
+        role="worker",
+        parent_node_id=worker_execution.node_id,
+        phase="tool_call:search_web",
+        role_kind="processor",
+        node_type="branch",
+        meta={"branch_group": branch_group, "tool_name": "search_web", "batch_index": 2, "retry_attempt": 2},
+        node_id=branch_retry,
+    )
+    agent._role_runtime_controller.fail_task_node(
+        branch_retry,
+        run_state=run_state,
+        error="timeout while searching web",
+        meta={"retry_count": 1},
+    )
+    join_node = agent._role_runtime_controller.begin_task_node(
+        run_state=run_state,
+        role="worker",
+        parent_node_id=worker_execution.node_id,
+        phase="tool_join",
+        role_kind="processor",
+        node_type="join",
+        meta={"branch_group": branch_group, "branch_count": 2, "failed_branches": 1},
+    )
+    agent._role_runtime_controller.complete_task_node(
+        join_node,
+        run_state=run_state,
+        summary="joined 2 tool branches",
+        meta={"branch_group": branch_group, "branch_count": 2, "failed_branches": 1},
+    )
+    agent._role_runtime_controller.complete_managed(
+        worker_execution,
+        run_state=run_state,
+        summary="worker graph demo completed",
+    )
+    run_state.finish(status="completed")
+    snapshot = agent._role_runtime_controller.capture_run_state(run_state)
+    nodes = list(snapshot.get("nodes") or [])
+    return {
+        "ok": True,
+        "stage4_readiness": agent._role_runtime_controller.stage4_readiness(),
+        "runtime": snapshot,
+        "branch_node_count": sum(1 for item in nodes if str(item.get("node_type") or "") == "branch"),
+        "join_node_count": sum(1 for item in nodes if str(item.get("node_type") or "") == "join"),
+        "failed_branch_count": sum(
+            1
+            for item in nodes
+            if str(item.get("node_type") or "") == "branch" and str(item.get("status") or "") == "failed"
+        ),
+    }
+
+
 __all__ = [
     "compact_legacy_session",
     "legacy_capability_bundle_snapshot",
@@ -184,6 +358,8 @@ __all__ = [
     "legacy_kernel_module_snapshot",
     "legacy_normalize_model_for_auth",
     "legacy_openai_auth_summary",
+    "legacy_role_lab_multi_instance_batch",
     "legacy_role_lab_runtime_snapshot",
+    "legacy_role_lab_worker_branch_graph",
     "legacy_tool_registry_snapshot",
 ]

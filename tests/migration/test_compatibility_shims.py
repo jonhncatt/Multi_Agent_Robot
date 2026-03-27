@@ -56,6 +56,8 @@ def test_legacy_agent_debug_helpers_remain_available_through_shim() -> None:
         ]
     )
     evolution_update = legacy._debug_evolution_turn_update()
+    role_lab_batch = legacy._debug_role_lab_multi_instance_batch()
+    role_lab_graph = legacy._debug_role_lab_worker_branch_graph()
 
     assert "available" in auth_summary
     assert "module_paths" in capability_snapshot
@@ -64,3 +66,7 @@ def test_legacy_agent_debug_helpers_remain_available_through_shim() -> None:
     assert "input" in codex_payload
     assert "event" in evolution_update
     assert "overlay_profile" in evolution_update
+    assert role_lab_batch["ok"] is True
+    assert role_lab_batch["instance_count"] >= 1
+    assert role_lab_graph["ok"] is True
+    assert role_lab_graph["branch_node_count"] >= 1
