@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-__doc__ = """Compatibility shim for historical execution-policy lookups.
-
-Formal business dispatch now starts at KernelHost and `office_module`.
-These policy tables remain to support the legacy OfficeAgent runtime
-that still executes behind the module boundary.
-"""
+"""Canonical execution-policy definitions for the office business module."""
 
 from dataclasses import dataclass
 from typing import Literal
@@ -23,7 +18,13 @@ class ExecutionPolicySpec:
     conflict_detector: bool = False
 
 
-_DEFAULT_SPEC = ExecutionPolicySpec(planner="always", reviewer=True, revision=True, structurer=True, conflict_detector=True)
+_DEFAULT_SPEC = ExecutionPolicySpec(
+    planner="always",
+    reviewer=True,
+    revision=True,
+    structurer=True,
+    conflict_detector=True,
+)
 
 _POLICY_SPECS: dict[str, ExecutionPolicySpec] = {
     "standard_safe_pipeline": ExecutionPolicySpec(
@@ -150,3 +151,11 @@ def planner_enabled_for_policy(policy: str, *, use_worker_tools: bool) -> bool:
     if spec.planner == "when_tools":
         return bool(use_worker_tools)
     return False
+
+
+__all__ = [
+    "ExecutionPolicySpec",
+    "PlannerMode",
+    "execution_policy_spec",
+    "planner_enabled_for_policy",
+]

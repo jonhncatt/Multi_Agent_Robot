@@ -102,7 +102,7 @@ from app.core.kernel_debug_support import (
     debug_kernel_shadow_upgrade_flow as debug_kernel_shadow_upgrade_flow_helper,
     debug_kernel_shadow_validation_rejects_broken_manifest as debug_kernel_shadow_validation_rejects_broken_manifest_helper,
 )
-from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
+from packages.office_modules.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_classifier import IntentClassifier
 from app.intent_schema import RouteTrace
 from app.context_assembly import ContextAssembler, coerce_active_task

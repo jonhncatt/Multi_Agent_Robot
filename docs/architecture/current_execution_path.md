@@ -28,11 +28,12 @@ HTTP / UI
 - `packages/runtime_core/kernel_host.py`
   - Status: compatibility shim host
   - Why: capability-runtime based debug/health surfaces still depend on it
-- `app/execution_policy.py`
-  - Status: compatibility shim lookup table
 
 ## Retired Compatibility Paths
 
+- `app/execution_policy.py`
+  - Status: retired
+  - Replacement: `packages/office_modules/execution_policy.py`
 - `app/router_rules.py`
   - Status: retired
   - Replacement: `packages/office_modules/router_hints.py`
@@ -47,11 +48,9 @@ HTTP / UI
 
 - `app.agent.OfficeAgent`
 - `packages.runtime_core.kernel_host.KernelHost`
-- `app.execution_policy`
 
 ## Planned Removal Order
 
 1. Move office prompt/runtime logic fully behind `office_module`
 2. Stop `office_module` from delegating to `OfficeAgent`
 3. Remove direct dependency on `packages/runtime_core/kernel_host.py`
-4. Retire helper shims in `app/execution_policy.py`

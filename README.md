@@ -362,10 +362,10 @@ HTTP / UI
 
 - [`app/agent.py`](/Users/dalizhou/Desktop/new_validation_agent/app/agent.py)：legacy OfficeAgent runtime
 - [`packages/runtime_core/kernel_host.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/runtime_core/kernel_host.py)：legacy capability host
-- [`app/execution_policy.py`](/Users/dalizhou/Desktop/new_validation_agent/app/execution_policy.py)
 
 已退场 compatibility shim：
 
+- `app/execution_policy.py` -> [`packages/office_modules/execution_policy.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/execution_policy.py)
 - `app/router_rules.py` -> [`packages/office_modules/router_hints.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/router_hints.py)
 - `app/request_analysis_support.py` -> [`packages/office_modules/request_analysis.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/request_analysis.py)
 - `app/router_intent_support.py` -> [`packages/office_modules/intent_support.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/intent_support.py)

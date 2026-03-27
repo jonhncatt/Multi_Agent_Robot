@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import app.execution_policy as execution_policy
-from packages.office_modules import intent_support, request_analysis, router_hints
+from packages.office_modules import execution_policy, intent_support, request_analysis, router_hints
 from app.business_modules.office_module.manifest import OFFICE_MODULE_COMPATIBILITY_SHIMS
 from packages.runtime_core.kernel_host import KernelHost as LegacyKernelHost
 
 
 def test_compatibility_shim_markers_exist() -> None:
-    assert "Compatibility shim" in (execution_policy.__doc__ or "")
     assert OFFICE_MODULE_COMPATIBILITY_SHIMS
 
 
@@ -31,3 +29,9 @@ def test_retired_request_and_intent_support_shims_are_replaced_by_canonical_pack
     assert Path("app/router_intent_support.py").exists() is False
     assert hasattr(request_analysis, "looks_like_local_code_lookup_request")
     assert hasattr(intent_support, "looks_like_understanding_request")
+
+
+def test_retired_execution_policy_shim_is_replaced_by_canonical_package() -> None:
+    assert Path("app/execution_policy.py").exists() is False
+    assert hasattr(execution_policy, "execution_policy_spec")
+    assert hasattr(execution_policy, "planner_enabled_for_policy")

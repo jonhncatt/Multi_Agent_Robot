@@ -25,7 +25,6 @@ Add or evolve logic in these areas when the intent is platform growth:
 These files exist to preserve legacy behavior and migration continuity. They are not valid places for new business heuristics, module-local prompt logic, or Swarm orchestration.
 
 - `app/agent.py`
-- `app/execution_policy.py`
 - `packages/runtime_core/kernel_host.py`
 
 ## Retired Compatibility Zones
@@ -38,6 +37,9 @@ These files exist to preserve legacy behavior and migration continuity. They are
   - must not be reintroduced through runtime imports
 - `app/router_intent_support.py`
   - replaced by `packages/office_modules/intent_support.py`
+  - must not be reintroduced through runtime imports
+- `app/execution_policy.py`
+  - replaced by `packages/office_modules/execution_policy.py`
   - must not be reintroduced through runtime imports
 
 ## Team Rules

@@ -135,7 +135,6 @@ class AgentOSRuntime:
             "compatibility_shims": [
                 "app.agent.OfficeAgent",
                 "packages.runtime_core.kernel_host.KernelHost",
-                "app.execution_policy",
             ],
         }
 
