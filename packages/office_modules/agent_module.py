@@ -5,6 +5,29 @@ from typing import Any
 from packages.runtime_core.capability_loader import AgentModule
 
 
+def create_office_agent(
+    config: Any,
+    *,
+    kernel_runtime: Any,
+    capability_runtime: Any | None = None,
+    tool_executor: Any | None = None,
+    host: Any | None = None,
+    selected_agent_module_id: str = "office_agent",
+    selected_tool_module_id: str = "workspace_tools",
+):
+    from app.agent import OfficeAgent
+
+    return OfficeAgent(
+        config,
+        kernel_runtime=kernel_runtime,
+        capability_runtime=capability_runtime,
+        tool_executor=tool_executor,
+        host=host,
+        selected_agent_module_id=selected_agent_module_id,
+        selected_tool_module_id=selected_tool_module_id,
+    )
+
+
 def _build_office_agent_runtime(
     *,
     config: Any,
@@ -13,9 +36,7 @@ def _build_office_agent_runtime(
     tool_executor: Any,
     host: Any,
 ):
-    from app.agent import OfficeAgent
-
-    return OfficeAgent(
+    return create_office_agent(
         config,
         kernel_runtime=kernel_runtime,
         capability_runtime=capability_runtime,

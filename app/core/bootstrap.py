@@ -754,8 +754,8 @@ class KernelRuntime:
         user_message: str = "给我今天的新闻",
         validate_provider: bool = True,
     ) -> dict[str, object]:
-        from app.agent import OfficeAgent
         from app.models import ChatSettings
+        from packages.office_modules.agent_module import create_office_agent
 
         shadow_manifest = self.load_shadow_manifest()
         validation = self.supervisor.validate_manifest(shadow_manifest)
@@ -792,7 +792,7 @@ class KernelRuntime:
         try:
             smoke_runtime = build_kernel_runtime(smoke_config)
             active_validation = smoke_runtime.validate_active_manifest()
-            smoke_agent = OfficeAgent(smoke_config, kernel_runtime=smoke_runtime)
+            smoke_agent = create_office_agent(smoke_config, kernel_runtime=smoke_runtime)
             settings = ChatSettings()
             route = smoke_agent._route_request_by_rules(
                 user_message=user_message,
@@ -859,8 +859,8 @@ class KernelRuntime:
         return payload
 
     def run_shadow_replay(self, *, replay_record: dict[str, object]) -> dict[str, object]:
-        from app.agent import OfficeAgent
         from app.models import ChatSettings
+        from packages.office_modules.agent_module import create_office_agent
 
         shadow_manifest = self.load_shadow_manifest()
         validation = self.supervisor.validate_manifest(shadow_manifest)
@@ -896,7 +896,7 @@ class KernelRuntime:
 
         try:
             shadow_runtime = build_kernel_runtime(smoke_config)
-            shadow_agent = OfficeAgent(smoke_config, kernel_runtime=shadow_runtime)
+            shadow_agent = create_office_agent(smoke_config, kernel_runtime=shadow_runtime)
             settings_payload = replay_record.get("settings")
             settings = ChatSettings(**settings_payload) if isinstance(settings_payload, dict) else ChatSettings()
             attachment_metas = replay_record.get("attachment_metas")
@@ -966,8 +966,8 @@ class KernelRuntime:
         manifest: ActiveModuleManifest,
         manifest_source: str,
     ) -> dict[str, object]:
-        from app.agent import OfficeAgent
         from app.models import ChatSettings
+        from packages.office_modules.agent_module import create_office_agent
 
         probe = self.supervisor.probe_manifest_contracts(manifest)
         checks: list[dict[str, object]] = []
@@ -999,7 +999,7 @@ class KernelRuntime:
         write_active_manifest(contract_config.active_manifest_path, manifest)
         write_active_manifest(contract_config.shadow_manifest_path, manifest)
         contract_runtime = build_kernel_runtime(contract_config)
-        contract_agent = OfficeAgent(contract_config, kernel_runtime=contract_runtime)
+        contract_agent = create_office_agent(contract_config, kernel_runtime=contract_runtime)
         settings = ChatSettings()
         route: dict[str, object] = {}
 
@@ -1411,8 +1411,8 @@ class KernelRuntime:
         auto_package_on_success: bool = True,
         promote_if_healthy: bool | None = None,
     ) -> dict[str, object]:
-        from app.agent import OfficeAgent
         from app.models import ChatSettings
+        from packages.office_modules.agent_module import create_office_agent
 
         repair_payload = dict(repair_run or self.read_last_repair_run())
         run_id = self._pipeline_run_id()
@@ -1489,7 +1489,7 @@ class KernelRuntime:
                     enable_shadow_logging=False,
                 )
                 worker_runtime = build_kernel_runtime(worker_cfg)
-                worker_agent = OfficeAgent(worker_cfg, kernel_runtime=worker_runtime)
+                worker_agent = create_office_agent(worker_cfg, kernel_runtime=worker_runtime)
                 settings = ChatSettings(enable_tools=True, response_style="short", max_output_tokens=12000)
                 message = (
                     f"你正在修复一个 shadow 模块副本，第 {round_index}/{round_limit} 轮。"

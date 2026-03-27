@@ -11,6 +11,7 @@ from app.business_modules.office_module.workflow import ROLE_CHAIN, build_office
 from app.contracts import HealthReport, TaskRequest, TaskResponse
 from app.kernel.runtime_context import RuntimeContext
 from app.models import ChatSettings
+from packages.office_modules.agent_module import create_office_agent
 
 
 class OfficeModule:
@@ -46,9 +47,7 @@ class OfficeModule:
         if self._legacy_host is not None:
             return self._legacy_host
         if self._agent is None:
-            from app.agent import OfficeAgent
-
-            self._agent = OfficeAgent(self._config, kernel_runtime=self._kernel_runtime)
+            self._agent = create_office_agent(self._config, kernel_runtime=self._kernel_runtime)
         return self._agent
 
     def health_check(self) -> HealthReport:
