@@ -125,7 +125,7 @@ from app.request_analysis_support import (
     message_has_explicit_local_path as message_has_explicit_local_path_helper,
     should_auto_search_default_roots as should_auto_search_default_roots_helper,
 )
-from app.router_rules import (
+from packages.office_modules.router_hints import (
     HOLISTIC_DIRECT_PHRASES,
     HOLISTIC_EXPLAIN_MARKERS,
     HOLISTIC_OVERVIEW_MARKERS,

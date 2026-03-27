@@ -27,9 +27,14 @@ These files exist to preserve legacy behavior and migration continuity. They are
 - `app/agent.py`
 - `app/request_analysis_support.py`
 - `app/router_intent_support.py`
-- `app/router_rules.py`
 - `app/execution_policy.py`
 - `packages/runtime_core/kernel_host.py`
+
+## Retired Compatibility Zones
+
+- `app/router_rules.py`
+  - replaced by `packages/office_modules/router_hints.py`
+  - must not be reintroduced through runtime imports
 
 ## Team Rules
 

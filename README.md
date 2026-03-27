@@ -364,8 +364,11 @@ HTTP / UI
 - [`packages/runtime_core/kernel_host.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/runtime_core/kernel_host.py)：legacy capability host
 - [`app/request_analysis_support.py`](/Users/dalizhou/Desktop/new_validation_agent/app/request_analysis_support.py)
 - [`app/router_intent_support.py`](/Users/dalizhou/Desktop/new_validation_agent/app/router_intent_support.py)
-- [`app/router_rules.py`](/Users/dalizhou/Desktop/new_validation_agent/app/router_rules.py)
 - [`app/execution_policy.py`](/Users/dalizhou/Desktop/new_validation_agent/app/execution_policy.py)
+
+已退场 compatibility shim：
+
+- `app/router_rules.py` -> [`packages/office_modules/router_hints.py`](/Users/dalizhou/Desktop/new_validation_agent/packages/office_modules/router_hints.py)
 
 迁移文档：
 

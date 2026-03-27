@@ -6,8 +6,14 @@
 - `packages/runtime_core/kernel_host.py`
 - `app/request_analysis_support.py`
 - `app/router_intent_support.py`
-- `app/router_rules.py`
 - `app/execution_policy.py`
+
+## Completed Retirements
+
+- `app/router_rules.py`
+  - Replaced by `packages/office_modules/router_hints.py`
+  - Removed from the runtime import path
+  - Protected by the platform-boundary gate so legacy imports fail review
 
 ## Deletion Conditions
 
@@ -21,4 +27,4 @@
 1. migrate office runtime internals into `app/business_modules/office_module/*`
 2. sever `office_module -> OfficeAgent` delegation
 3. retire legacy capability host coupling
-4. remove helper shims
+4. remove remaining helper shims

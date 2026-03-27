@@ -172,8 +172,8 @@ const AGENT_OS_MILESTONES = [
     id: "M6",
     title: "门禁与 shim 退场",
     status: "active",
-    summary: "下一步把 module/swarm/shim 门禁接进 workflow，并正式退场至少 1 个 shim。",
-    tags: ["workflow gates", "shim retirement", "regression guard"],
+    summary: "module/swarm/shim 门禁已经在 workflow 中收口，且 app/router_rules.py 已完成正式退场。",
+    tags: ["workflow gates", "shim retirement", "regression guard", "router_rules retired"],
   },
 ];
 

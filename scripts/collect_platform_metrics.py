@@ -26,9 +26,12 @@ PROTECTED_SHIMS = (
     "app/agent.py",
     "app/request_analysis_support.py",
     "app/router_intent_support.py",
-    "app/router_rules.py",
     "app/execution_policy.py",
     "packages/runtime_core/kernel_host.py",
+)
+
+RETIRED_SHIMS = (
+    "app/router_rules.py",
 )
 
 
@@ -36,6 +39,17 @@ def _read(path: Path) -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")
+
+
+def _extract_section_table_paths(text: str, heading: str) -> list[str]:
+    marker = f"## {heading}"
+    start = text.find(marker)
+    if start < 0:
+        return []
+    rest = text[start + len(marker):]
+    next_heading = rest.find("\n## ")
+    section = rest if next_heading < 0 else rest[:next_heading]
+    return sorted(set(match.group(1) for match in re.finditer(r"(?m)^\| `([^`]+)` \|", section)))
 
 
 def _module_id_from_manifest(path: Path) -> str:
@@ -82,14 +96,17 @@ def _business_module_metrics() -> dict[str, object]:
 
 def _shim_metrics() -> dict[str, object]:
     inventory_text = _read(SHIM_INVENTORY)
-    documented = sorted(
-        set(match.group(1) for match in re.finditer(r"\| `([^`]+)` \|", inventory_text))
-    )
+    active_documented = _extract_section_table_paths(inventory_text, "Active Inventory")
+    retired_documented = _extract_section_table_paths(inventory_text, "Retired Shims")
     return {
         "compatibility_shim_count": len(PROTECTED_SHIMS),
         "compatibility_shim_paths": list(PROTECTED_SHIMS),
-        "shim_inventory_documented_count": len(documented),
-        "shim_inventory_paths": documented,
+        "retired_shim_count": len(RETIRED_SHIMS),
+        "retired_shim_paths": list(RETIRED_SHIMS),
+        "shim_inventory_documented_count": len(active_documented),
+        "shim_inventory_paths": active_documented,
+        "retired_inventory_documented_count": len(retired_documented),
+        "retired_inventory_paths": retired_documented,
     }
 
 

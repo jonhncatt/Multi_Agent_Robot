@@ -12,15 +12,19 @@ PROTECTED_SHIMS = {
     "app/agent.py",
     "app/request_analysis_support.py",
     "app/router_intent_support.py",
-    "app/router_rules.py",
     "app/execution_policy.py",
     "packages/runtime_core/kernel_host.py",
+}
+
+RETIRED_SHIM_IMPORTS = {
+    "app.router_rules": "packages.office_modules.router_hints",
 }
 
 REQUIRED_DOC_UPDATES = {
     "docs/architecture/platform_boundaries.md",
     "docs/migration/compatibility_shim_inventory.md",
     "docs/migration/deprecation_plan.md",
+    "docs/migration/shim_retirement_scoreboard.md",
 }
 
 
@@ -83,7 +87,39 @@ def _working_tree_entries() -> list[tuple[str, str]]:
             status = parts[0]
             path = parts[-1]
             entries.append((status, path))
+    for raw_line in _git("ls-files", "--others", "--exclude-standard").splitlines():
+        path = raw_line.strip()
+        if path:
+            entries.append(("??", path))
     return entries
+
+
+def _python_sources() -> list[Path]:
+    roots = ("app", "packages", "tests", "scripts")
+    paths: list[Path] = []
+    for root in roots:
+        base = REPO_ROOT / root
+        if not base.exists():
+            continue
+        for path in base.rglob("*.py"):
+            if "__pycache__" in path.parts or "app/data" in str(path):
+                continue
+            paths.append(path)
+    return paths
+
+
+def _retired_shim_import_violations() -> list[str]:
+    violations: list[str] = []
+    for path in _python_sources():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        for retired_import, replacement in RETIRED_SHIM_IMPORTS.items():
+            if f"from {retired_import} import" in text or f"import {retired_import}" in text:
+                relative = path.relative_to(REPO_ROOT).as_posix()
+                violations.append(f"{relative} imports retired shim {retired_import}; use {replacement}")
+    return violations
 
 
 def main() -> int:
@@ -123,6 +159,14 @@ def main() -> int:
                 "[platform-boundaries] failing because shim changes must update boundary and retirement docs."
             )
             return 1
+
+    retired_violations = _retired_shim_import_violations()
+    if retired_violations:
+        print("[platform-boundaries] retired shim imports detected:")
+        for item in retired_violations:
+            print(f"  - {item}")
+        print("[platform-boundaries] failing because retired shims must not re-enter the runtime path.")
+        return 1
 
     print("[platform-boundaries] checks passed")
     return 0

@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from app.router_rules import (
+from packages.office_modules.router_hints import (
     HOLISTIC_DIRECT_PHRASES,
     HOLISTIC_EXPLAIN_MARKERS,
     HOLISTIC_OVERVIEW_MARKERS,

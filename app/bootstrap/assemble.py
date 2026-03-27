@@ -137,7 +137,6 @@ class AgentOSRuntime:
                 "packages.runtime_core.kernel_host.KernelHost",
                 "app.request_analysis_support",
                 "app.router_intent_support",
-                "app.router_rules",
                 "app.execution_policy",
             ],
         }

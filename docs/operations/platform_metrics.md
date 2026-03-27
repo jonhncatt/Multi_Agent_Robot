@@ -16,11 +16,15 @@ CI also uploads the metrics artifact.
 
 - `compatibility_shim_count`
 - `compatibility_shim_paths`
+- `retired_shim_count`
+- `retired_shim_paths`
 - `shim_inventory_documented_count`
+- `retired_inventory_documented_count`
 
 Purpose:
 
 - track how many shims are still active
+- prove at least one shim has actually retired
 - verify the shim inventory stays aligned with the protected list
 
 ### Second-Module Baseline Metrics
