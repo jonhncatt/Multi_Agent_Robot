@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
+from app.context_assembly import AssembledContext, coerce_active_task, detect_pdf_target
 from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
-from app.intent_schema import ConversationFrame, IntentClassification, IntentDecision, RequestSignals, RouteDecision
+from app.intent_schema import ActiveTask, ConversationFrame, IntentClassification, IntentDecision, RequestSignals, RouteDecision, TaskControl
 from packages.office_modules.runtime_profiles import default_runtime_profile_for_route
 
 
@@ -24,6 +26,8 @@ _TASK_TYPE_TO_PRIMARY_INTENT = {
     "code_generation": "generation",
     "mixed_intent": "standard",
     "followup_transform": "standard",
+    "task_control": "continue_existing_task",
+    "translation_session": "continue_existing_task",
     "meeting_minutes": "meeting_minutes",
     "simple_qa": "qa",
     "general_qa": "qa",
@@ -46,6 +50,8 @@ _TASK_TYPE_TO_EXECUTION_POLICY = {
     "code_generation": "generation_with_tools",
     "mixed_intent": "mixed_intent_planner_pipeline",
     "followup_transform": "followup_transform_pipeline",
+    "task_control": "task_control_pipeline",
+    "translation_session": "translation_session_pipeline",
     "meeting_minutes": "meeting_minutes_output",
     "simple_qa": "qa_direct",
     "general_qa": "llm_router_general_ambiguity",
@@ -60,6 +66,7 @@ _ALLOWED_PRIMARY_INTENTS = {
     "generation",
     "meeting_minutes",
     "qa",
+    "continue_existing_task",
     "standard",
 }
 
@@ -76,10 +83,14 @@ class PolicyRouter:
         attachment_metas: list[dict[str, Any]],
         settings: Any,
         signals: RequestSignals,
+        assembled_context: AssembledContext | None = None,
     ) -> dict[str, Any]:
         decision = IntentDecision(
             top_intent=str(intent.primary_intent or "standard"),
             second_intent=str((intent.secondary_intents or [""])[0] if intent.secondary_intents else ""),
+            task_kind=str(intent.task_kind or "standard"),
+            sub_intent=str(intent.sub_intent or ""),
+            target=str(intent.target or ""),
             confidence=float(intent.confidence),
             mixed_intent=bool(intent.mixed_intent),
             inherited_from_state=str(intent.inherited_from_state or signals.inherited_primary_intent or ""),
@@ -87,11 +98,13 @@ class PolicyRouter:
             requires_grounding=bool(intent.requires_grounding),
             requires_web=bool(intent.requires_web),
             requires_local_lookup=bool(intent.requires_local_lookup),
+            needs_file_context=bool(intent.needs_file_context),
             action_type=str(intent.action_type or "answer"),
             reason_short=str(intent.reason_short or ""),
             source=str(intent.source or "rules"),
             classifier_model=str(intent.classifier_model or ""),
             escalation_reason=str(intent.escalation_reason or ""),
+            task_control=intent.task_control.model_copy(),
         )
         frame = ConversationFrame(
             dominant_intent=str(decision.inherited_from_state or decision.top_intent or "standard"),
@@ -103,6 +116,7 @@ class PolicyRouter:
             frame=frame,
             settings=settings,
             signals=signals,
+            assembled_context=assembled_context,
         )
 
     def build_fallback_from_decision(
@@ -112,8 +126,15 @@ class PolicyRouter:
         frame: ConversationFrame,
         settings: Any,
         signals: RequestSignals,
+        assembled_context: AssembledContext | None = None,
     ) -> dict[str, Any]:
-        return self._base_route_payload(decision=decision, frame=frame, signals=signals, settings=settings)
+        return self._base_route_payload(
+            decision=decision,
+            frame=frame,
+            signals=signals,
+            settings=settings,
+            assembled_context=assembled_context,
+        )
 
     def route(
         self,
@@ -124,12 +145,16 @@ class PolicyRouter:
         settings: Any,
         signals: RequestSignals,
         fallback: dict[str, Any],
+        assembled_context: AssembledContext | None = None,
         source_override: str = "",
         force_disable_llm_router: bool = False,
     ) -> dict[str, Any]:
         decision = IntentDecision(
             top_intent=str(intent.primary_intent or "standard"),
             second_intent=str((intent.secondary_intents or [""])[0] if intent.secondary_intents else ""),
+            task_kind=str(intent.task_kind or "standard"),
+            sub_intent=str(intent.sub_intent or ""),
+            target=str(intent.target or ""),
             confidence=float(intent.confidence),
             mixed_intent=bool(intent.mixed_intent),
             inherited_from_state=str(intent.inherited_from_state or signals.inherited_primary_intent or ""),
@@ -137,11 +162,13 @@ class PolicyRouter:
             requires_grounding=bool(intent.requires_grounding),
             requires_web=bool(intent.requires_web),
             requires_local_lookup=bool(intent.requires_local_lookup),
+            needs_file_context=bool(intent.needs_file_context),
             action_type=str(intent.action_type or "answer"),
             reason_short=str(intent.reason_short or ""),
             source=str(intent.source or "rules"),
             classifier_model=str(intent.classifier_model or ""),
             escalation_reason=str(intent.escalation_reason or ""),
+            task_control=intent.task_control.model_copy(),
         )
         frame = ConversationFrame(
             dominant_intent=str(decision.inherited_from_state or decision.top_intent or "standard"),
@@ -155,6 +182,7 @@ class PolicyRouter:
             settings=settings,
             signals=signals,
             fallback=fallback,
+            assembled_context=assembled_context,
             source_override=source_override,
             force_disable_llm_router=force_disable_llm_router,
         )
@@ -167,12 +195,42 @@ class PolicyRouter:
         settings: Any,
         signals: RequestSignals,
         fallback: dict[str, Any],
+        assembled_context: AssembledContext | None = None,
         source_override: str = "",
         force_disable_llm_router: bool = False,
     ) -> dict[str, Any]:
-        base = self._base_route_payload(decision=decision, frame=frame, signals=signals, settings=settings)
+        base = self._base_route_payload(
+            decision=decision,
+            frame=frame,
+            signals=signals,
+            settings=settings,
+            assembled_context=assembled_context,
+        )
+        active_task = self._resolve_active_task(
+            decision=decision,
+            signals=signals,
+            assembled_context=assembled_context,
+        )
 
-        if bool(decision.requires_clarifying_route):
+        if self._is_translation_session(
+            decision=decision,
+            active_task=active_task,
+            signals=signals,
+        ):
+            routed = self._route_translation_session(
+                decision=decision,
+                signals=signals,
+                settings=settings,
+                active_task=active_task,
+            )
+        elif self._is_task_control(decision=decision, active_task=active_task):
+            routed = self._route_task_control(
+                decision=decision,
+                signals=signals,
+                settings=settings,
+                active_task=active_task,
+            )
+        elif bool(decision.requires_clarifying_route):
             routed = self._route_clarifying_safe(decision=decision, signals=signals, settings=settings)
         elif self._is_followup_transform(decision=decision, frame=frame, signals=signals):
             routed = self._route_followup_transform(decision=decision, frame=frame, signals=signals, settings=settings)
@@ -219,8 +277,14 @@ class PolicyRouter:
         frame: ConversationFrame,
         signals: RequestSignals,
         settings: Any,
+        assembled_context: AssembledContext | None = None,
     ) -> dict[str, Any]:
         enable_tools = bool(getattr(settings, "enable_tools", False))
+        active_task = self._resolve_active_task(
+            decision=decision,
+            signals=signals,
+            assembled_context=assembled_context,
+        )
         secondaries: list[str] = []
         if decision.second_intent and decision.second_intent != decision.top_intent:
             secondaries.append(str(decision.second_intent))
@@ -231,6 +295,9 @@ class PolicyRouter:
 
         return {
             "task_type": "standard",
+            "task_kind": str(decision.task_kind or "standard"),
+            "sub_intent": str(decision.sub_intent or ""),
+            "target": str(decision.target or ""),
             "complexity": "medium",
             "use_planner": True,
             "use_worker_tools": bool(enable_tools and decision.requires_tools),
@@ -253,7 +320,10 @@ class PolicyRouter:
             "requires_grounding": bool(decision.requires_grounding),
             "requires_web": bool(decision.requires_web),
             "requires_local_lookup": bool(decision.requires_local_lookup),
+            "needs_file_context": bool(decision.needs_file_context),
             "action_type": str(decision.action_type or "answer"),
+            "task_control": decision.task_control.model_copy(),
+            "active_task": active_task.model_copy() if active_task is not None else None,
             "intent_confidence": float(decision.confidence),
             "intent_source": str(decision.source or "rules"),
             "intent_reason": str(decision.reason_short or ""),
@@ -270,6 +340,112 @@ class PolicyRouter:
             "evidence_required_mode": bool(signals.evidence_required),
             "default_root_search": bool(signals.default_root_search),
         }
+
+    def _resolve_active_task(
+        self,
+        *,
+        decision: IntentDecision,
+        signals: RequestSignals,
+        assembled_context: AssembledContext | None,
+    ) -> ActiveTask | None:
+        active_task = (assembled_context.active_task if assembled_context is not None else None) or coerce_active_task(
+            (signals.route_state or {}).get("active_task") if isinstance(signals.route_state, dict) else None
+        )
+        if active_task is not None:
+            active_task = active_task.model_copy(deep=True)
+
+        if str(decision.task_kind or "").strip().lower() == "document_translation":
+            target = str(decision.target or "").strip()
+            if not target and active_task is not None:
+                target = str(active_task.target_id or "").strip()
+            target_type = str(active_task.target_type if active_task is not None else "").strip().lower()
+            if not target:
+                target, detected_type = detect_pdf_target(signals.attachment_metas)
+                if detected_type:
+                    target_type = detected_type
+            if target:
+                if (
+                    active_task is None
+                    or active_task.task_kind != "document_translation"
+                    or (str(active_task.target_id or "").strip() and str(active_task.target_id or "").strip() != target)
+                ):
+                    active_task = ActiveTask(
+                        task_id=f"task_{uuid4().hex}",
+                        task_kind="document_translation",
+                        target_id=target,
+                        target_type=target_type or "pdf",
+                        mode="full",
+                    )
+                else:
+                    active_task.task_kind = active_task.task_kind or "document_translation"
+                    active_task.target_id = active_task.target_id or target
+                    active_task.target_type = active_task.target_type or target_type or "pdf"
+                    if not active_task.mode:
+                        active_task.mode = "full"
+
+        if active_task is None:
+            return None
+        return self._apply_task_control_to_active_task(active_task=active_task, task_control=decision.task_control)
+
+    def _apply_task_control_to_active_task(
+        self,
+        *,
+        active_task: ActiveTask,
+        task_control: TaskControl,
+    ) -> ActiveTask:
+        updated = active_task.model_copy(deep=True)
+        if updated.task_kind == "document_translation" and not updated.mode:
+            updated.mode = "full"
+
+        control_label = ""
+        if task_control.mode_switch:
+            updated.mode = str(task_control.mode_switch)
+            control_label = f"mode_switch:{task_control.mode_switch}"
+        if task_control.position_reset:
+            updated.progress = dict(updated.progress or {})
+            updated.progress["position"] = str(task_control.position_reset)
+            control_label = control_label or f"position_reset:{task_control.position_reset}"
+        if task_control.start:
+            updated.started = True
+            updated.finished = False
+            control_label = control_label or "start"
+        if task_control.resume:
+            updated.started = True
+            updated.finished = False
+            control_label = control_label or "resume"
+        if control_label:
+            updated.last_user_control = control_label
+        return updated
+
+    def _is_translation_session(
+        self,
+        *,
+        decision: IntentDecision,
+        active_task: ActiveTask | None,
+        signals: RequestSignals,
+    ) -> bool:
+        if str(decision.task_kind or "").strip().lower() == "document_translation":
+            return True
+        return bool(
+            active_task is not None
+            and active_task.task_kind == "document_translation"
+            and (
+                decision.task_control.is_active()
+                or bool(signals.translation_request)
+                or str(decision.top_intent or "").strip().lower() == "continue_existing_task"
+            )
+        )
+
+    def _is_task_control(
+        self,
+        *,
+        decision: IntentDecision,
+        active_task: ActiveTask | None,
+    ) -> bool:
+        return bool(
+            active_task is not None
+            and str(decision.top_intent or "").strip().lower() == "continue_existing_task"
+        )
 
     def _route_understanding(
         self,
@@ -461,6 +637,86 @@ class PolicyRouter:
             "runtime_profile": "explainer",
         }
 
+    def _route_task_control(
+        self,
+        *,
+        decision: IntentDecision,
+        signals: RequestSignals,
+        settings: Any,
+        active_task: ActiveTask | None,
+    ) -> dict[str, Any]:
+        target = str(decision.target or "").strip()
+        if not target and active_task is not None:
+            target = str(active_task.target_id or "").strip()
+        task_kind = str(active_task.task_kind if active_task is not None else decision.task_kind or "task_control").strip().lower() or "task_control"
+        specialists = ["file_reader"] if bool(getattr(settings, "enable_tools", False) and (decision.requires_tools or active_task is not None)) else []
+        return {
+            "task_type": "task_control",
+            "task_kind": task_kind,
+            "sub_intent": str(decision.sub_intent or "task_control"),
+            "target": target,
+            "complexity": "low",
+            "use_planner": False,
+            "use_worker_tools": bool(getattr(settings, "enable_tools", False) and (decision.requires_tools or active_task is not None)),
+            "use_reviewer": False,
+            "use_revision": False,
+            "use_structurer": False,
+            "use_web_prefetch": False,
+            "use_conflict_detector": False,
+            "specialists": specialists,
+            "reason": "policy_task_control",
+            "summary": "检测到已存在 active task，本轮 follow-up 被解释为 task control。",
+            "execution_policy": "task_control_pipeline",
+            "runtime_profile": "explainer",
+            "task_control": decision.task_control.model_copy(),
+            "active_task": active_task.model_copy() if active_task is not None else None,
+        }
+
+    def _route_translation_session(
+        self,
+        *,
+        decision: IntentDecision,
+        signals: RequestSignals,
+        settings: Any,
+        active_task: ActiveTask | None,
+    ) -> dict[str, Any]:
+        target = str(decision.target or "").strip()
+        if not target and active_task is not None:
+            target = str(active_task.target_id or "").strip()
+        use_worker_tools = bool(getattr(settings, "enable_tools", False))
+        specialists = ["file_reader"] if use_worker_tools else []
+        summary = "文档翻译 active task follow-up，直接进入 translation session pipeline。"
+        if decision.task_control.mode_switch:
+            summary = f"文档翻译任务切换模式为 {decision.task_control.mode_switch}，直接进入 translation session pipeline。"
+        elif decision.task_control.position_reset:
+            summary = f"文档翻译任务重置进度到 {decision.task_control.position_reset}，直接进入 translation session pipeline。"
+        elif decision.task_control.start:
+            summary = "文档翻译任务收到开始指令，直接继续执行。"
+        elif decision.task_control.resume:
+            summary = "文档翻译任务收到继续指令，直接继续执行。"
+        return {
+            "task_type": "translation_session",
+            "task_kind": "document_translation",
+            "sub_intent": str(decision.sub_intent or "translation_session"),
+            "target": target,
+            "complexity": "medium",
+            "use_planner": False,
+            "use_worker_tools": use_worker_tools,
+            "use_reviewer": False,
+            "use_revision": False,
+            "use_structurer": False,
+            "use_web_prefetch": False,
+            "use_conflict_detector": False,
+            "specialists": specialists,
+            "reason": "policy_translation_session",
+            "summary": summary,
+            "execution_policy": "translation_session_pipeline",
+            "runtime_profile": "explainer",
+            "task_control": decision.task_control.model_copy(),
+            "active_task": active_task.model_copy() if active_task is not None else None,
+            "needs_file_context": True,
+        }
+
     def _route_standard(
         self,
         *,
@@ -631,6 +887,9 @@ class PolicyRouter:
         normalized.update(route or {})
 
         normalized["task_type"] = str(normalized.get("task_type") or fallback.get("task_type") or "standard").strip()
+        normalized["task_kind"] = str(normalized.get("task_kind") or fallback.get("task_kind") or normalized["task_type"] or "standard").strip()
+        normalized["sub_intent"] = str(normalized.get("sub_intent") or fallback.get("sub_intent") or "").strip()
+        normalized["target"] = str(normalized.get("target") or fallback.get("target") or "").strip()
         complexity = str(normalized.get("complexity") or fallback.get("complexity") or "medium").strip().lower()
         if complexity not in {"low", "medium", "high"}:
             complexity = "medium"
@@ -650,6 +909,17 @@ class PolicyRouter:
             str(normalized.get("runtime_profile") or fallback.get("runtime_profile") or "").strip()
             or default_runtime_profile_for_route(normalized)
         )
+        normalized["needs_file_context"] = bool(
+            normalized.get("needs_file_context", fallback.get("needs_file_context", False))
+        )
+        try:
+            normalized["task_control"] = TaskControl.model_validate(
+                normalized.get("task_control") or fallback.get("task_control") or {}
+            ).model_dump()
+        except Exception:
+            normalized["task_control"] = TaskControl().model_dump()
+        active_task = coerce_active_task(normalized.get("active_task") or fallback.get("active_task"))
+        normalized["active_task"] = active_task.model_dump() if active_task is not None else None
 
         for key in (
             "use_planner",
@@ -715,6 +985,15 @@ class PolicyRouter:
             normalized["use_revision"] = False
             normalized["use_structurer"] = False
             normalized["use_conflict_detector"] = False
+        if route_task_type in {"task_control", "translation_session"}:
+            normalized["use_planner"] = False
+            normalized["use_reviewer"] = False
+            normalized["use_revision"] = False
+            normalized["use_structurer"] = False
+            normalized["use_conflict_detector"] = False
+            normalized["use_web_prefetch"] = False
+        if route_task_type == "translation_session":
+            normalized["use_worker_tools"] = bool(getattr(settings, "enable_tools", False))
 
         normalized["reason"] = str(normalized.get("reason") or fallback.get("reason") or "").strip()
         normalized["source"] = str(normalized.get("source") or fallback.get("source") or "rules").strip() or "rules"

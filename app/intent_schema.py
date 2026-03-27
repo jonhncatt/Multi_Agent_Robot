@@ -13,10 +13,38 @@ PrimaryIntent = Literal[
     "generation",
     "meeting_minutes",
     "qa",
+    "continue_existing_task",
     "standard",
 ]
 
 ActionType = Literal["answer", "search", "read", "modify", "create"]
+
+
+class TaskControl(BaseModel):
+    start: bool = False
+    resume: bool = False
+    mode_switch: str | None = None
+    position_reset: str | None = None
+
+    def is_active(self) -> bool:
+        return bool(
+            self.start
+            or self.resume
+            or str(self.mode_switch or "").strip()
+            or str(self.position_reset or "").strip()
+        )
+
+
+class ActiveTask(BaseModel):
+    task_id: str
+    task_kind: str
+    target_id: str
+    target_type: str
+    mode: str = ""
+    progress: dict[str, Any] = Field(default_factory=dict)
+    started: bool = False
+    finished: bool = False
+    last_user_control: str = ""
 
 
 class RequestSignals(BaseModel):
@@ -42,6 +70,8 @@ class RequestSignals(BaseModel):
     local_code_lookup_request: bool = False
     grounded_code_generation_context: bool = False
     default_root_search: bool = False
+    translation_request: bool = False
+    task_control_request: bool = False
     inherited_primary_intent: str = ""
     short_followup_like: bool = False
     transform_followup_like: bool = False
@@ -64,6 +94,9 @@ class IntentDecision(BaseModel):
     candidates: list[IntentScore] = Field(default_factory=list)
     top_intent: str = "standard"
     second_intent: str = ""
+    task_kind: str = "standard"
+    sub_intent: str = ""
+    target: str = ""
     confidence: float = 0.0
     margin: float = 0.0
     mixed_intent: bool = False
@@ -73,11 +106,13 @@ class IntentDecision(BaseModel):
     requires_grounding: bool = False
     requires_web: bool = False
     requires_local_lookup: bool = False
+    needs_file_context: bool = False
     action_type: str = "answer"
     reason_short: str = ""
     source: str = "rules"
     classifier_model: str = ""
     escalation_reason: str = ""
+    task_control: TaskControl = Field(default_factory=TaskControl)
 
 
 class ConversationFrame(BaseModel):
@@ -93,10 +128,14 @@ class ConversationFrame(BaseModel):
 class IntentClassification(BaseModel):
     primary_intent: PrimaryIntent = "standard"
     secondary_intents: list[str] = Field(default_factory=list)
+    task_kind: str = "standard"
+    sub_intent: str = ""
+    target: str = ""
     requires_tools: bool = False
     requires_grounding: bool = False
     requires_web: bool = False
     requires_local_lookup: bool = False
+    needs_file_context: bool = False
     action_type: ActionType = "answer"
     confidence: float = 0.7
     reason_short: str = ""
@@ -105,6 +144,7 @@ class IntentClassification(BaseModel):
     mixed_intent: bool = False
     inherited_from_state: str = ""
     escalation_reason: str = ""
+    task_control: TaskControl = Field(default_factory=TaskControl)
 
     def to_dict(self) -> dict[str, Any]:
         payload = self.model_dump()
@@ -114,6 +154,9 @@ class IntentClassification(BaseModel):
 
 class RouteDecision(BaseModel):
     task_type: str = "standard"
+    task_kind: str = "standard"
+    sub_intent: str = ""
+    target: str = ""
     complexity: Literal["low", "medium", "high"] = "medium"
     use_planner: bool = False
     use_worker_tools: bool = False
@@ -136,7 +179,10 @@ class RouteDecision(BaseModel):
     requires_grounding: bool = False
     requires_web: bool = False
     requires_local_lookup: bool = False
+    needs_file_context: bool = False
     action_type: ActionType = "answer"
+    task_control: TaskControl = Field(default_factory=TaskControl)
+    active_task: ActiveTask | None = None
     intent_confidence: float = 0.7
     intent_source: str = "rules_intent_classifier"
     intent_reason: str = ""
@@ -167,6 +213,11 @@ class DecisionTrace(BaseModel):
     intent_candidates: list[dict[str, Any]] = Field(default_factory=list)
     top_intent: str = "standard"
     second_intent: str = ""
+    task_kind: str = "standard"
+    sub_intent: str = ""
+    target: str = ""
+    active_task_summary: str = ""
+    task_control: TaskControl = Field(default_factory=TaskControl)
     confidence: float = 0.0
     margin: float = 0.0
     ambiguity_score: float = 0.0

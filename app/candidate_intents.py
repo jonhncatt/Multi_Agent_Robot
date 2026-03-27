@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.context_assembly import coerce_active_task, infer_task_control
 from app.intent_schema import ConversationFrame, IntentScore, RequestSignals
 
 
@@ -10,6 +11,7 @@ _BASE_INTENTS = (
     "code_lookup",
     "generation",
     "meeting_minutes",
+    "continue_existing_task",
     "standard",
 )
 
@@ -49,6 +51,13 @@ class CandidateIntentGenerator:
             self._bump(scores, "meeting_minutes", 0.62, "meeting_minutes_request")
 
         inherited = str(frame.dominant_intent or signals.inherited_primary_intent or "").strip().lower()
+        active_task = coerce_active_task(signals.route_state.get("active_task") if isinstance(signals.route_state, dict) else None)
+        task_control = infer_task_control(signals.text, active_task)
+        if active_task is not None and task_control.is_active():
+            self._bump(scores, "continue_existing_task", 0.92, "active_task + explicit_task_control")
+        if active_task is not None and active_task.task_kind == "document_translation" and signals.translation_request:
+            self._bump(scores, "continue_existing_task", 0.72, "document_translation_active_task + translation_request")
+
         if inherited in scores and inherited != "standard" and signals.short_followup_like:
             self._bump(scores, inherited, 0.35, "inherited_dominant_intent + short_followup")
 

@@ -105,6 +105,7 @@ from app.core.kernel_debug_support import (
 from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_classifier import IntentClassifier
 from app.intent_schema import RouteTrace
+from app.context_assembly import ContextAssembler, coerce_active_task
 from app.policy_router import PolicyRouter
 from app.route_trace import build_route_trace, route_trace_payload
 from app.route_verifier import RouteVerifier
@@ -1937,6 +1938,7 @@ class OfficeAgent:
             settings=settings,
             route_state=route_state,
             inline_followup_context=bool(inline_followup_source),
+            recent_conversation_turns=history_turns,
             attachment_issues=attachment_issues,
             followup_has_attachments=followup_has_attachments,
             followup_attachment_requires_tools=followup_attachment_requires_tools,
@@ -6676,24 +6678,37 @@ class OfficeAgent:
 
     def _build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
         task_type = str(route.get("task_type") or "standard").strip().lower()
+        task_kind = str(route.get("task_kind") or task_type or "standard").strip().lower()
         primary_intent = self._normalize_primary_intent(
             str(route.get("primary_intent") or ""),
             task_type=task_type,
         )
         execution_policy = str(route.get("execution_policy") or "").strip() or self._task_type_to_execution_policy(task_type)
         runtime_profile = str(route.get("runtime_profile") or "").strip() or default_runtime_profile_for_route(route)
+        active_task = coerce_active_task(route.get("active_task"))
+        task_control = route.get("task_control") or {}
+        active_artifacts = list(route.get("specialists") or [])
+        if active_task is not None:
+            target_ref = f"{active_task.target_type}:{active_task.target_id}"
+            if target_ref and target_ref not in active_artifacts:
+                active_artifacts.append(target_ref)
         return {
             "primary_intent": primary_intent,
             "execution_policy": execution_policy,
             "runtime_profile": runtime_profile,
             "task_type": task_type,
+            "task_kind": task_kind,
+            "sub_intent": str(route.get("sub_intent") or ""),
+            "target": str(route.get("target") or ""),
             "use_worker_tools": bool(route.get("use_worker_tools")),
             "evidence_mode": task_type == "evidence_lookup",
             "working_set": list(route.get("secondary_intents") or []),
-            "active_artifacts": list(route.get("specialists") or []),
+            "active_artifacts": active_artifacts,
             "active_entities": list(route.get("secondary_intents") or []),
             "last_route_policy": execution_policy,
             "last_answer_shape": str(route.get("task_type") or ""),
+            "task_control": dict(task_control) if isinstance(task_control, dict) else {},
+            "active_task": active_task.model_dump() if active_task is not None else None,
         }
 
     def _infer_followup_primary_intent_from_state(
@@ -6788,6 +6803,9 @@ class OfficeAgent:
     def _route_verifier(self) -> RouteVerifier:
         return RouteVerifier()
 
+    def _context_assembler(self) -> ContextAssembler:
+        return ContextAssembler()
+
     def _route_request_by_rules(
         self,
         *,
@@ -6843,6 +6861,7 @@ class OfficeAgent:
         settings: ChatSettings,
         route_state: dict[str, Any] | None = None,
         inline_followup_context: bool = False,
+        recent_conversation_turns: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return self._run_route_pipeline(
             requested_model="",
@@ -6852,6 +6871,7 @@ class OfficeAgent:
             settings=settings,
             route_state=route_state,
             inline_followup_context=inline_followup_context,
+            recent_conversation_turns=recent_conversation_turns,
             force_rules_only=True,
         ).route
 
@@ -6865,6 +6885,7 @@ class OfficeAgent:
         settings: ChatSettings,
         route_state: dict[str, Any] | None = None,
         inline_followup_context: bool = False,
+        recent_conversation_turns: list[dict[str, Any]] | None = None,
         attachment_issues: list[str] | None = None,
         followup_has_attachments: bool = False,
         followup_attachment_requires_tools: bool = False,
@@ -6878,6 +6899,7 @@ class OfficeAgent:
             settings=settings,
             route_state=route_state,
             inline_followup_context=inline_followup_context,
+            recent_conversation_turns=recent_conversation_turns,
             attachment_issues=attachment_issues or [],
             followup_has_attachments=followup_has_attachments,
             followup_attachment_requires_tools=followup_attachment_requires_tools,
@@ -6900,6 +6922,7 @@ class OfficeAgent:
         settings: ChatSettings,
         route_state: dict[str, Any] | None = None,
         inline_followup_context: bool = False,
+        recent_conversation_turns: list[dict[str, Any]] | None = None,
         force_rules_only: bool = False,
         attachment_issues: list[str] | None = None,
         followup_has_attachments: bool = False,
@@ -6916,30 +6939,38 @@ class OfficeAgent:
             route_state=route_state,
             inline_followup_context=inline_followup_context,
         )
-        classifier = self._intent_classifier()
-        frame = classifier.resolve_frame(
+        assembled_context = self._context_assembler().assemble(
             user_message=user_message,
+            recent_conversation_turns=recent_conversation_turns or [],
+            active_task=coerce_active_task((route_state or {}).get("active_task")),
             route_state=route_state,
-            signals=signals,
+            user_preferences={
+                **dict((route_state or {}).get("user_preferences") or {}),
+                "response_style": str(getattr(settings, "response_style", "") or "").strip(),
+            },
+            tool_availability={
+                "enable_tools": bool(getattr(settings, "enable_tools", False)),
+                "has_attachments": bool(attachment_metas),
+                "attachment_count": len(attachment_metas),
+            },
+            system_rules=[
+                "LLM is the primary semantic classifier; rules are hints and fallback only.",
+                "If there is an active task, follow-up control should bind to that task before opening a new one.",
+                "Document translation controls should execute directly on the active PDF task instead of asking repeated slot-filling confirmations.",
+                "Only use safe clarifying route when there is no active task or no actionable file target.",
+            ],
         )
-        candidates = classifier.generate_candidates(
-            signals=signals,
-            frame=frame,
-        )
-        decision, raw = classifier.score_decision(
-            candidates=candidates,
+        classifier = self._intent_classifier()
+        frame, candidates, decision, raw = classifier.classify_with_context(
             requested_model=requested_model,
             user_message=user_message,
             summary=summary,
             attachment_metas=attachment_metas,
             settings=settings,
+            route_state=route_state,
             signals=signals,
-            frame=frame,
+            assembled_context=assembled_context,
             force_rules_only=force_rules_only,
-        )
-        decision = classifier.postprocess_decision(
-            decision=decision,
-            signals=signals,
         )
 
         policy_router = self._policy_router()
@@ -6948,6 +6979,7 @@ class OfficeAgent:
             frame=frame,
             settings=settings,
             signals=signals,
+            assembled_context=assembled_context,
         )
         route = policy_router.route_from_decision(
             decision=decision,
@@ -6955,6 +6987,7 @@ class OfficeAgent:
             settings=settings,
             signals=signals,
             fallback=fallback,
+            assembled_context=assembled_context,
             source_override=str(decision.source or ""),
             force_disable_llm_router=True,
         )
@@ -6963,6 +6996,7 @@ class OfficeAgent:
             route=route,
             signals=signals,
             frame=frame,
+            assembled_context=assembled_context,
         )
         route, raw, override_notes, override_actions = self._apply_route_runtime_overrides(
             route=route,
@@ -6983,6 +7017,7 @@ class OfficeAgent:
             frame=frame,
             decision=decision,
             route=route,
+            assembled_context=assembled_context,
             runtime_override_notes=override_notes,
             runtime_override_actions=override_actions,
         )

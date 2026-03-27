@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.context_assembly import coerce_active_task, infer_task_control, looks_like_translation_request
 from app.intent_constants import SHORT_FOLLOWUP_MAX_LEN
 from app.intent_schema import RequestSignals
 
@@ -176,6 +177,8 @@ class RouterSignalExtractor:
             local_code_lookup_request=bool(local_code_lookup_request),
             grounded_code_generation_context=bool(grounded_code_generation_context),
             default_root_search=default_root_search,
+            translation_request=bool(looks_like_translation_request(user_message)),
+            task_control_request=bool(infer_task_control(user_message, coerce_active_task(route_state.get("active_task") if isinstance(route_state, dict) else None)).is_active()),
             short_followup_like=short_followup_like,
             transform_followup_like=transform_followup_like,
             reference_followup_like=reference_followup_like,
@@ -248,6 +251,10 @@ class RouterSignalExtractor:
             or signals.local_code_lookup_request
         ):
             score += 0.08
+        if signals.translation_request:
+            score -= 0.06
+        if signals.task_control_request:
+            score -= 0.1
         if signals.source_trace_request or signals.spec_lookup_request or signals.meeting_minutes_request:
             score -= 0.18
         if signals.web_request:

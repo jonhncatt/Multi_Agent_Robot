@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.context_assembly import AssembledContext, coerce_active_task
 from app.intent_schema import ConversationFrame, IntentDecision, RequestSignals
 
 
@@ -11,6 +12,7 @@ class RouteVerifier:
         route: dict[str, object],
         signals: RequestSignals,
         frame: ConversationFrame,
+        assembled_context: AssembledContext | None = None,
     ) -> tuple[dict[str, object], list[str]]:
         updated = dict(route or {})
         notes: list[str] = []
@@ -63,6 +65,38 @@ class RouteVerifier:
             updated["summary"] = "识别到继承态 follow-up transform，改走 followup transform pipeline。"
             notes.append("inherited followup transform routed as standard; switched to followup transform pipeline.")
             actions.append("reroute_followup_transform")
+
+        active_task = coerce_active_task(updated.get("active_task")) or (
+            assembled_context.active_task if assembled_context is not None else None
+        ) or coerce_active_task((signals.route_state or {}).get("active_task") if isinstance(signals.route_state, dict) else None)
+        translation_control = bool(
+            active_task is not None
+            and active_task.task_kind == "document_translation"
+            and (
+                decision.task_control.is_active()
+                or bool(signals.task_control_request)
+                or bool(signals.translation_request)
+                or str(decision.task_kind or "").strip().lower() == "document_translation"
+            )
+        )
+        if translation_control and execution_policy in {"standard_safe_pipeline", "task_control_pipeline"}:
+            updated["task_type"] = "translation_session"
+            updated["task_kind"] = "document_translation"
+            updated["execution_policy"] = "translation_session_pipeline"
+            updated["use_planner"] = False
+            updated["use_worker_tools"] = True
+            updated["use_reviewer"] = False
+            updated["use_revision"] = False
+            updated["use_structurer"] = False
+            updated["use_web_prefetch"] = False
+            updated["use_conflict_detector"] = False
+            updated["reason"] = "verifier_translation_session_override"
+            updated["summary"] = "识别到文档翻译连续任务控制，强制切到 translation session pipeline。"
+            if active_task is not None:
+                updated["active_task"] = active_task.model_dump()
+                updated["target"] = str(updated.get("target") or active_task.target_id or "")
+            notes.append("document translation task control routed to safe/task control path; switched to translation session pipeline.")
+            actions.append("reroute_to_translation_session_pipeline")
 
         updated["route_verified"] = True
         updated["verifier_notes"] = notes

@@ -43,3 +43,35 @@ def test_verifier_does_not_rewrite_plain_understanding_route() -> None:
     )
     assert route["execution_policy"] == "understanding_direct"
     assert route["verifier_actions"] == []
+
+
+def test_verifier_reroutes_translation_task_control_out_of_safe_pipeline() -> None:
+    verifier = RouteVerifier()
+    route, _ = verifier.verify(
+        decision=IntentDecision(
+            top_intent="continue_existing_task",
+            task_kind="document_translation",
+            task_control={"resume": True},
+        ),
+        route={
+            "task_type": "standard",
+            "execution_policy": "standard_safe_pipeline",
+            "use_planner": True,
+            "use_worker_tools": False,
+            "active_task": {
+                "task_id": "task_pdf_translation",
+                "task_kind": "document_translation",
+                "target_id": "pdf-doc",
+                "target_type": "pdf",
+                "mode": "full",
+                "progress": {},
+                "started": False,
+                "finished": False,
+                "last_user_control": "",
+            },
+        },
+        signals=RequestSignals(translation_request=True, task_control_request=True),
+        frame=ConversationFrame(dominant_intent="continue_existing_task"),
+    )
+    assert route["execution_policy"] == "translation_session_pipeline"
+    assert "reroute_to_translation_session_pipeline" in route["verifier_actions"]

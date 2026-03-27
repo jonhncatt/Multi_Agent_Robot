@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.context_assembly import AssembledContext, coerce_active_task
 from app.intent_schema import ConversationFrame, IntentDecision, RequestSignals, RouteTrace
 
 
@@ -27,6 +28,8 @@ def build_signal_summary(signals: RequestSignals) -> dict[str, Any]:
         "local_code_lookup_request",
         "grounded_code_generation_context",
         "default_root_search",
+        "translation_request",
+        "task_control_request",
         "short_followup_like",
         "transform_followup_like",
         "reference_followup_like",
@@ -62,12 +65,27 @@ def build_route_trace(
     frame: ConversationFrame,
     decision: IntentDecision,
     route: dict[str, Any],
+    assembled_context: AssembledContext | None = None,
     runtime_override_notes: list[str] | None = None,
     runtime_override_actions: list[str] | None = None,
 ) -> RouteTrace:
     excerpt = str(user_message or "").strip().replace("\n", " ")
     if len(excerpt) > 240:
         excerpt = excerpt[:237].rstrip() + "..."
+    active_task_summary = ""
+    if assembled_context is not None and assembled_context.active_task_summary:
+        active_task_summary = str(assembled_context.active_task_summary)
+    else:
+        active_task = coerce_active_task(route.get("active_task"))
+        if active_task is not None:
+            progress = ", ".join(f"{key}={value}" for key, value in sorted((active_task.progress or {}).items())) or "none"
+            active_task_summary = (
+                f"task_kind={active_task.task_kind}; "
+                f"target={active_task.target_type}:{active_task.target_id}; "
+                f"mode={active_task.mode or 'none'}; "
+                f"progress={progress}; "
+                f"started={active_task.started}; finished={active_task.finished}"
+            )
     return RouteTrace(
         request_id=request_id,
         timestamp=timestamp,
@@ -77,6 +95,11 @@ def build_route_trace(
         intent_candidates=[item.model_dump() for item in decision.candidates],
         top_intent=str(decision.top_intent or "standard"),
         second_intent=str(decision.second_intent or ""),
+        task_kind=str(decision.task_kind or "standard"),
+        sub_intent=str(decision.sub_intent or ""),
+        target=str(decision.target or ""),
+        active_task_summary=active_task_summary,
+        task_control=decision.task_control.model_copy(),
         confidence=max(0.0, min(1.0, float(decision.confidence or 0.0))),
         margin=max(0.0, min(1.0, float(decision.margin or 0.0))),
         ambiguity_score=max(0.0, min(1.0, float(signals.ambiguity_score or 0.0))),
@@ -112,6 +135,10 @@ def route_trace_payload(trace: RouteTrace, *, detailed: bool) -> dict[str, Any]:
         "user_message_excerpt": trace.user_message_excerpt,
         "top_intent": trace.top_intent,
         "second_intent": trace.second_intent,
+        "task_kind": trace.task_kind,
+        "sub_intent": trace.sub_intent,
+        "target": trace.target,
+        "active_task_summary": trace.active_task_summary,
         "confidence": trace.confidence,
         "margin": trace.margin,
         "ambiguity_score": trace.ambiguity_score,

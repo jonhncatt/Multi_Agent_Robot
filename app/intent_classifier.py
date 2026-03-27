@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.candidate_intents import CandidateIntentGenerator
+from app.context_assembly import AssembledContext
 from app.frame_resolver import FrameResolver
 from app.intent_constants import (
     INTENT_HIGH_AMBIGUITY_THRESHOLD,
@@ -22,6 +23,7 @@ _ALLOWED_PRIMARY_INTENTS = {
     "generation",
     "meeting_minutes",
     "qa",
+    "continue_existing_task",
     "standard",
 }
 
@@ -58,8 +60,35 @@ class IntentClassifier:
         settings: Any,
         route_state: dict[str, Any] | None,
         signals: RequestSignals,
+        assembled_context: AssembledContext | None = None,
         force_rules_only: bool = False,
     ) -> tuple[IntentDecision, str]:
+        _, _, decision, raw = self.classify_with_context(
+            requested_model=requested_model,
+            user_message=user_message,
+            summary=summary,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            route_state=route_state,
+            signals=signals,
+            assembled_context=assembled_context,
+            force_rules_only=force_rules_only,
+        )
+        return decision, raw
+
+    def classify_with_context(
+        self,
+        *,
+        requested_model: str,
+        user_message: str,
+        summary: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: Any,
+        route_state: dict[str, Any] | None,
+        signals: RequestSignals,
+        assembled_context: AssembledContext | None = None,
+        force_rules_only: bool = False,
+    ) -> tuple[ConversationFrame, list[IntentScore], IntentDecision, str]:
         frame = self.resolve_frame(
             user_message=user_message,
             route_state=route_state,
@@ -75,17 +104,22 @@ class IntentClassifier:
             settings=settings,
             signals=signals,
             frame=frame,
+            assembled_context=assembled_context,
             force_rules_only=force_rules_only,
         )
-        decision = self.postprocess_decision(decision=decision, signals=signals)
-
-        return decision, raw
+        decision = self.postprocess_decision(
+            decision=decision,
+            signals=signals,
+            assembled_context=assembled_context,
+        )
+        return frame, candidates, decision, raw
 
     def postprocess_decision(
         self,
         *,
         decision: IntentDecision,
         signals: RequestSignals,
+        assembled_context: AssembledContext | None = None,
     ) -> IntentDecision:
         updated = decision
         second_score = 0.0
@@ -110,6 +144,8 @@ class IntentClassifier:
             updated.escalation_reason = "high_ambiguity"
         if not updated.escalation_reason and updated.confidence < INTENT_LLM_ESCALATION_THRESHOLD:
             updated.escalation_reason = "low_rules_confidence"
+        if assembled_context is not None and assembled_context.active_task is not None and updated.task_control.is_active():
+            updated.requires_clarifying_route = False
         return updated
 
     def generate_candidates(
@@ -131,6 +167,7 @@ class IntentClassifier:
         settings: Any,
         signals: RequestSignals,
         frame: ConversationFrame,
+        assembled_context: AssembledContext | None = None,
         force_rules_only: bool = False,
     ) -> tuple[IntentDecision, str]:
         return self._scorer.decide(
@@ -142,6 +179,7 @@ class IntentClassifier:
             summary=summary,
             attachment_metas=attachment_metas,
             settings=settings,
+            assembled_context=assembled_context,
             force_rules_only=force_rules_only,
         )
 
@@ -164,6 +202,7 @@ class IntentClassifier:
             settings=settings,
             route_state=route_state,
             signals=signals,
+            assembled_context=None,
             force_rules_only=False,
         )
         return self._decision_to_classification(decision=decision, signals=signals), raw
@@ -183,7 +222,12 @@ class IntentClassifier:
             signals=signals,
         )
         candidates = self.generate_candidates(signals=signals, frame=frame)
-        decision = self._scorer.decide_rules_only(candidates=candidates, signals=signals, frame=frame)
+        decision = self._scorer.decide_rules_only(
+            candidates=candidates,
+            signals=signals,
+            frame=frame,
+            assembled_context=None,
+        )
         return self._decision_to_classification(decision=decision, signals=signals)
 
     def classify_with_llm(
@@ -205,6 +249,7 @@ class IntentClassifier:
             settings=settings,
             route_state=signals.route_state,
             signals=signals,
+            assembled_context=None,
             force_rules_only=False,
         )
         classified = self._decision_to_classification(decision=decision, signals=signals)
@@ -249,6 +294,10 @@ class IntentClassifier:
             requires_grounding=bool(route.get("requires_grounding")),
             requires_web=bool(route.get("requires_web")),
             requires_local_lookup=bool(route.get("requires_local_lookup")),
+            task_kind=str(route.get("task_kind") or route.get("task_type") or "standard"),
+            sub_intent=str(route.get("sub_intent") or "").strip(),
+            target=str(route.get("target") or "").strip(),
+            needs_file_context=bool(route.get("needs_file_context")),
             action_type=action_type,  # type: ignore[arg-type]
             confidence=confidence,
             reason_short=str(route.get("intent_reason") or route.get("reason") or "").strip(),
@@ -257,6 +306,7 @@ class IntentClassifier:
             mixed_intent=bool(route.get("mixed_intent")),
             inherited_from_state=str(route.get("inherited_from_state") or "").strip(),
             escalation_reason=str(route.get("escalation_reason") or "").strip(),
+            task_control=route.get("task_control") or {},
         )
 
     def _decision_to_classification(
@@ -289,6 +339,10 @@ class IntentClassifier:
             requires_grounding=bool(decision.requires_grounding),
             requires_web=bool(decision.requires_web),
             requires_local_lookup=bool(decision.requires_local_lookup),
+            task_kind=str(decision.task_kind or "standard"),
+            sub_intent=str(decision.sub_intent or ""),
+            target=str(decision.target or ""),
+            needs_file_context=bool(decision.needs_file_context),
             action_type=self._normalize_action_type(decision.action_type),  # type: ignore[arg-type]
             confidence=confidence,
             reason_short=str(decision.reason_short or "").strip(),
@@ -297,6 +351,7 @@ class IntentClassifier:
             mixed_intent=bool(decision.mixed_intent),
             inherited_from_state=str(decision.inherited_from_state or "").strip(),
             escalation_reason=str(decision.escalation_reason or "").strip(),
+            task_control=decision.task_control.model_copy(),
         )
 
     def _normalize_primary_intent(self, value: str) -> str:

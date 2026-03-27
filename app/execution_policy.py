@@ -78,6 +78,20 @@ _POLICY_SPECS: dict[str, ExecutionPolicySpec] = {
         structurer=False,
         conflict_detector=False,
     ),
+    "task_control_pipeline": ExecutionPolicySpec(
+        planner="never",
+        reviewer=False,
+        revision=False,
+        structurer=False,
+        conflict_detector=False,
+    ),
+    "translation_session_pipeline": ExecutionPolicySpec(
+        planner="never",
+        reviewer=False,
+        revision=False,
+        structurer=False,
+        conflict_detector=False,
+    ),
     "standard_full_pipeline": ExecutionPolicySpec(
         planner="always",
         reviewer=True,
