@@ -124,6 +124,10 @@ class OfficeExecutionRuntime(ABC):
 
 class OfficeLegacyHelperSurface(ABC):
     @abstractmethod
+    def legacy_tools(self) -> Any:
+        raise NotImplementedError
+
+    @abstractmethod
     def build_langchain_tools(self) -> list[Any]:
         raise NotImplementedError
 
@@ -331,6 +335,10 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
     def __init__(self, legacy_runtime: Any) -> None:
         self._legacy_runtime = legacy_runtime
 
+    @property
+    def tools(self) -> Any:
+        return self.legacy_tools()
+
     def __getattr__(self, name: str) -> Any:
         value = getattr(self._legacy_runtime, name)
         if callable(value):
@@ -343,12 +351,21 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
         _record_legacy_helper_surface_usage(name, kind="attribute")
         return value
 
+    def legacy_tools(self) -> Any:
+        method = getattr(self._legacy_runtime, "legacy_tools", None)
+        if callable(method):
+            return method()
+        _record_legacy_helper_surface_usage("tools", kind="attribute")
+        return self._legacy_runtime.tools
+
+    def _build_langchain_tools(self) -> list[Any]:
+        return self.build_langchain_tools()
+
     def build_langchain_tools(self) -> list[Any]:
         method = getattr(self._legacy_runtime, "build_langchain_tools", None)
-        if callable(method):
-            return list(method() or [])
-        _record_legacy_helper_surface_usage("_build_langchain_tools", kind="method")
-        return list(self._legacy_runtime._build_langchain_tools() or [])
+        if not callable(method):
+            raise AttributeError("build_langchain_tools")
+        return list(method() or [])
 
     def run_chat(
         self,
@@ -386,20 +403,10 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
         inline_followup_context: bool = False,
     ) -> dict[str, Any]:
         method = getattr(self._legacy_runtime, "route_request_by_rules", None)
-        if callable(method):
-            return dict(
-                method(
-                    user_message=user_message,
-                    attachment_metas=attachment_metas,
-                    settings=settings,
-                    route_state=route_state,
-                    inline_followup_context=inline_followup_context,
-                )
-                or {}
-            )
-        _record_legacy_helper_surface_usage("_route_request_by_rules", kind="method")
+        if not callable(method):
+            raise AttributeError("route_request_by_rules")
         return dict(
-            self._legacy_runtime._route_request_by_rules(
+            method(
                 user_message=user_message,
                 attachment_metas=attachment_metas,
                 settings=settings,
@@ -409,12 +416,31 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
             or {}
         )
 
+    def _route_request_by_rules(
+        self,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: Any,
+        route_state: dict[str, Any] | None = None,
+        inline_followup_context: bool = False,
+    ) -> dict[str, Any]:
+        return self.route_request_by_rules(
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            route_state=route_state,
+            inline_followup_context=inline_followup_context,
+        )
+
     def build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
         method = getattr(self._legacy_runtime, "build_session_route_state", None)
-        if callable(method):
-            return dict(method(route) or {})
-        _record_legacy_helper_surface_usage("_build_session_route_state", kind="method")
-        return dict(self._legacy_runtime._build_session_route_state(route) or {})
+        if not callable(method):
+            raise AttributeError("build_session_route_state")
+        return dict(method(route) or {})
+
+    def _build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
+        return self.build_session_route_state(route)
 
     def normalize_route_decision(
         self,
@@ -424,17 +450,18 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
         settings: Any | None = None,
     ) -> dict[str, Any]:
         method = getattr(self._legacy_runtime, "normalize_route_decision", None)
-        if callable(method):
-            return dict(method(route=route, fallback=fallback, settings=settings) or {})
-        _record_legacy_helper_surface_usage("_normalize_route_decision_impl", kind="method")
-        return dict(
-            self._legacy_runtime._normalize_route_decision_impl(
-                route=route,
-                fallback=fallback,
-                settings=settings,
-            )
-            or {}
-        )
+        if not callable(method):
+            raise AttributeError("normalize_route_decision")
+        return dict(method(route=route, fallback=fallback, settings=settings) or {})
+
+    def _normalize_route_decision_impl(
+        self,
+        *,
+        route: dict[str, Any],
+        fallback: dict[str, Any] | None = None,
+        settings: Any | None = None,
+    ) -> dict[str, Any]:
+        return self.normalize_route_decision(route=route, fallback=fallback, settings=settings)
 
     def sanitize_final_answer(
         self,
@@ -446,20 +473,10 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
         inline_followup_context: bool = False,
     ) -> str:
         method = getattr(self._legacy_runtime, "sanitize_final_answer", None)
-        if callable(method):
-            return str(
-                method(
-                    text,
-                    user_message=user_message,
-                    attachment_metas=attachment_metas,
-                    tool_events=tool_events,
-                    inline_followup_context=inline_followup_context,
-                )
-                or ""
-            )
-        _record_legacy_helper_surface_usage("_sanitize_final_answer_text_impl", kind="method")
+        if not callable(method):
+            raise AttributeError("sanitize_final_answer")
         return str(
-            self._legacy_runtime._sanitize_final_answer_text_impl(
+            method(
                 text,
                 user_message=user_message,
                 attachment_metas=attachment_metas,
@@ -469,12 +486,31 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
             or ""
         )
 
+    def _sanitize_final_answer_text_impl(
+        self,
+        text: str,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        tool_events: list[Any] | None = None,
+        inline_followup_context: bool = False,
+    ) -> str:
+        return self.sanitize_final_answer(
+            text,
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+            tool_events=tool_events,
+            inline_followup_context=inline_followup_context,
+        )
+
     def debug_openai_auth_summary(self) -> dict[str, Any]:
         method = getattr(self._legacy_runtime, "debug_openai_auth_summary", None)
-        if callable(method):
-            return dict(method() or {})
-        _record_legacy_helper_surface_usage("_debug_openai_auth_summary", kind="method")
-        return dict(self._legacy_runtime._debug_openai_auth_summary() or {})
+        if not callable(method):
+            raise AttributeError("debug_openai_auth_summary")
+        return dict(method() or {})
+
+    def _debug_openai_auth_summary(self) -> dict[str, Any]:
+        return self.debug_openai_auth_summary()
 
     def build_llm(
         self,
@@ -484,14 +520,21 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
         use_responses_api: bool | None = None,
     ) -> Any:
         method = getattr(self._legacy_runtime, "build_llm", None)
-        if callable(method):
-            return method(
-                model=model,
-                max_output_tokens=max_output_tokens,
-                use_responses_api=use_responses_api,
-            )
-        _record_legacy_helper_surface_usage("_build_llm", kind="method")
-        return self._legacy_runtime._build_llm(
+        if not callable(method):
+            raise AttributeError("build_llm")
+        return method(
+            model=model,
+            max_output_tokens=max_output_tokens,
+            use_responses_api=use_responses_api,
+        )
+
+    def _build_llm(
+        self,
+        model: str,
+        max_output_tokens: int,
+        use_responses_api: bool | None = None,
+    ) -> Any:
+        return self.build_llm(
             model=model,
             max_output_tokens=max_output_tokens,
             use_responses_api=use_responses_api,
@@ -499,24 +542,15 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
 
     def resolve_auth(self, mode: str) -> Any:
         method = getattr(self._legacy_runtime, "resolve_auth", None)
-        if callable(method):
-            return method(mode)
-        auth_manager = getattr(self._legacy_runtime, "_auth_manager", None)
-        if auth_manager is None:
+        if not callable(method):
             raise AttributeError("resolve_auth")
-        normalized_mode = str(mode or "").strip().lower()
-        if normalized_mode == "api_key":
-            return auth_manager._resolve_api_key_auth()
-        if normalized_mode == "codex_auth":
-            return auth_manager._resolve_codex_auth()
-        return auth_manager.resolve()
+        return method(mode)
 
     def default_model(self) -> str:
         method = getattr(self._legacy_runtime, "default_model", None)
-        if callable(method):
-            return str(method() or "")
-        config = getattr(self._legacy_runtime, "config", None)
-        return str(getattr(config, "default_model", "") or "")
+        if not callable(method):
+            raise AttributeError("default_model")
+        return str(method() or "")
 
     def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
         method = getattr(self._legacy_runtime, "_debug_kernel_module_snapshot", None)

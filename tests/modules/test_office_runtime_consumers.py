@@ -26,22 +26,24 @@ class _FakeExecutionRuntime:
 
 
 class _FakeLegacyRuntime:
-    @property
-    def tools(self) -> dict[str, str]:
+    def legacy_tools(self) -> dict[str, str]:
         return {"provider": "local"}
 
     def run_chat(self, *args: Any, **kwargs: Any) -> tuple[Any, ...]:
         _ = args, kwargs
         return ("ok", [], "", [], [], [], [], [], [], None, [], {}, {}, "", {})
 
-    def _route_request_by_rules(self, *args: Any, **kwargs: Any) -> dict[str, str]:
+    def build_langchain_tools(self) -> list[dict[str, str]]:
+        return [{"name": "workspace.read"}]
+
+    def route_request_by_rules(self, *args: Any, **kwargs: Any) -> dict[str, str]:
         _ = args, kwargs
         return {"execution_policy": "standard_safe_pipeline"}
 
-    def _build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
+    def build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
         return {"copied_execution_policy": str(route.get("execution_policy") or "")}
 
-    def _normalize_route_decision_impl(
+    def normalize_route_decision(
         self,
         *,
         route: dict[str, Any],
@@ -146,7 +148,7 @@ def test_legacy_helper_surface_records_call_counts(tmp_path: Any, monkeypatch: p
     reset_legacy_helper_surface_metrics()
     adapter = LegacyOfficeHelperAdapter(_FakeLegacyRuntime())
 
-    _ = adapter.tools
+    tools = adapter.build_langchain_tools()
     route = adapter.route_request_by_rules(user_message="hello", attachment_metas=[], settings=ChatSettings())
     route_state = adapter.build_session_route_state(route)
     normalized = adapter.normalize_route_decision(route=route, fallback=route, settings=ChatSettings())
@@ -155,11 +157,10 @@ def test_legacy_helper_surface_records_call_counts(tmp_path: Any, monkeypatch: p
     metrics = read_legacy_helper_surface_metrics()
     reset_legacy_helper_surface_metrics()
 
+    assert tools[0]["name"] == "workspace.read"
     assert route["execution_policy"] == "standard_safe_pipeline"
     assert route_state["copied_execution_policy"] == "standard_safe_pipeline"
     assert normalized["execution_policy"] == "standard_safe_pipeline"
     assert metrics["run_chat_calls"] == 1
-    assert metrics["method_calls"]["_route_request_by_rules"] == 1
-    assert metrics["method_calls"]["_build_session_route_state"] == 1
-    assert metrics["method_calls"]["_normalize_route_decision_impl"] == 1
-    assert metrics["attribute_accesses"]["tools"] == 1
+    assert metrics["method_calls"] == {"run_chat": 1}
+    assert metrics["attribute_accesses"] == {}

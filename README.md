@@ -346,7 +346,7 @@ HTTP / UI
   -> app/bootstrap/assemble.py
   -> KernelHost.dispatch(TaskRequest)
   -> office_module.handle(request, context)
-  -> compatibility OfficeAgent runtime
+  -> canonical OfficeAgent runtime (`packages/office_modules/office_agent_runtime.py`)
   -> ToolBus / ToolRegistry / ProviderRegistry
   -> response + trace
 ```
@@ -358,9 +358,9 @@ HTTP / UI
 - 正式内核：[`app/kernel/host.py`](/Users/dalizhou/Desktop/new_validation_agent/app/kernel/host.py)
 - 正式业务模块：[`app/business_modules/office_module/module.py`](/Users/dalizhou/Desktop/new_validation_agent/app/business_modules/office_module/module.py)
 
-当前 compatibility layers：
+当前 retired compatibility placeholder：
 
-- [`app/agent.py`](/Users/dalizhou/Desktop/new_validation_agent/app/agent.py)：legacy OfficeAgent runtime
+- [`app/agent.py`](/Users/dalizhou/Desktop/new_validation_agent/app/agent.py)：runtime path 已退场，仅保留兼容 re-export 占位
 
 已退场 compatibility shim：
 
@@ -487,7 +487,7 @@ app/
   adapters/              # llm/storage/auth/http 适配层预留
   api/                   # API 命名空间（当前主入口兼容 app/main.py）
   main.py                # FastAPI 主入口（兼容现有外部 API）
-  agent.py               # 现有 OfficeAgent 运行体（迁移中）
+  agent.py               # retired compatibility placeholder（待最终删除）
   local_tools.py         # 现有底层工具执行器（被 provider 复用）
 app/data/
   apps/

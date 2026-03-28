@@ -23,9 +23,9 @@ from packages.office_modules.execution_runtime import (
 class OfficeModule:
     """Standard business-module entrypoint.
 
-    The execution core still relies on the legacy OfficeAgent runtime for now.
-    This module is the formal business-module surface and is treated as the
-    compatibility boundary for legacy orchestration logic.
+    The execution core now enters a canonical office runtime implementation
+    under `packages.office_modules.*`.
+    This module remains the formal business-module surface.
     """
 
     manifest = OFFICE_MODULE_MANIFEST

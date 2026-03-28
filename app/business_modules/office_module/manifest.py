@@ -3,9 +3,7 @@ from __future__ import annotations
 from app.contracts import ModuleManifest
 
 
-OFFICE_MODULE_COMPATIBILITY_SHIMS: tuple[str, ...] = (
-    "app.agent.OfficeAgent",
-)
+OFFICE_MODULE_COMPATIBILITY_SHIMS: tuple[str, ...] = ()
 
 
 OFFICE_MODULE_MANIFEST = ModuleManifest(

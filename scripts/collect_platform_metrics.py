@@ -25,15 +25,14 @@ SWARM_DEMO_DOC = REPO_ROOT / "docs" / "demo" / "research_swarm_demo.md"
 SWARM_INTEGRATION_TEST = REPO_ROOT / "tests" / "integration" / "test_kernel_research_swarm_flow.py"
 SWARM_UNIT_TEST = REPO_ROOT / "tests" / "swarm" / "test_research_swarm_pipeline.py"
 STATIC_APP = REPO_ROOT / "app" / "static" / "app.js"
-LEGACY_AGENT = REPO_ROOT / "app" / "agent.py"
+OFFICE_RUNTIME_SOURCE = REPO_ROOT / "packages" / "office_modules" / "office_agent_runtime.py"
 SHIM_INVENTORY = REPO_ROOT / "docs" / "migration" / "compatibility_shim_inventory.md"
 OUTPUT_PATH = REPO_ROOT / "artifacts" / "platform_metrics" / "latest.json"
 
-PROTECTED_SHIMS = (
-    "app/agent.py",
-)
+PROTECTED_SHIMS: tuple[str, ...] = ()
 
 RETIRED_SHIMS = (
+    "app/agent.py",
     "app/execution_policy.py",
     "app/router_rules.py",
     "app/request_analysis_support.py",
@@ -41,9 +40,7 @@ RETIRED_SHIMS = (
     "packages/runtime_core/kernel_host.py",
 )
 
-ACTIVE_SHIM_IMPORT_TARGETS = (
-    "app.agent",
-)
+ACTIVE_SHIM_IMPORT_TARGETS: tuple[str, ...] = ()
 
 
 def _read(path: Path) -> str:
@@ -165,9 +162,9 @@ def _swarm_metrics() -> dict[str, object]:
     contract_doc = _read(SWARM_CONTRACT)
     contract_code = _read(SWARM_CONTRACT_CODE)
     static_app = _read(STATIC_APP)
-    legacy_agent = _read(LEGACY_AGENT)
+    office_runtime_source = _read(OFFICE_RUNTIME_SOURCE)
     return {
-        "branch_join_runtime_present": 'node_type="branch"' in legacy_agent and 'node_type="join"' in legacy_agent,
+        "branch_join_runtime_present": 'node_type="branch"' in office_runtime_source and 'node_type="join"' in office_runtime_source,
         "branch_join_ui_present": 'if (nodeType === "join")' in static_app and 'if (nodeType === "branch")' in static_app,
         "aggregator_contract_defined": ("Aggregator Minimum Responsibilities" in contract_doc) or ("merge / deduplicate / mark conflicts" in roadmap),
         "degradation_strategy_defined": ("serial_replay" in contract_doc and "mark_only" in contract_doc),

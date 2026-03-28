@@ -9,9 +9,9 @@ class ToolRegistryModule:
 
     def build_langchain_tools(self, *, agent: Any) -> list[Any]:
         public_builder = getattr(agent, "build_langchain_tools", None)
-        if callable(public_builder):
-            return list(public_builder() or [])
-        return list(agent._build_langchain_tools() or [])
+        if not callable(public_builder):
+            raise AttributeError("build_langchain_tools")
+        return list(public_builder() or [])
 
     def describe_tools(self, *, agent: Any) -> dict[str, Any]:
         tools = self.build_langchain_tools(agent=agent)

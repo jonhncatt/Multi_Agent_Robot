@@ -57,50 +57,8 @@ class _PublicOnlyOfficeSurface:
 
 
 class _PrivateOnlyOfficeSurface:
-    def _route_request_by_rules(
-        self,
-        *,
-        user_message: str,
-        attachment_metas: list[dict[str, Any]],
-        settings: Any,
-        route_state: dict[str, Any] | None = None,
-        inline_followup_context: bool = False,
-    ) -> dict[str, Any]:
-        _ = settings
-        return {
-            "task_type": "simple_understanding",
-            "execution_policy": "attachment_understanding_direct",
-            "echo_message": user_message,
-            "attachment_count": len(attachment_metas),
-            "inline_followup_context": inline_followup_context,
-            "route_state": dict(route_state or {}),
-        }
-
-    def _normalize_route_decision_impl(
-        self,
-        *,
-        route: dict[str, Any],
-        fallback: dict[str, Any] | None = None,
-        settings: Any | None = None,
-    ) -> dict[str, Any]:
-        _ = fallback, settings
-        return {
-            "task_type": str(route.get("task_type") or ""),
-            "execution_policy": str(route.get("execution_policy") or ""),
-            "normalized": True,
-        }
-
-    def _sanitize_final_answer_text_impl(
-        self,
-        text: str,
-        *,
-        user_message: str,
-        attachment_metas: list[dict[str, Any]],
-        tool_events: list[ToolEvent] | None = None,
-        inline_followup_context: bool = False,
-    ) -> str:
-        _ = user_message, attachment_metas, tool_events, inline_followup_context
-        return text.strip().upper()
+    def _route_request_by_rules(self, **_: Any) -> dict[str, Any]:
+        return {"execution_policy": "attachment_understanding_direct"}
 
 
 def test_router_wrappers_use_explicit_router_surface() -> None:
@@ -156,32 +114,19 @@ def test_finalizer_wrapper_uses_explicit_finalizer_surface() -> None:
     assert sanitized == "HELLO WORLD"
 
 
-def test_wrapper_surfaces_still_support_private_legacy_fallbacks() -> None:
+def test_wrapper_surfaces_require_public_methods() -> None:
     agent = _PrivateOnlyOfficeSurface()
 
-    route = RouterRulesModule().route(
-        agent=agent,
-        user_message="继续",
-        attachment_metas=[],
-        settings=ChatSettings(),
-        route_state={},
-        inline_followup_context=False,
-    )
-    normalized = PolicyResolverModule().normalize_route(
-        agent=agent,
-        route=route,
-        fallback=route,
-        settings=ChatSettings(),
-    )
-    sanitized = FinalizerModule().sanitize(
-        agent=agent,
-        text="  done  ",
-        user_message="继续",
-        attachment_metas=[],
-        tool_events=[],
-        inline_followup_context=False,
-    )
-
-    assert route["execution_policy"] == "attachment_understanding_direct"
-    assert normalized["normalized"] is True
-    assert sanitized == "DONE"
+    try:
+        RouterRulesModule().route(
+            agent=agent,
+            user_message="继续",
+            attachment_metas=[],
+            settings=ChatSettings(),
+            route_state={},
+            inline_followup_context=False,
+        )
+    except AttributeError as exc:
+        assert "route_request_by_rules" in str(exc)
+    else:
+        raise AssertionError("wrapper should require the explicit router surface")

@@ -10,7 +10,7 @@ It owns:
 - the internal role pipeline contract
 - module manifest / health / rollback metadata
 - declared tool requirements
-- compatibility delegation to the legacy `OfficeAgent` runtime
+- delegation to the canonical office runtime implementation under `packages/office_modules/*`
 
 It must not be treated as:
 
@@ -31,8 +31,8 @@ Declared role chain:
 Current runtime note:
 
 - `office_module.handle(...)` is the formal entrypoint
-- execution still delegates to `app.agent.OfficeAgent`
-- this is intentionally marked as compatibility level `shim`
+- execution now delegates to `packages.office_modules.office_agent_runtime.OfficeAgent`
+- the old `app.agent` path is retired from the runtime path
 
 ## Tools And Providers
 

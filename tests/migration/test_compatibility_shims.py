@@ -14,7 +14,7 @@ from app.business_modules.office_module.manifest import OFFICE_MODULE_COMPATIBIL
 
 
 def test_compatibility_shim_markers_exist() -> None:
-    assert OFFICE_MODULE_COMPATIBILITY_SHIMS
+    assert OFFICE_MODULE_COMPATIBILITY_SHIMS == ()
 
 
 def test_legacy_imports_and_placeholder_docs_remain_available() -> None:

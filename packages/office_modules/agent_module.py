@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from packages.office_modules.execution_engine import OfficeExecutionEngine
+from packages.office_modules.office_agent_runtime import create_office_runtime_backend
 from packages.office_modules.execution_runtime import (
     LegacyOfficeHelperAdapter,
     OfficeExecutionRuntime,
@@ -21,10 +22,8 @@ def create_office_legacy_surface(
     selected_agent_module_id: str = "office_agent",
     selected_tool_module_id: str = "workspace_tools",
 ) -> OfficeLegacyHelperSurface:
-    from app.agent import OfficeAgent
-
     return LegacyOfficeHelperAdapter(
-        OfficeAgent(
+        create_office_runtime_backend(
             config,
             kernel_runtime=kernel_runtime,
             capability_runtime=capability_runtime,

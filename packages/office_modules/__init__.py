@@ -6,15 +6,44 @@ from typing import Any
 
 from packages.runtime_core.capability_loader import CapabilityBundle
 
-from .agent_module import build_office_agent_modules
-from .memory_module import build_office_memory_modules
-from .output_module import build_office_output_modules
-from .roles import build_office_role_registry
-from .tools import build_office_tool_modules, get_tool_executor
-
-
 def _manifest_path() -> Path:
     return (Path(__file__).resolve().parent / "manifest.json").resolve()
+
+
+def build_office_agent_modules():
+    from .agent_module import build_office_agent_modules as _build_office_agent_modules
+
+    return _build_office_agent_modules()
+
+
+def build_office_memory_modules():
+    from .memory_module import build_office_memory_modules as _build_office_memory_modules
+
+    return _build_office_memory_modules()
+
+
+def build_office_output_modules():
+    from .output_module import build_office_output_modules as _build_office_output_modules
+
+    return _build_office_output_modules()
+
+
+def build_office_role_registry():
+    from .roles import build_office_role_registry as _build_office_role_registry
+
+    return _build_office_role_registry()
+
+
+def build_office_tool_modules():
+    from .tools import build_office_tool_modules as _build_office_tool_modules
+
+    return _build_office_tool_modules()
+
+
+def get_tool_executor(*args: Any, **kwargs: Any):
+    from .tools import get_tool_executor as _get_tool_executor
+
+    return _get_tool_executor(*args, **kwargs)
 
 
 def read_office_manifest() -> dict[str, Any]:

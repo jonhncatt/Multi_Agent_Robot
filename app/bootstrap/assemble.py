@@ -128,7 +128,7 @@ class LegacyHostFacade:
     @classmethod
     def from_helper_surface(cls, helper_surface: OfficeLegacyHelperSurface) -> "LegacyHostFacade":
         return cls(
-            _tools_getter=lambda: helper_surface.tools,
+            _tools_getter=lambda: helper_surface.legacy_tools(),
             _compact_session=lambda session, keep_last_turns: bool(
                 compact_legacy_session(helper_surface, session, keep_last_turns)
             ),
@@ -280,9 +280,7 @@ class AgentOSRuntime:
             "current_execution_path": (
                 "FastAPI -> KernelHost.dispatch -> business module handle -> ToolRegistry/ProviderRegistry -> response"
             ),
-            "compatibility_shims": [
-                "app.agent.OfficeAgent",
-            ],
+            "compatibility_shims": [],
         }
 
 

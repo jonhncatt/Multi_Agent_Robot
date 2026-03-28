@@ -9,11 +9,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-PROTECTED_SHIMS = {
-    "app/agent.py",
-}
+PROTECTED_SHIMS: set[str] = set()
 
 RETIRED_SHIM_IMPORTS = {
+    "app.agent": "packages.office_modules.office_agent_runtime",
     "app.execution_policy": "packages.office_modules.execution_policy",
     "app.router_rules": "packages.office_modules.router_hints",
     "app.request_analysis_support": "packages.office_modules.request_analysis",
@@ -21,13 +20,7 @@ RETIRED_SHIM_IMPORTS = {
     "packages.runtime_core.kernel_host": "AgentOSRuntime explicit legacy facades/helper surfaces",
 }
 
-ACTIVE_SHIM_IMPORT_ALLOWLIST = {
-    "app.agent": {
-        "app/business_modules/office_module/module.py",
-        "app/core/bootstrap.py",
-        "packages/office_modules/agent_module.py",
-    },
-}
+ACTIVE_SHIM_IMPORT_ALLOWLIST: dict[str, set[str]] = {}
 
 LEGACY_HOST_OBJECT_ACCESS_ALLOWLIST = {
     "app/bootstrap/assemble.py",

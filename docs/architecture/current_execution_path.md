@@ -8,7 +8,7 @@ HTTP / UI
   -> app/bootstrap/assemble.py
   -> app/kernel/host.py::KernelHost.dispatch(TaskRequest)
   -> app/business_modules/office_module/module.py::OfficeModule.handle(...)
-  -> compatibility OfficeAgent runtime
+  -> packages/office_modules/office_agent_runtime.py::OfficeAgent
   -> ToolRegistry / ProviderRegistry / ToolBus
   -> TaskResponse + Kernel trace
 ```
@@ -23,8 +23,8 @@ HTTP / UI
 ## Deprecated Or Compatibility Paths
 
 - `app/agent.py`
-  - Status: compatibility shim runtime
-  - Why: `office_module` still delegates to `OfficeAgent`
+  - Status: retired runtime shim placeholder
+  - Why: retained only as a compatibility re-export while external references are cleaned up
 
 ## Retired Compatibility Paths
 
@@ -46,9 +46,9 @@ HTTP / UI
 
 ## Compatibility Shims
 
-- `app.agent.OfficeAgent`
+- none
 
 ## Planned Removal Order
 
-1. Move office prompt/runtime logic fully behind `office_module`
-2. Stop `office_module` from delegating to `OfficeAgent`
+1. Remove any remaining external imports of `app.agent`
+2. Delete the temporary `app/agent.py` placeholder

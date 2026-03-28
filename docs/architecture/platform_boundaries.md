@@ -22,13 +22,7 @@ Add or evolve logic in these areas when the intent is platform growth:
 
 ## Protected Compatibility Zones
 
-These files exist to preserve legacy behavior and migration continuity. They are not valid places for new business heuristics, module-local prompt logic, or Swarm orchestration.
-
-- `app/agent.py`
-
-The preferred pattern for these zones is to push reusable logic into adjacent canonical helpers, leaving the shim file as a thin shell.
-
-For `app/agent.py`, prefer `packages/office_modules/*` helpers for session compaction, auth/capability/kernel/evolution snapshots, role-lab debug demos, runtime-override demos, runtime debug views, and other compatibility-only support code.
+There are no active runtime shims left. New business heuristics, module-local prompt logic, and Swarm orchestration must still stay out of retired compatibility placeholders.
 
 `packages/runtime_core/kernel_host.py` has been retired. The replacement shape is:
 
@@ -53,6 +47,9 @@ For `app/agent.py`, prefer `packages/office_modules/*` helpers for session compa
 - `app/execution_policy.py`
   - replaced by `packages/office_modules/execution_policy.py`
   - must not be reintroduced through runtime imports
+- `app/agent.py`
+  - replaced in the runtime path by `packages/office_modules/office_agent_runtime.py`
+  - may remain as a temporary compatibility re-export placeholder, but must not be reintroduced through runtime imports
 
 ## Team Rules
 
@@ -77,7 +74,7 @@ The update must state:
 
 ## Active-Shim Dependency Rule
 
-- Existing active shim dependents are explicitly allowlisted in the boundary gate.
+- There are no active shim dependents left in the boundary gate.
 - New files must not start importing `app.agent`.
 - New runtime code must not start calling `get_legacy_host()` outside the explicit compatibility allowlist.
 - If a dependency truly must exist, update the allowlist and the shim inventory in the same change, with a retirement reason.
