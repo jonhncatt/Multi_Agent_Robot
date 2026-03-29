@@ -25,6 +25,8 @@
       "equals": {
         "ok": true,
         "payload.module_id": "research_module",
+        "payload.result_grade": "success",
+        "payload.return_strategy": "deliver_swarm_summary",
         "payload.swarm.branch_count": 3,
         "payload.swarm.degradation.degraded": false,
         "payload.swarm.aggregation.conflicts": [],
@@ -77,6 +79,8 @@
       "equals": {
         "ok": true,
         "payload.module_id": "research_module",
+        "payload.result_grade": "insufficient_evidence",
+        "payload.return_strategy": "report_swarm_unreliable_and_offer_refine_or_escalate",
         "payload.swarm.branch_count": 3,
         "payload.swarm.degradation.degraded": true,
         "payload.swarm.branches.2.attempt_mode": "serial_replay",
@@ -114,6 +118,51 @@
       "contains_any": {
         "trace_stages": [
           "swarm_degradation"
+        ]
+      }
+    }
+  },
+  {
+    "name": "research_swarm_serial_replay_without_conflict_returns_degraded",
+    "kind": "module_task",
+    "module_id": "research_module",
+    "fixture": "swarm_degraded_clean",
+    "task": {
+      "task_id": "eval-swarm-degraded-clean",
+      "task_type": "task.research",
+      "message": "run research swarm degraded clean gate",
+      "context": {
+        "session_id": "eval-swarm-degraded-clean",
+        "execution_policy": "research_swarm_pipeline",
+        "runtime_profile": "research_swarm_eval",
+        "fetch_top_result": true,
+        "swarm_mode": "parallel_research",
+        "swarm_inputs": [
+          {"label": "Alpha brief", "query": "unique alpha", "input_ref": "brief:alpha"},
+          {"label": "Beta brief", "query": "unique beta", "input_ref": "brief:beta"},
+          {"label": "Recovery brief", "query": "branch recovery note", "input_ref": "brief:recovery"}
+        ]
+      }
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "payload.module_id": "research_module",
+        "payload.result_grade": "degraded",
+        "payload.return_strategy": "return_swarm_summary_with_caveat",
+        "payload.swarm.degradation.degraded": true,
+        "payload.swarm.business_output.conflict_and_degradation_notes.conflict_detected": false,
+        "payload.swarm.business_output.per_branch_evidence.2.branch_status": "degraded"
+      },
+      "contains": {
+        "payload.swarm.business_output.conflict_and_degradation_notes.degradation_reason": [
+          "serial_replay triggered for 1 branch(es)"
+        ],
+        "payload.swarm.business_output.conflict_and_degradation_notes.final_merge_decision": [
+          "after recovery handling for degraded branches"
+        ],
+        "payload.swarm.reliability_note": [
+          "degraded recovery handling"
         ]
       }
     }

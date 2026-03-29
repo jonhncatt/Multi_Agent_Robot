@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.business_modules.research_module.pipeline.runtime import (
     aggregate_research_swarm_results,
+    assess_research_swarm_result,
     build_research_swarm_business_output,
 )
 from app.contracts import SwarmDegradationDecision, SwarmJoinSpec
@@ -145,3 +146,87 @@ def test_research_swarm_business_output_is_readable_for_non_developers() -> None
     assert business["conflict_and_degradation_notes"]["conflict_detected"] is True
     assert "Shared Research Conflict" in business["conflict_and_degradation_notes"]["conflict_summary"]
     assert business["conflict_and_degradation_notes"]["degraded_branches"][0]["branch_id"] == "branch-3"
+
+
+def test_research_swarm_assessment_classifies_degraded_and_failed_results() -> None:
+    degraded_join = SwarmJoinSpec(join_id="join-degraded", branch_ids=["branch-1", "branch-2", "branch-3"])
+    degraded_decisions = [
+        SwarmDegradationDecision(
+            policy="serial_replay",
+            trigger="branch_failed:branch-3",
+            action="replay_failed_branch_sequentially",
+            details={"branch_id": "branch-3"},
+        )
+    ]
+    degraded_branch_results = [
+        {
+            "branch_id": "branch-1",
+            "branch_label": "Alpha brief",
+            "ok": True,
+            "source_count": 2,
+            "sources": [{"title": "Alpha", "url": "https://example.com/alpha", "domain": "example.com"}],
+            "top_source": {"title": "Alpha", "url": "https://example.com/alpha"},
+            "result_grade": "success",
+        },
+        {
+            "branch_id": "branch-2",
+            "branch_label": "Beta brief",
+            "ok": True,
+            "source_count": 2,
+            "sources": [{"title": "Beta", "url": "https://example.com/beta", "domain": "example.com"}],
+            "top_source": {"title": "Beta", "url": "https://example.com/beta"},
+            "result_grade": "success",
+        },
+        {
+            "branch_id": "branch-3",
+            "branch_label": "Recovery brief",
+            "ok": True,
+            "source_count": 2,
+            "sources": [{"title": "Recovered", "url": "https://example.com/recovered", "domain": "example.com"}],
+            "top_source": {"title": "Recovered", "url": "https://example.com/recovered"},
+            "result_grade": "success",
+            "degraded": True,
+        },
+    ]
+    degraded_aggregation = aggregate_research_swarm_results(
+        join_spec=degraded_join,
+        branch_results=degraded_branch_results,
+        degradation_decisions=degraded_decisions,
+    )
+    degraded_business = build_research_swarm_business_output(
+        branch_results=degraded_branch_results,
+        aggregation_result=degraded_aggregation,
+        degradation_decisions=degraded_decisions,
+    )
+    degraded_assessment = assess_research_swarm_result(
+        branch_results=degraded_branch_results,
+        business_output=degraded_business,
+        aggregation_result=degraded_aggregation,
+    )
+
+    assert degraded_assessment["result_grade"] == "degraded"
+    assert degraded_assessment["return_strategy"] == "return_swarm_summary_with_caveat"
+
+    failed_join = SwarmJoinSpec(join_id="join-failed", branch_ids=["branch-1", "branch-2"])
+    failed_branch_results = [
+        {"branch_id": "branch-1", "branch_label": "A", "ok": False, "source_count": 0, "sources": [], "top_source": {}, "result_grade": "failed"},
+        {"branch_id": "branch-2", "branch_label": "B", "ok": False, "source_count": 0, "sources": [], "top_source": {}, "result_grade": "failed"},
+    ]
+    failed_aggregation = aggregate_research_swarm_results(
+        join_spec=failed_join,
+        branch_results=failed_branch_results,
+        degradation_decisions=[],
+    )
+    failed_business = build_research_swarm_business_output(
+        branch_results=failed_branch_results,
+        aggregation_result=failed_aggregation,
+        degradation_decisions=[],
+    )
+    failed_assessment = assess_research_swarm_result(
+        branch_results=failed_branch_results,
+        business_output=failed_business,
+        aggregation_result=failed_aggregation,
+    )
+
+    assert failed_assessment["result_grade"] == "failed"
+    assert failed_assessment["return_strategy"] == "report_swarm_failure"

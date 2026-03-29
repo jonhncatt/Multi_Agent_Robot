@@ -34,7 +34,7 @@ class _EvalResearchProvider:
     def execute(self, call: Any) -> ToolResult:
         if call.name == "web.search":
             query = str(call.arguments.get("query") or "").strip()
-            if self.fixture == "swarm_degraded_conflict" and query == "branch failure note" and query not in self._failed_once_queries:
+            if self.fixture in {"swarm_degraded_conflict", "swarm_degraded_clean"} and query in {"branch failure note", "branch recovery note"} and query not in self._failed_once_queries:
                 self._failed_once_queries.add(query)
                 return ToolResult(
                     ok=False,
@@ -213,6 +213,63 @@ class _EvalResearchProvider:
                     "source": "eval_provider",
                 }
             ]
+        if self.fixture == "swarm_degraded_clean":
+            if query == "unique alpha":
+                return [
+                    {
+                        "title": "Alpha Research Finding",
+                        "url": "https://example.com/alpha-finding",
+                        "snippet": "Alpha branch contributes clean evidence.",
+                        "domain": "example.com",
+                        "score": 9.1,
+                        "source": "eval_provider",
+                    },
+                    {
+                        "title": "Alpha Supporting Source",
+                        "url": "https://example.com/alpha-support",
+                        "snippet": "Alpha branch supporting evidence.",
+                        "domain": "example.com",
+                        "score": 8.6,
+                        "source": "eval_provider",
+                    },
+                ]
+            if query == "unique beta":
+                return [
+                    {
+                        "title": "Beta Research Finding",
+                        "url": "https://example.com/beta-finding",
+                        "snippet": "Beta branch contributes clean evidence.",
+                        "domain": "example.com",
+                        "score": 9.0,
+                        "source": "eval_provider",
+                    },
+                    {
+                        "title": "Beta Supporting Source",
+                        "url": "https://example.com/beta-support",
+                        "snippet": "Beta branch supporting evidence.",
+                        "domain": "example.com",
+                        "score": 8.5,
+                        "source": "eval_provider",
+                    },
+                ]
+            return [
+                {
+                    "title": "Recovered Branch Finding",
+                    "url": "https://example.com/recovered-clean-branch",
+                    "snippet": "The failed branch recovered through serial replay.",
+                    "domain": "example.com",
+                    "score": 8.8,
+                    "source": "eval_provider",
+                },
+                {
+                    "title": "Recovered Branch Support",
+                    "url": "https://example.com/recovered-clean-support",
+                    "snippet": "The recovered branch still has supporting evidence.",
+                    "domain": "example.com",
+                    "score": 8.2,
+                    "source": "eval_provider",
+                },
+            ]
         raise ValueError(f"Unknown research eval fixture: {self.fixture}")
 
     def _content_for_url(self, url: str) -> str:
@@ -226,6 +283,8 @@ class _EvalResearchProvider:
             return f"Fetched evidence body for {url}."
         if "recovered-branch" in url:
             return "This evidence came from the branch recovered through serial replay."
+        if "recovered-clean" in url:
+            return "This evidence came from the branch recovered through serial replay without creating a conflict."
         return f"Fetched evidence body for {url}."
 
 

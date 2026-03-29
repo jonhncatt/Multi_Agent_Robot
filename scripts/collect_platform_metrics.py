@@ -24,6 +24,7 @@ SWARM_DEMO_SCRIPT = REPO_ROOT / "scripts" / "demo_research_swarm.py"
 SWARM_DEMO_DOC = REPO_ROOT / "docs" / "demo" / "research_swarm_demo.md"
 SWARM_INTEGRATION_TEST = REPO_ROOT / "tests" / "integration" / "test_kernel_research_swarm_flow.py"
 SWARM_UNIT_TEST = REPO_ROOT / "tests" / "swarm" / "test_research_swarm_pipeline.py"
+SWARM_GATE_SUMMARY = REPO_ROOT / "artifacts" / "evals" / "swarm-gate-summary.json"
 RESEARCH_GATE_SUMMARY = REPO_ROOT / "artifacts" / "evals" / "research-gate-summary.json"
 STATIC_APP = REPO_ROOT / "app" / "static" / "app.js"
 OFFICE_RUNTIME_SOURCE = REPO_ROOT / "packages" / "office_modules" / "office_agent_runtime.py"
@@ -164,7 +165,7 @@ def _swarm_metrics() -> dict[str, object]:
     contract_code = _read(SWARM_CONTRACT_CODE)
     static_app = _read(STATIC_APP)
     office_runtime_source = _read(OFFICE_RUNTIME_SOURCE)
-    return {
+    payload: dict[str, object] = {
         "branch_join_runtime_present": 'node_type="branch"' in office_runtime_source and 'node_type="join"' in office_runtime_source,
         "branch_join_ui_present": 'if (nodeType === "join")' in static_app and 'if (nodeType === "branch")' in static_app,
         "aggregator_contract_defined": ("Aggregator Minimum Responsibilities" in contract_doc) or ("merge / deduplicate / mark conflicts" in roadmap),
@@ -173,6 +174,82 @@ def _swarm_metrics() -> dict[str, object]:
         "mvp_demo_present": SWARM_DEMO_SCRIPT.exists() and SWARM_DEMO_DOC.exists(),
         "mvp_regression_present": SWARM_INTEGRATION_TEST.exists() and SWARM_UNIT_TEST.exists(),
     }
+    if not SWARM_GATE_SUMMARY.exists():
+        payload.update(
+            {
+                "gate_artifact_present": False,
+                "gate_case_count": 0,
+                "business_output_present_count": 0,
+                "branch_count": {"avg": 0.0, "min": 0, "max": 0},
+                "merged_finding_count": {"avg": 0.0, "min": 0, "max": 0},
+                "degraded_run_count": 0,
+                "failed_branch_count": 0,
+                "conflict_detected_count": 0,
+                "result_grade_counts": {},
+                "return_strategy_counts": {},
+            }
+        )
+        return payload
+
+    summary = json.loads(_read(SWARM_GATE_SUMMARY))
+    results = list(summary.get("results") or [])
+    branch_counts: list[int] = []
+    merged_finding_counts: list[int] = []
+    business_output_present_count = 0
+    degraded_run_count = 0
+    failed_branch_count = 0
+    conflict_detected_count = 0
+    result_grade_counts: dict[str, int] = {}
+    return_strategy_counts: dict[str, int] = {}
+
+    for item in results:
+        case_payload = dict(item.get("payload") or {})
+        module_payload = dict(case_payload.get("payload") or {})
+        swarm = dict(module_payload.get("swarm") or {})
+        business_output = dict(swarm.get("business_output") or {})
+        overall = dict(business_output.get("overall_summary") or {})
+        notes = dict(business_output.get("conflict_and_degradation_notes") or {})
+
+        if business_output:
+            business_output_present_count += 1
+        branch_counts.append(int(swarm.get("branch_count") or overall.get("branch_count") or 0))
+        merged_finding_counts.append(int(swarm.get("merged_finding_count") or overall.get("merged_finding_count") or 0))
+        failed_branch_count += int(swarm.get("failed_branch_count") or overall.get("failed_branch_count") or 0)
+        if bool(swarm.get("degradation", {}).get("degraded")):
+            degraded_run_count += 1
+        if bool(swarm.get("conflict_detected")) or bool(notes.get("conflict_detected")):
+            conflict_detected_count += 1
+
+        grade = str(module_payload.get("result_grade") or swarm.get("result_grade") or "").strip()
+        if grade:
+            result_grade_counts[grade] = result_grade_counts.get(grade, 0) + 1
+        strategy = str(module_payload.get("return_strategy") or swarm.get("return_strategy") or "").strip()
+        if strategy:
+            return_strategy_counts[strategy] = return_strategy_counts.get(strategy, 0) + 1
+
+    payload.update(
+        {
+            "gate_artifact_present": True,
+            "gate_case_count": len(results),
+            "business_output_present_count": business_output_present_count,
+            "branch_count": {
+                "avg": round(sum(branch_counts) / len(branch_counts), 3) if branch_counts else 0.0,
+                "min": min(branch_counts) if branch_counts else 0,
+                "max": max(branch_counts) if branch_counts else 0,
+            },
+            "merged_finding_count": {
+                "avg": round(sum(merged_finding_counts) / len(merged_finding_counts), 3) if merged_finding_counts else 0.0,
+                "min": min(merged_finding_counts) if merged_finding_counts else 0,
+                "max": max(merged_finding_counts) if merged_finding_counts else 0,
+            },
+            "degraded_run_count": degraded_run_count,
+            "failed_branch_count": failed_branch_count,
+            "conflict_detected_count": conflict_detected_count,
+            "result_grade_counts": result_grade_counts,
+            "return_strategy_counts": return_strategy_counts,
+        }
+    )
+    return payload
 
 
 def _research_module_metrics() -> dict[str, object]:

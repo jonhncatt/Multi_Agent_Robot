@@ -81,11 +81,24 @@ Purpose:
 - `swarm.contract_code_present`
 - `swarm.mvp_demo_present`
 - `swarm.mvp_regression_present`
+- `swarm.gate_artifact_present`
+- `swarm.gate_case_count`
+- `swarm.business_output_present_count`
+- `swarm.branch_count`
+- `swarm.merged_finding_count`
+- `swarm.degraded_run_count`
+- `swarm.failed_branch_count`
+- `swarm.conflict_detected_count`
+- `swarm.result_grade_counts`
+- `swarm.return_strategy_counts`
 
 Purpose:
 
 - separate “runtime primitives already exist” from “Swarm MVP contract is actually defined”
 - show when the Swarm MVP stops being just architecture and becomes demoable + regression-protected
+- track whether Swarm returns business-readable output for every gated case
+- distinguish clean success, degraded recovery, insufficient evidence, and failed runs
+- surface whether branch failures and unresolved conflicts are staying within acceptable operating bounds
 
 ## Collection Policy
 

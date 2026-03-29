@@ -8,6 +8,7 @@ from typing import Any
 from app.business_modules.research_module.manifest import RESEARCH_MODULE_MANIFEST
 from app.business_modules.research_module.pipeline.runtime import (
     aggregate_research_swarm_results,
+    assess_research_swarm_result,
     build_research_pipeline_trace,
     build_research_swarm_business_output,
     build_research_swarm_pipeline_trace,
@@ -328,6 +329,11 @@ class ResearchModule:
             aggregation_result=aggregation_result,
             degradation_decisions=degradation_decisions,
         )
+        swarm_assessment = assess_research_swarm_result(
+            branch_results=final_results,
+            business_output=business_output,
+            aggregation_result=aggregation_result,
+        )
         module_pipeline = build_research_swarm_pipeline_trace(
             swarm_run_id=swarm_run_id,
             branch_specs=branch_specs,
@@ -369,12 +375,15 @@ class ResearchModule:
         context.selected_providers = selected_providers
         warnings = [warning for item in final_results for warning in list(item.get("warnings") or [])]
         ok = all(bool(item.get("ok")) for item in final_results)
-        if not ok:
+        if swarm_assessment["result_grade"] != "success":
             context.health_state = "degraded"
+        if not ok:
             warnings.append("research swarm finished with at least one failed branch")
 
         payload = {
             "module_id": self.manifest.module_id,
+            "result_grade": swarm_assessment["result_grade"],
+            "return_strategy": swarm_assessment["return_strategy"],
             "selected_roles": list(context.selected_roles),
             "selected_tools": list(context.selected_tools),
             "selected_providers": list(context.selected_providers),
@@ -384,6 +393,13 @@ class ResearchModule:
                 "swarm_run_id": swarm_run_id,
                 "branch_count": len(branch_specs),
                 "max_workers": max_workers,
+                "result_grade": swarm_assessment["result_grade"],
+                "return_strategy": swarm_assessment["return_strategy"],
+                "reliability_note": swarm_assessment["reliability_note"],
+                "failed_branch_count": swarm_assessment["failed_branch_count"],
+                "degraded_branch_count": swarm_assessment["degraded_branch_count"],
+                "merged_finding_count": swarm_assessment["merged_finding_count"],
+                "conflict_detected": swarm_assessment["conflict_detected"],
                 "branch_specs": [item.to_dict() for item in branch_specs],
                 "join_spec": join_spec.to_dict(),
                 "branches": final_results,

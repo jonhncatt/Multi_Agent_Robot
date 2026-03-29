@@ -93,3 +93,5 @@ This demo proves:
 Readable demo notes:
 
 - [docs/demo/research_swarm_demo.md](/Users/dalizhou/Desktop/new_validation_agent/docs/demo/research_swarm_demo.md)
+- [docs/operations/swarm_mvp_operations.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/swarm_mvp_operations.md)
+- [docs/operations/swarm_mvp_runbook.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/swarm_mvp_runbook.md)

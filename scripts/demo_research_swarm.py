@@ -154,6 +154,8 @@ def run_demo(*, check: bool) -> int:
     if check:
         assert response.ok is True
         assert response.payload["module_id"] == "research_module"
+        assert response.payload["result_grade"] == "insufficient_evidence"
+        assert response.payload["return_strategy"] == "report_swarm_unreliable_and_offer_refine_or_escalate"
         assert response.payload["swarm"]["branch_count"] == 3
         assert response.payload["swarm"]["degradation"]["degraded"] is True
         assert len(response.payload["swarm"]["aggregation"]["conflicts"]) >= 1
@@ -171,6 +173,9 @@ def run_demo(*, check: bool) -> int:
 
     print("Research Swarm MVP Demo")
     print("========================")
+    print(f"Result grade: {response.payload['result_grade']}")
+    print(f"Return strategy: {response.payload['return_strategy']}")
+    print()
     print(business["overall_summary"]["summary_text"])
     print()
     print("Per-branch evidence:")

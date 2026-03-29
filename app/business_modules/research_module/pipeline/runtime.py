@@ -224,6 +224,75 @@ def build_research_swarm_summary(
     return "\n".join(lines)
 
 
+def assess_research_swarm_result(
+    *,
+    branch_results: list[dict[str, Any]],
+    business_output: dict[str, Any],
+    aggregation_result: SwarmAggregationResult,
+) -> dict[str, Any]:
+    overall = dict(business_output.get("overall_summary") or {})
+    notes = dict(business_output.get("conflict_and_degradation_notes") or {})
+    failed_branch_count = int(overall.get("failed_branch_count") or 0)
+    degraded_branch_count = int(overall.get("degraded_branch_count") or 0)
+    merged_finding_count = int(overall.get("merged_finding_count") or 0)
+    conflict_detected = bool(notes.get("conflict_detected"))
+    branch_count = len(branch_results)
+
+    if failed_branch_count > 0 or merged_finding_count == 0:
+        reliability_note = (
+            "No stable multi-branch result could be produced. One or more branches failed before the final merge."
+            if branch_count > 0
+            else "No stable multi-branch result could be produced."
+        )
+        return {
+            "result_grade": "failed",
+            "return_strategy": "report_swarm_failure",
+            "reliability_note": reliability_note,
+            "failed_branch_count": failed_branch_count,
+            "degraded_branch_count": degraded_branch_count,
+            "merged_finding_count": merged_finding_count,
+            "conflict_detected": conflict_detected,
+        }
+
+    if conflict_detected or merged_finding_count < 2:
+        reliability_note = str(notes.get("reliability_note") or "").strip() or (
+            "The final Swarm result is not reliable enough for a confident summary."
+        )
+        return {
+            "result_grade": "insufficient_evidence",
+            "return_strategy": "report_swarm_unreliable_and_offer_refine_or_escalate",
+            "reliability_note": reliability_note,
+            "failed_branch_count": failed_branch_count,
+            "degraded_branch_count": degraded_branch_count,
+            "merged_finding_count": merged_finding_count,
+            "conflict_detected": conflict_detected,
+        }
+
+    if degraded_branch_count > 0 or aggregation_result.degraded:
+        reliability_note = str(notes.get("reliability_note") or "").strip() or (
+            "The final Swarm result is usable, but at least one branch needed degraded recovery handling."
+        )
+        return {
+            "result_grade": "degraded",
+            "return_strategy": "return_swarm_summary_with_caveat",
+            "reliability_note": reliability_note,
+            "failed_branch_count": failed_branch_count,
+            "degraded_branch_count": degraded_branch_count,
+            "merged_finding_count": merged_finding_count,
+            "conflict_detected": conflict_detected,
+        }
+
+    return {
+        "result_grade": "success",
+        "return_strategy": "deliver_swarm_summary",
+        "reliability_note": str(notes.get("reliability_note") or "The final Swarm result is supported by the merged branch evidence.").strip(),
+        "failed_branch_count": failed_branch_count,
+        "degraded_branch_count": degraded_branch_count,
+        "merged_finding_count": merged_finding_count,
+        "conflict_detected": conflict_detected,
+    }
+
+
 def build_research_swarm_business_output(
     *,
     branch_results: list[dict[str, Any]],
