@@ -1,5 +1,8 @@
 # Swarm MVP Operations
 
+中文版本: [swarm_mvp_operations.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/swarm_mvp_operations.zh-CN.md)
+
+
 ## What This Flow Is For
 
 `research_module` Swarm MVP is the bounded multi-branch research flow.

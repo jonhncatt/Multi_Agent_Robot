@@ -1,5 +1,8 @@
 # Platform Operations Overview
 
+中文版本: [platform_operations_overview.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_operations_overview.zh-CN.md)
+
+
 This is the single operations entry for the current platform state. It does not create a second status system. Every status below is summarized from existing artifacts, eval summaries, metrics, smoke docs, replay samples, and runbooks.
 
 ## Current Stage

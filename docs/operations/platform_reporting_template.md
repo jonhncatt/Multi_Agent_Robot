@@ -1,5 +1,8 @@
 # Platform Reporting Template
 
+中文版本: [platform_reporting_template.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/platform_reporting_template.zh-CN.md)
+
+
 Use this template for project, operations, or milestone reporting. Keep it short and fill it from the current overview, eval artifacts, metrics, and runbooks.
 
 ## Template

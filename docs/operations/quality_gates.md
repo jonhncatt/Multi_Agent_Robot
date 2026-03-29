@@ -1,5 +1,8 @@
 # Quality Gates
 
+中文版本: [quality_gates.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/quality_gates.zh-CN.md)
+
+
 ## Policy
 
 This repository treats four layers as gates:

@@ -1,5 +1,8 @@
 # Smoke Matrix
 
+中文版本: [smoke_matrix.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/smoke_matrix.zh-CN.md)
+
+
 | Layer | Entry | Purpose | CI | When to Run |
 | --- | --- | --- | --- | --- |
 | baseline smoke | `python scripts/demo_minimal_agent_os.py --check` | Verify the kernel/runtime baseline still boots and returns a healthy minimal path. | yes | every push / PR |

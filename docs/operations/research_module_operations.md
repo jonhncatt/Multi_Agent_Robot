@@ -1,5 +1,8 @@
 # Research Module Operations
 
+中文版本: [research_module_operations.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/operations/research_module_operations.zh-CN.md)
+
+
 ## What This Module Is For
 
 `research_module` is the second formal business module. Its job is narrow:

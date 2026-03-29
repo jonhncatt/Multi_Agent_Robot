@@ -1,5 +1,8 @@
 # Research Module
 
+中文版本: [research_module.zh-CN.md](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/research_module.zh-CN.md)
+
+
 `research_module` is the second formal business-module candidate and the current default recommendation for the first non-office module to formalize.
 
 ## Goal
