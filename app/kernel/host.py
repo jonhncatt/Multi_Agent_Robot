@@ -14,6 +14,7 @@ from app.kernel.compatibility import CompatibilityChecker
 from app.kernel.event_bus import EventBus
 from app.kernel.health import HealthManager
 from app.kernel.lifecycle import LifecycleManager
+from app.kernel.module_selection import IntelligentModuleSelector, ModuleSelectionDecision
 from app.kernel.registry import ModuleRegistry
 from app.kernel.rollback import RollbackManager
 from app.kernel.runtime_context import RuntimeContext
@@ -52,6 +53,7 @@ class KernelHost:
         compatibility: CompatibilityChecker | None = None,
         health_manager: HealthManager | None = None,
         rollback_manager: RollbackManager | None = None,
+        module_selector: IntelligentModuleSelector | None = None,
         trace_dir: str | None = None,
     ) -> None:
         self.kernel_version = str(kernel_version or "1.0.0").strip() or "1.0.0"
@@ -62,6 +64,7 @@ class KernelHost:
         self.tool_bus = tool_bus or ToolBus(self.registry, event_bus=self.event_bus)
         self.health_manager = health_manager or HealthManager()
         self.rollback_manager = rollback_manager or RollbackManager()
+        self.module_selector = module_selector or IntelligentModuleSelector(self.registry)
         self._initialized = False
         self._recent_traces: list[dict[str, object]] = []
         self._trace_local = threading.local()
@@ -128,25 +131,11 @@ class KernelHost:
         self._initialized = False
         self.event_bus.publish("kernel_shutdown", {})
 
+    def select_module(self, request: TaskRequest, module_id: str | None = None) -> ModuleSelectionDecision:
+        return self.module_selector.select(request, module_id)
+
     def resolve_module(self, request: TaskRequest, module_id: str | None = None) -> BaseBusinessModule | None:
-        explicit = str(module_id or request.context.get("module_id") or "").strip()
-        if explicit:
-            return self.registry.get_business_module(explicit)
-        task_type = str(request.task_type or "").strip().lower()
-        mapping = {
-            "chat": "office_module",
-            "task.chat": "office_module",
-            "office": "office_module",
-            "task.office": "office_module",
-            "research": "research_module",
-            "task.research": "research_module",
-            "coding": "coding_module",
-            "task.coding": "coding_module",
-            "adaptation": "adaptation_module",
-            "task.adaptation": "adaptation_module",
-        }
-        resolved = mapping.get(task_type, "office_module")
-        return self.registry.get_business_module(resolved)
+        return self.select_module(request, module_id).module
 
     def inject_tools_and_providers(self, module: BaseModule) -> dict[str, object]:
         manifest = module.manifest
@@ -198,8 +187,9 @@ class KernelHost:
 
     def dispatch(self, request: TaskRequest, *, module_id: str | None = None) -> TaskResponse:
         started = time.perf_counter()
-        module = self.resolve_module(request, module_id)
-        target_module_id = str(module.manifest.module_id if module is not None else module_id or "").strip()
+        selection = self.select_module(request, module_id)
+        module = selection.module
+        target_module_id = str(module.manifest.module_id if module is not None else selection.module_id or module_id or "").strip()
         trace = KernelExecutionTrace(
             request_id=str(request.task_id or "").strip() or f"req-{int(time.time() * 1000)}",
             session_id=str(request.context.get("session_id") or "").strip(),
@@ -209,12 +199,25 @@ class KernelHost:
             runtime_profile=str(request.context.get("runtime_profile") or ""),
         )
         self._trace_local.current = trace
+        trace.add_event(
+            TraceEvent(
+                stage="module_selection",
+                module_id=target_module_id,
+                detail=str(selection.to_payload().get("selection_summary") or ""),
+                payload=selection.to_payload(),
+            )
+        )
         if module is None:
             trace.final_outcome = "failed"
             trace.error_summary = f"business module not found: {target_module_id or module_id or request.task_type}"
             trace.elapsed_ms = max(0, int((time.perf_counter() - started) * 1000))
             self.observe_and_record(trace)
-            return TaskResponse(ok=False, task_id=request.task_id, error=trace.error_summary)
+            return TaskResponse(
+                ok=False,
+                task_id=request.task_id,
+                error=trace.error_summary,
+                payload={"kernel_routing": selection.to_payload()},
+            )
 
         injected = self.inject_tools_and_providers(module)
         trace.selected_tools = list(injected.get("selected_tools") or [])
@@ -232,6 +235,9 @@ class KernelHost:
         )
         trace.add_event(TraceEvent(stage="resolve_module", module_id=module.manifest.module_id, detail=module.manifest.identity()))
         response = self.run_module(module, request, runtime_context)
+        response.payload = dict(response.payload or {})
+        response.payload.setdefault("module_id", module.manifest.module_id)
+        response.payload["kernel_routing"] = selection.to_payload()
         trace.selected_roles = list(runtime_context.selected_roles)
         trace.selected_tools = list(runtime_context.selected_tools)
         trace.selected_providers = list(runtime_context.selected_providers)

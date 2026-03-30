@@ -15,7 +15,18 @@ Current platform status:
 - office baseline: gate green and baseline smoke green
 - research_module: operational and regression-protected
 - Swarm MVP: operational, business-readable, and regression-protected
+- platform module selection: intelligent routing is active for generic chat traffic
 - replay / smoke / eval: unified enough to support release and reporting, but replay sample depth is still intentionally small
+
+Current module-selection contract:
+
+- explicit `module_id` still wins
+- explicit module task types still win
+- generic `chat` / `task.chat` requests now go through platform-level intelligent selection
+- current auto-routable modules are intentionally limited to:
+  - `office_module`
+  - `research_module`
+- `coding_module` and `adaptation_module` stay explicit-only until they become operational instead of skeleton modules
 
 ## Main Lines Status
 

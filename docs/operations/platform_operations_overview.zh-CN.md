@@ -14,7 +14,18 @@ English version: [platform_operations_overview.md](platform_operations_overview.
 - office 基线：gate 绿色，baseline smoke 绿色
 - `research_module`：已进入可运营、可回归状态
 - Swarm MVP：已进入可运营、可展示、可解释状态
+- 平台模块选择：generic chat 已启用智能模块分发
 - replay / smoke / eval：已经足以支撑发布前检查和状态汇报，但 replay 样本库规模仍然刻意保持轻量
+
+当前模块选择契约：
+
+- 显式 `module_id` 仍然最高优先级
+- 显式模块 `task_type` 仍然最高优先级
+- 通用 `chat` / `task.chat` 现在会进入平台级智能模块选择
+- 当前自动候选模块刻意只包含：
+  - `office_module`
+  - `research_module`
+- `coding_module` 和 `adaptation_module` 仍保持显式调用，直到它们不再是 skeleton 并进入可运营状态
 
 ## 三条主线当前状态
 

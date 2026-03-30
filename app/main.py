@@ -1221,7 +1221,7 @@ def _process_chat_request(
                 attachment_ids=resolved_attachment_ids,
             )
 
-        _emit_progress(progress_cb, "stage", code="agent_run_start", detail="开始通过 KernelHost 分发 office_module。", run_id=run_id)
+        _emit_progress(progress_cb, "stage", code="agent_run_start", detail="开始通过 KernelHost 进行业务模块分发。", run_id=run_id)
         task_request = TaskRequest(
             task_id=run_id,
             task_type="chat",
@@ -1236,11 +1236,13 @@ def _process_chat_request(
                 "progress_cb": progress_cb,
             },
         )
-        module_response = get_agent_os_runtime().dispatch(task_request, module_id="office_module")
+        module_response = get_agent_os_runtime().dispatch(task_request)
         if not module_response.ok:
-            raise HTTPException(status_code=500, detail=module_response.error or "office_module dispatch failed")
+            raise HTTPException(status_code=500, detail=module_response.error or "business module dispatch failed")
         payload = dict(module_response.payload or {})
         text = str(module_response.text or "")
+        selected_module_id = str(payload.get("module_id") or "office_module")
+        kernel_routing = dict(payload.get("kernel_routing") or {})
         tool_events = list(payload.get("tool_events") or [])
         attachment_note = str(payload.get("attachment_note") or "")
         execution_plan = list(payload.get("execution_plan") or [])
@@ -1255,6 +1257,20 @@ def _process_chat_request(
         token_usage = dict(payload.get("usage_total") or {})
         effective_model = str(payload.get("effective_model") or "")
         route_state = payload.get("route_state") if isinstance(payload.get("route_state"), dict) else {}
+        if kernel_routing:
+            routing_message = f"平台模块选择: {kernel_routing.get('selection_summary') or selected_module_id}"
+            execution_trace.insert(0, routing_message)
+            _emit_progress(progress_cb, "trace", message=routing_message, index=1, run_id=run_id)
+        if selected_module_id == "research_module":
+            research_payload = dict(payload.get("research") or {})
+            research_trace = (
+                "Research 模块结果: "
+                f"grade={research_payload.get('result_grade') or '-'} · "
+                f"sources={research_payload.get('source_count') or 0} · "
+                f"strategy={research_payload.get('return_strategy') or '-'}"
+            )
+            execution_trace.append(research_trace)
+            _emit_progress(progress_cb, "trace", message=research_trace, index=len(execution_trace), run_id=run_id)
         _emit_progress(progress_cb, "stage", code="agent_run_done", detail="模型推理结束，开始写入会话与统计。", run_id=run_id)
         if missing_attachment_ids:
             warning_msg = f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
@@ -1421,6 +1437,8 @@ def _process_chat_request(
                     "attachment_metas": attachments,
                     "kernel_selected_modules": kernel_health.get("selected_modules") or {},
                     "kernel_module_health": kernel_health.get("module_health") or {},
+                    "selected_business_module": selected_module_id,
+                    "kernel_routing": kernel_routing,
                     "message_preview": req.message[:500],
                     "response_preview": text[:500],
                 }

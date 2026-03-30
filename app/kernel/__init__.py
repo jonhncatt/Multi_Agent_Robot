@@ -4,6 +4,7 @@ from app.kernel.health import HealthManager, HealthMonitor
 from app.kernel.host import KernelContextView, KernelHost
 from app.kernel.lifecycle import LifecycleManager
 from app.kernel.loader import ModuleLoader
+from app.kernel.module_selection import IntelligentModuleSelector, ModuleSelectionDecision
 from app.kernel.registry import ModuleRegistry, ProviderRegistry, ToolRegistry
 from app.kernel.rollback import RollbackManager
 from app.kernel.runtime_context import RuntimeContext
@@ -20,6 +21,8 @@ __all__ = [
     "KernelHost",
     "LifecycleManager",
     "ModuleLoader",
+    "IntelligentModuleSelector",
+    "ModuleSelectionDecision",
     "ModuleRegistry",
     "ProviderRegistry",
     "RollbackManager",
