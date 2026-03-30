@@ -12,7 +12,7 @@
     <div class="bg-shape bg2"></div>
     <div class="bg-grid"></div>
 
-    <main class="app-shell app-shell--three-column">
+    <main id="appShell" class="app-shell app-shell--three-column">
       <header class="console-topbar">
         <div class="topbar-brand">
           <div class="brand-mark">OS</div>
@@ -37,9 +37,10 @@
             <span id="runStageText" class="runtime-head-text">等待发送请求</span>
           </div>
         </div>
+        <button id="commandPaletteBtn" class="topbar-command-button" type="button">命令面板 ⌘K</button>
       </header>
 
-      <aside class="panel control-rail">
+      <aside id="controlRail" class="panel control-rail">
         <section class="rail-card rail-card--controls">
           <div class="rail-card-head">
             <div>
@@ -137,7 +138,15 @@
         </section>
       </aside>
 
-      <section class="workspace-shell">
+      <button
+        id="leftRailResizer"
+        class="rail-resizer rail-resizer--left"
+        type="button"
+        aria-label="调整左侧栏宽度，双击可折叠"
+        title="拖动调整左侧栏宽度，双击可折叠"
+      ></button>
+
+      <section id="workspaceShell" class="workspace-shell">
         <div class="workspace-hero">
           <article class="hero-card hero-card--platform">
             <div class="hero-kicker">Platform Status</div>
@@ -163,6 +172,32 @@
 
         <div class="runtime-panel">
           <div id="runStepList" class="runtime-steps"></div>
+          <section class="live-ops-grid">
+            <article class="live-ops-card">
+              <div class="live-ops-head">
+                <div>
+                  <div class="kernel-card-kicker">Execution Topology</div>
+                  <div class="kernel-card-title">执行拓扑</div>
+                </div>
+                <div id="executionDagMeta" class="kernel-card-meta">等待本轮执行图</div>
+              </div>
+              <div id="executionDagLegend" class="dag-legend">当前没有执行节点。</div>
+              <div id="executionDagView" class="execution-dag">等待本轮请求后显示模块选择、角色链路或 Swarm 分支。</div>
+            </article>
+
+            <article class="live-ops-card">
+              <div class="live-ops-head">
+                <div>
+                  <div class="kernel-card-kicker">Execution Log</div>
+                  <div class="kernel-card-title">结构化执行日志</div>
+                </div>
+                <button id="executionLogAutoBtn" class="secondary small" type="button">自动滚动</button>
+              </div>
+              <div id="executionLogFilters" class="log-filter-row"></div>
+              <div id="executionLogMeta" class="kernel-card-meta">等待执行事件。</div>
+              <div id="executionLogView" class="execution-log">当前没有执行日志。</div>
+            </article>
+          </section>
           <section id="kernelConsoleSection" class="kernel-console-shell">
             <div class="kernel-console-head">
               <div>
@@ -325,7 +360,15 @@ Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Wo
         </div>
       </section>
 
-      <aside class="ops-rail">
+      <button
+        id="rightRailResizer"
+        class="rail-resizer rail-resizer--right"
+        type="button"
+        aria-label="调整右侧栏宽度，双击可折叠"
+        title="拖动调整右侧栏宽度，双击可折叠"
+      ></button>
+
+      <aside id="opsRail" class="ops-rail">
         <section class="ops-card ops-card--snapshot">
           <div class="ops-card-head">
             <div>
@@ -421,6 +464,27 @@ Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Wo
         </section>
       </aside>
     </main>
+
+    <div id="commandPalette" class="command-palette-shell" hidden aria-hidden="true">
+      <div class="command-palette-backdrop" data-close-palette="1"></div>
+      <div class="command-palette-dialog" role="dialog" aria-modal="true" aria-label="命令面板">
+        <div class="command-palette-head">
+          <div>
+            <div class="rail-kicker">Command Palette</div>
+            <div class="rail-title">全局命令</div>
+          </div>
+          <div class="command-palette-hint">Cmd/Ctrl + K 打开 · Enter 执行 · Esc 关闭</div>
+        </div>
+        <input
+          id="commandPaletteInput"
+          class="command-palette-input"
+          type="text"
+          autocomplete="off"
+          placeholder="搜索命令，例如：新建会话、双视图、回归测试、折叠右栏"
+        />
+        <div id="commandPaletteList" class="command-palette-list">没有可用命令。</div>
+      </div>
+    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>

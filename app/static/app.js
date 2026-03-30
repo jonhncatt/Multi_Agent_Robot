@@ -9,9 +9,24 @@ const state = {
   lastHealth: null,
   operationsOverview: null,
   lastBusinessResponse: null,
+  latestExecutionPlan: [],
+  latestAgentPanels: [],
+  latestActiveRoles: new Set(),
+  latestCurrentRole: null,
+  latestRoleStates: new Map(),
+  executionLogEntries: [],
+  executionLogFilter: "all",
+  executionLogAutoScroll: true,
+  commandPaletteOpen: false,
+  commandPaletteQuery: "",
+  commandPaletteIndex: 0,
+  recentCommands: [],
+  panelLayout: { leftWidth: 280, rightWidth: 320, leftCollapsed: false, rightCollapsed: false },
 };
 const SESSION_STORAGE_KEY = "officetool.session_id";
 const RUNTIME_VIEW_STORAGE_KEY = "officetool.runtime_view";
+const PANEL_LAYOUT_STORAGE_KEY = "officetool.panel_layout";
+const RECENT_COMMANDS_STORAGE_KEY = "officetool.recent_commands";
 
 const chatList = document.getElementById("chatList");
 const fileInput = document.getElementById("fileInput");
@@ -28,9 +43,19 @@ const refreshSessionsBtn = document.getElementById("refreshSessionsBtn");
 const deleteSessionBtn = document.getElementById("deleteSessionBtn");
 const tokenStatsView = document.getElementById("tokenStatsView");
 const clearStatsBtn = document.getElementById("clearStatsBtn");
+const appShell = document.getElementById("appShell");
+const controlRail = document.getElementById("controlRail");
+const workspaceShell = document.getElementById("workspaceShell");
+const opsRail = document.getElementById("opsRail");
+const leftRailResizer = document.getElementById("leftRailResizer");
+const rightRailResizer = document.getElementById("rightRailResizer");
 const appVersionView = document.getElementById("appVersionView");
 const productTitleView = document.getElementById("productTitle");
 const productHintView = document.getElementById("productHint");
+const commandPaletteBtn = document.getElementById("commandPaletteBtn");
+const commandPalette = document.getElementById("commandPalette");
+const commandPaletteInput = document.getElementById("commandPaletteInput");
+const commandPaletteList = document.getElementById("commandPaletteList");
 const platformStatusHeadline = document.getElementById("platformStatusHeadline");
 const platformStatusMeta = document.getElementById("platformStatusMeta");
 const platformStatusSignals = document.getElementById("platformStatusSignals");
@@ -71,6 +96,13 @@ const backendPolicyView = document.getElementById("backendPolicyView");
 const runStageBadge = document.getElementById("runStageBadge");
 const runStageText = document.getElementById("runStageText");
 const runStepList = document.getElementById("runStepList");
+const executionDagView = document.getElementById("executionDagView");
+const executionDagMeta = document.getElementById("executionDagMeta");
+const executionDagLegend = document.getElementById("executionDagLegend");
+const executionLogFilters = document.getElementById("executionLogFilters");
+const executionLogMeta = document.getElementById("executionLogMeta");
+const executionLogView = document.getElementById("executionLogView");
+const executionLogAutoBtn = document.getElementById("executionLogAutoBtn");
 const runPayloadView = document.getElementById("runPayloadView");
 const runTraceView = document.getElementById("runTraceView");
 const runAgentPanelsView = document.getElementById("runAgentPanelsView");
@@ -110,6 +142,21 @@ const RUN_FLOW_STEPS = [
   { id: "done", label: "5. 完成" },
 ];
 const PANEL_DEBUG_STORAGE_KEY = "officetool.panel_debug";
+const LAYOUT_DEFAULTS = {
+  leftWidth: 280,
+  rightWidth: 320,
+  leftCollapsed: false,
+  rightCollapsed: false,
+};
+const LOG_FILTERS = [
+  { id: "all", label: "全部" },
+  { id: "routing", label: "Routing" },
+  { id: "planning", label: "Planning" },
+  { id: "tool", label: "Tool" },
+  { id: "review", label: "Review" },
+  { id: "swarm", label: "Swarm" },
+  { id: "system", label: "System" },
+];
 let currentRunStepId = null;
 let currentRunTone = "idle";
 
@@ -1427,6 +1474,148 @@ function setRuntimeViewMode(mode) {
   applyRuntimeViewMode(state.lastHealth || {}, mode);
 }
 
+function normalizePanelLayout(raw = {}) {
+  const leftWidth = Number(raw?.leftWidth || LAYOUT_DEFAULTS.leftWidth);
+  const rightWidth = Number(raw?.rightWidth || LAYOUT_DEFAULTS.rightWidth);
+  return {
+    leftWidth: Math.max(220, Math.min(420, Number.isFinite(leftWidth) ? leftWidth : LAYOUT_DEFAULTS.leftWidth)),
+    rightWidth: Math.max(260, Math.min(420, Number.isFinite(rightWidth) ? rightWidth : LAYOUT_DEFAULTS.rightWidth)),
+    leftCollapsed: Boolean(raw?.leftCollapsed),
+    rightCollapsed: Boolean(raw?.rightCollapsed),
+  };
+}
+
+function getStoredPanelLayout() {
+  try {
+    const raw = window.localStorage.getItem(PANEL_LAYOUT_STORAGE_KEY);
+    if (!raw) return { ...LAYOUT_DEFAULTS };
+    return normalizePanelLayout(JSON.parse(raw));
+  } catch {
+    return { ...LAYOUT_DEFAULTS };
+  }
+}
+
+function persistPanelLayout() {
+  try {
+    window.localStorage.setItem(PANEL_LAYOUT_STORAGE_KEY, JSON.stringify(normalizePanelLayout(state.panelLayout)));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function applyPanelLayout() {
+  if (!appShell) return;
+  const layout = normalizePanelLayout(state.panelLayout || LAYOUT_DEFAULTS);
+  state.panelLayout = layout;
+  appShell.style.setProperty("--left-rail-width", layout.leftCollapsed ? "0px" : `${layout.leftWidth}px`);
+  appShell.style.setProperty("--right-rail-width", layout.rightCollapsed ? "0px" : `${layout.rightWidth}px`);
+  appShell.classList.toggle("left-collapsed", layout.leftCollapsed);
+  appShell.classList.toggle("right-collapsed", layout.rightCollapsed);
+}
+
+function setRailCollapsed(side, collapsed) {
+  if (!state.panelLayout) state.panelLayout = { ...LAYOUT_DEFAULTS };
+  if (side === "left") {
+    state.panelLayout.leftCollapsed = Boolean(collapsed);
+  } else if (side === "right") {
+    state.panelLayout.rightCollapsed = Boolean(collapsed);
+  }
+  applyPanelLayout();
+  persistPanelLayout();
+}
+
+function setRailWidth(side, width) {
+  if (!state.panelLayout) state.panelLayout = { ...LAYOUT_DEFAULTS };
+  if (side === "left") {
+    state.panelLayout.leftWidth = Math.max(220, Math.min(420, Number(width || LAYOUT_DEFAULTS.leftWidth)));
+    state.panelLayout.leftCollapsed = false;
+  } else if (side === "right") {
+    state.panelLayout.rightWidth = Math.max(260, Math.min(420, Number(width || LAYOUT_DEFAULTS.rightWidth)));
+    state.panelLayout.rightCollapsed = false;
+  }
+  applyPanelLayout();
+  persistPanelLayout();
+}
+
+function setupRailResizer(handle, side) {
+  if (!handle || !appShell) return;
+
+  const adjustByKey = (delta) => {
+    const layout = normalizePanelLayout(state.panelLayout || LAYOUT_DEFAULTS);
+    const next = side === "left" ? layout.leftWidth + delta : layout.rightWidth - delta;
+    setRailWidth(side, next);
+  };
+
+  handle.addEventListener("dblclick", () => {
+    const layout = normalizePanelLayout(state.panelLayout || LAYOUT_DEFAULTS);
+    const collapsed = side === "left" ? layout.leftCollapsed : layout.rightCollapsed;
+    setRailCollapsed(side, !collapsed);
+  });
+
+  handle.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      adjustByKey(-24);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      adjustByKey(24);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      handle.dispatchEvent(new MouseEvent("dblclick"));
+    }
+  });
+
+  handle.addEventListener("pointerdown", (event) => {
+    if (window.innerWidth <= 1180) return;
+    event.preventDefault();
+    const layout = normalizePanelLayout(state.panelLayout || LAYOUT_DEFAULTS);
+    if (side === "left" && layout.leftCollapsed) setRailCollapsed("left", false);
+    if (side === "right" && layout.rightCollapsed) setRailCollapsed("right", false);
+    const latestLayout = normalizePanelLayout(state.panelLayout || LAYOUT_DEFAULTS);
+    const startX = event.clientX;
+    const startWidth = side === "left" ? latestLayout.leftWidth : latestLayout.rightWidth;
+    handle.classList.add("is-dragging");
+    handle.setPointerCapture?.(event.pointerId);
+
+    const onMove = (moveEvent) => {
+      const delta = moveEvent.clientX - startX;
+      const nextWidth = side === "left" ? startWidth + delta : startWidth - delta;
+      setRailWidth(side, nextWidth);
+    };
+
+    const finish = () => {
+      handle.classList.remove("is-dragging");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", finish, { once: true });
+    window.addEventListener("pointercancel", finish, { once: true });
+  });
+}
+
+function loadRecentCommands() {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(RECENT_COMMANDS_STORAGE_KEY) || "[]");
+    state.recentCommands = Array.isArray(raw) ? raw.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 8) : [];
+  } catch {
+    state.recentCommands = [];
+  }
+}
+
+function rememberCommandUse(commandId) {
+  const id = String(commandId || "").trim();
+  if (!id) return;
+  state.recentCommands = [id, ...state.recentCommands.filter((item) => item !== id)].slice(0, 8);
+  try {
+    window.localStorage.setItem(RECENT_COMMANDS_STORAGE_KEY, JSON.stringify(state.recentCommands));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 const MODULE_LABELS = {
   router: { title: "Router", desc: "全局语义分诊与最小链路选择。" },
   policy: { title: "Policy", desc: "执行策略与 gate（闸门）配置。" },
@@ -1460,6 +1649,381 @@ function createChip(text, className = "hero-chip") {
   node.className = className;
   node.textContent = String(text || "");
   return node;
+}
+
+function executionLogTimestamp() {
+  return new Date().toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function classifyExecutionText(text, fallback = "system") {
+  const value = String(text || "").toLowerCase();
+  if (!value) return fallback;
+  if (
+    value.includes("swarm") ||
+    value.includes("branch") ||
+    value.includes("merge") ||
+    value.includes("join") ||
+    value.includes("serial_replay") ||
+    value.includes("conflict")
+  ) {
+    return "swarm";
+  }
+  if (
+    value.includes("route") ||
+    value.includes("router") ||
+    value.includes("module") ||
+    value.includes("policy") ||
+    value.includes("selection")
+  ) {
+    return "routing";
+  }
+  if (
+    value.includes("plan") ||
+    value.includes("planner") ||
+    value.includes("prepare") ||
+    value.includes("payload") ||
+    value.includes("coordinator")
+  ) {
+    return "planning";
+  }
+  if (
+    value.includes("review") ||
+    value.includes("revision") ||
+    value.includes("final") ||
+    value.includes("answer bundle") ||
+    value.includes("structurer")
+  ) {
+    return "review";
+  }
+  if (
+    value.includes("tool") ||
+    value.includes("search") ||
+    value.includes("fetch") ||
+    value.includes("upload") ||
+    value.includes("sandbox")
+  ) {
+    return "tool";
+  }
+  return fallback;
+}
+
+function clearExecutionLog() {
+  state.executionLogEntries = [];
+  state.executionLogFilter = "all";
+  state.executionLogAutoScroll = true;
+  renderExecutionLog();
+}
+
+function pushExecutionLogEntry(entry = {}) {
+  const item = {
+    time: executionLogTimestamp(),
+    category: String(entry.category || "system").trim().toLowerCase() || "system",
+    title: String(entry.title || "System").trim() || "System",
+    detail: String(entry.detail || "").trim(),
+    tags: (Array.isArray(entry.tags) ? entry.tags : []).map((tag) => String(tag || "").trim()).filter(Boolean),
+  };
+  state.executionLogEntries.push(item);
+  if (state.executionLogEntries.length > 240) {
+    state.executionLogEntries = state.executionLogEntries.slice(-240);
+  }
+  renderExecutionLog();
+}
+
+function ensureExecutionLogFilters() {
+  if (!executionLogFilters || executionLogFilters.childElementCount) return;
+  executionLogFilters.innerHTML = "";
+  LOG_FILTERS.forEach((filter) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "log-filter-chip";
+    button.textContent = filter.label;
+    button.dataset.filterId = filter.id;
+    button.addEventListener("click", () => {
+      state.executionLogFilter = filter.id;
+      renderExecutionLog();
+    });
+    executionLogFilters.appendChild(button);
+  });
+}
+
+function renderExecutionLog() {
+  ensureExecutionLogFilters();
+  if (!executionLogView || !executionLogMeta) return;
+  const filterId = String(state.executionLogFilter || "all");
+  const entries = Array.isArray(state.executionLogEntries) ? state.executionLogEntries : [];
+  const filtered = filterId === "all" ? entries : entries.filter((item) => item.category === filterId);
+
+  if (executionLogFilters) {
+    executionLogFilters.querySelectorAll(".log-filter-chip").forEach((node) => {
+      node.classList.toggle("is-active", node.dataset.filterId === filterId);
+    });
+  }
+
+  if (executionLogAutoBtn) {
+    executionLogAutoBtn.textContent = state.executionLogAutoScroll ? "自动滚动中" : "恢复自动滚动";
+  }
+  executionLogMeta.textContent =
+    filtered.length > 0
+      ? `当前显示 ${filtered.length} 条 ${filterId === "all" ? "事件" : `${filterId} 事件`}。`
+      : "等待执行事件。";
+
+  const shouldStickToBottom =
+    state.executionLogAutoScroll &&
+    executionLogView.scrollHeight - executionLogView.scrollTop - executionLogView.clientHeight < 48;
+
+  executionLogView.innerHTML = "";
+  if (!filtered.length) {
+    executionLogView.textContent = filterId === "all" ? "当前没有执行日志。" : "当前筛选条件下没有执行日志。";
+    return;
+  }
+
+  filtered.forEach((item) => {
+    const node = document.createElement("article");
+    node.className = `log-entry category-${item.category}`;
+    node.innerHTML = `
+      <div class="log-entry-head">
+        <div class="log-entry-title">${escapeHtml(item.title)}</div>
+        <div class="log-entry-time">${escapeHtml(item.time)}</div>
+      </div>
+      <div class="log-entry-detail">${escapeHtml(item.detail || "无附加细节。")}</div>
+      <div class="log-entry-tags">${item.tags.map((tag) => `<span class="log-entry-tag">${escapeHtml(tag)}</span>`).join("")}</div>
+    `;
+    executionLogView.appendChild(node);
+  });
+
+  if (shouldStickToBottom || state.executionLogAutoScroll) {
+    executionLogView.scrollTop = executionLogView.scrollHeight;
+  }
+}
+
+function renderExecutionDag() {
+  if (!executionDagView || !executionDagMeta || !executionDagLegend) return;
+  const response = state.lastBusinessResponse || {};
+  const selectedModule = String(response?.selected_business_module || "").trim();
+  const routing = response?.kernel_routing || {};
+  const businessResult = response?.business_result || {};
+  const businessOutput = businessResult?.business_output || {};
+  const branchEvidence = Array.isArray(businessOutput?.per_branch_evidence) ? businessOutput.per_branch_evidence : [];
+  const notes = businessOutput?.conflict_and_degradation_notes || {};
+  const grade = String(businessResult?.result_grade || "").trim().toLowerCase() || "idle";
+  const strategy = String(businessResult?.return_strategy || "").trim();
+
+  executionDagView.innerHTML = "";
+
+  if (!selectedModule && !state.latestAgentPanels.length) {
+    executionDagMeta.textContent = "等待本轮执行图";
+    executionDagLegend.textContent = "当前没有执行节点。";
+    executionDagView.textContent = "等待本轮请求后显示模块选择、角色链路或 Swarm 分支。";
+    return;
+  }
+
+  const selectionSummary = String(routing?.selection_summary || "").trim() || "显式 module_id / task_type 优先，通用 chat 走智能模块选择。";
+
+  const routerRow = document.createElement("div");
+  routerRow.className = "dag-flow-row";
+  routerRow.innerHTML = `
+    <div class="dag-node status-success">
+      <div class="dag-node-label">Kernel Router</div>
+      <div class="dag-node-meta">${escapeHtml(selectionSummary)}</div>
+    </div>
+    <div class="dag-node-arrow">→</div>
+    <div class="dag-node status-${escapeHtml(grade || "active")}">
+      <div class="dag-node-label">${escapeHtml(moduleLabel(selectedModule || "office_module"))}</div>
+      <div class="dag-node-meta">${escapeHtml(strategy || "等待本轮返回策略")}</div>
+    </div>
+  `;
+  executionDagView.appendChild(routerRow);
+
+  if (branchEvidence.length) {
+    executionDagMeta.textContent = `${moduleLabel(selectedModule)} · ${branchEvidence.length} 个 branch`;
+    executionDagLegend.textContent = "Swarm DAG：先 fan-out，再 join / deduplicate，失败分支会标记降级或未参与合并。";
+
+    const branchGrid = document.createElement("div");
+    branchGrid.className = "dag-branch-grid";
+    branchEvidence.forEach((branch) => {
+      const status = String(branch?.branch_status || "success").trim().toLowerCase() || "success";
+      const node = document.createElement("article");
+      node.className = `dag-branch-card status-${status}`;
+      const included = Boolean(branch?.included_in_final_merge);
+      const evidenceCount = Number(branch?.branch_evidence_count || 0);
+      const reason = String(branch?.not_included_reason || "").trim();
+      node.innerHTML = `
+        <div class="dag-status-row">
+          <span class="dag-badge status-${status}">${escapeHtml(status)}</span>
+          <span class="dag-badge">${included ? "已合并" : "未合并"}</span>
+        </div>
+        <div class="dag-branch-title">${escapeHtml(String(branch?.branch_label || branch?.branch_id || "branch"))}</div>
+        <div class="dag-branch-meta">${escapeHtml(String(branch?.branch_summary || "暂无 branch 摘要"))}</div>
+        <div class="dag-chip-row">
+          <span class="dag-badge">证据 ${evidenceCount}</span>
+          ${branch?.result_grade ? `<span class="dag-badge">${escapeHtml(String(branch.result_grade))}</span>` : ""}
+          ${branch?.evidence_completeness ? `<span class="dag-badge">${escapeHtml(String(branch.evidence_completeness))}</span>` : ""}
+        </div>
+        ${!included && reason ? `<div class="dag-branch-reason">${escapeHtml(reason)}</div>` : ""}
+      `;
+      branchGrid.appendChild(node);
+    });
+    executionDagView.appendChild(branchGrid);
+
+    const joinRow = document.createElement("div");
+    joinRow.className = "dag-flow-row";
+    joinRow.innerHTML = `
+      <div class="dag-node status-${escapeHtml(grade)}">
+        <div class="dag-node-label">Join / Merge</div>
+        <div class="dag-node-meta">${escapeHtml(String(notes?.final_merge_decision || "执行 merge / deduplicate / conflict marking"))}</div>
+      </div>
+      <div class="dag-node-arrow">→</div>
+      <div class="dag-node status-${escapeHtml(grade)}">
+        <div class="dag-node-label">Business Result</div>
+        <div class="dag-node-meta">${escapeHtml(String(notes?.reliability_note || businessResult?.reliability_note || "等待业务可靠性说明"))}</div>
+      </div>
+    `;
+    executionDagView.appendChild(joinRow);
+    return;
+  }
+
+  const panels = Array.isArray(state.latestAgentPanels) ? state.latestAgentPanels : [];
+  const activeRoles = state.latestActiveRoles instanceof Set ? state.latestActiveRoles : new Set();
+  const currentRole = normalizeRoleId(state.latestCurrentRole);
+  const orderedPanels = panels.length
+    ? panels
+    : (Array.from(activeRoles).length ? Array.from(activeRoles).map((role) => ({ role, title: role })) : []);
+
+  executionDagMeta.textContent = `${moduleLabel(selectedModule || "office_module")} · ${orderedPanels.length || 1} 个执行节点`;
+  executionDagLegend.textContent = "线性执行链：显示当前模块的主要角色流与当前激活节点。";
+
+  const flow = document.createElement("div");
+  flow.className = "dag-flow-row";
+  orderedPanels.forEach((panel, index) => {
+    const roleId = normalizeRoleId(panel?.role);
+    const stateClass =
+      currentRole && roleId === currentRole
+        ? "active"
+        : activeRoles.has(roleId)
+        ? "active"
+        : "success";
+    const node = document.createElement("div");
+    node.className = `dag-node status-${stateClass}`;
+    node.innerHTML = `
+      <div class="dag-node-label">${escapeHtml(String(panel?.title || roleId || `step-${index + 1}`))}</div>
+      <div class="dag-node-meta">${escapeHtml(String(panel?.summary || "当前角色正在参与执行。"))}</div>
+    `;
+    flow.appendChild(node);
+    if (index < orderedPanels.length - 1) {
+      const arrow = document.createElement("div");
+      arrow.className = "dag-node-arrow";
+      arrow.textContent = "→";
+      flow.appendChild(arrow);
+    }
+  });
+  executionDagView.appendChild(flow);
+}
+
+function buildCommandPaletteItems() {
+  return [
+    { id: "new-session", title: "新建会话", meta: "创建新 session 并清空当前聊天区", run: () => newSessionBtn?.click() },
+    { id: "send-message", title: "发送当前输入", meta: "立即发送输入框中的内容", run: () => sendMessage() },
+    { id: "refresh-sessions", title: "刷新会话列表", meta: "重新拉取历史 sessions", run: () => refreshSessionsBtn?.click() },
+    { id: "sandbox-drill", title: "运行沙盒演练", meta: "调用 /api/sandbox/drill", run: () => sandboxDrillBtn?.click() },
+    { id: "eval-harness", title: "运行回归测试", meta: "调用 /api/evals/run", run: () => evalHarnessBtn?.click() },
+    { id: "clear-stats", title: "清除 Token 统计", meta: "重置本地累计 token 统计", run: () => clearStatsBtn?.click() },
+    { id: "view-modules", title: "切换到模块视图", meta: "只显示主核 / 模块舱", run: () => setRuntimeViewMode("modules") },
+    { id: "view-roles", title: "切换到角色视图", meta: "只显示像素小人 / Role 视图", run: () => setRuntimeViewMode("roles") },
+    { id: "view-split", title: "切换到双视图", meta: "同时显示模块与角色运行态", run: () => setRuntimeViewMode("split") },
+    { id: "preset-general", title: "切换到通用模式", meta: "恢复通用模型与参数预设", run: () => applyModePreset("general") },
+    { id: "preset-coding", title: "切换到编码模式", meta: "恢复编码模型与参数预设", run: () => applyModePreset("coding") },
+    {
+      id: state.panelLayout?.leftCollapsed ? "expand-left" : "collapse-left",
+      title: state.panelLayout?.leftCollapsed ? "展开左侧栏" : "折叠左侧栏",
+      meta: "切换 Conversation Control 侧栏",
+      run: () => setRailCollapsed("left", !state.panelLayout?.leftCollapsed),
+    },
+    {
+      id: state.panelLayout?.rightCollapsed ? "expand-right" : "collapse-right",
+      title: state.panelLayout?.rightCollapsed ? "展开右侧栏" : "折叠右侧栏",
+      meta: "切换 Operations Overview 侧栏",
+      run: () => setRailCollapsed("right", !state.panelLayout?.rightCollapsed),
+    },
+    { id: "refresh-overview", title: "刷新运营总览", meta: "重新加载 gate / smoke / replay 摘要", run: () => refreshOperationsOverview() },
+    { id: "open-health", title: "打开 /api/health", meta: "新标签页打开健康检查接口", run: () => window.open("/api/health", "_blank", "noopener") },
+    { id: "open-role-lab", title: "打开 8081 Role Lab", meta: "跳转到本地角色实验台", run: () => window.open("http://localhost:8081", "_blank", "noopener") },
+  ];
+}
+
+function fuzzyMatchCommand(command, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return true;
+  const hay = `${command.title} ${command.meta} ${command.id}`.toLowerCase();
+  return hay.includes(needle);
+}
+
+function getVisibleCommandPaletteCommands() {
+  return buildCommandPaletteItems()
+    .map((command) => ({
+      ...command,
+      score: state.recentCommands.includes(command.id) ? 1 : 0,
+    }))
+    .filter((command) => fuzzyMatchCommand(command, state.commandPaletteQuery))
+    .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title, "zh-CN"));
+}
+
+function renderCommandPalette() {
+  if (!commandPalette || !commandPaletteList || !commandPaletteInput) return;
+  const commands = getVisibleCommandPaletteCommands();
+
+  if (state.commandPaletteIndex >= commands.length) {
+    state.commandPaletteIndex = Math.max(0, commands.length - 1);
+  }
+
+  commandPaletteList.innerHTML = "";
+  if (!commands.length) {
+    commandPaletteList.textContent = "没有匹配的命令。";
+    commandPalette.dataset.commandCount = "0";
+    return;
+  }
+
+  commands.forEach((command, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `command-item${index === state.commandPaletteIndex ? " is-active" : ""}`;
+    button.dataset.commandId = command.id;
+    button.innerHTML = `
+      <div>${escapeHtml(command.title)}</div>
+      <div class="command-item-meta">${escapeHtml(command.meta)}</div>
+    `;
+    button.addEventListener("click", async () => {
+      closeCommandPalette();
+      rememberCommandUse(command.id);
+      await Promise.resolve(command.run());
+      renderCommandPalette();
+    });
+    commandPaletteList.appendChild(button);
+  });
+  commandPalette.dataset.commandCount = String(commands.length);
+  const activeButton = commandPaletteList.querySelector(".command-item.is-active");
+  activeButton?.scrollIntoView?.({ block: "nearest" });
+}
+
+function openCommandPalette() {
+  if (!commandPalette || !commandPaletteInput) return;
+  state.commandPaletteOpen = true;
+  state.commandPaletteQuery = "";
+  state.commandPaletteIndex = 0;
+  commandPalette.hidden = false;
+  commandPalette.setAttribute("aria-hidden", "false");
+  renderCommandPalette();
+  window.setTimeout(() => commandPaletteInput.focus(), 0);
+}
+
+function closeCommandPalette() {
+  if (!commandPalette) return;
+  state.commandPaletteOpen = false;
+  commandPalette.hidden = true;
+  commandPalette.setAttribute("aria-hidden", "true");
 }
 
 function renderPlatformStatusSummary(health = {}) {
@@ -1620,6 +2184,7 @@ function renderBusinessResultSummary(data = {}) {
     if (businessResult?.partial_results) contextChips.push("partial results");
     contextChips.forEach((item) => resultContextView.appendChild(createChip(item, "ops-chip")));
   }
+  renderExecutionDag();
 }
 
 async function refreshOperationsOverview() {
@@ -2751,6 +3316,12 @@ function applyBackendStage(payload) {
   const code = String(payload?.code || "").trim();
   const detail = String(payload?.detail || "").trim();
   if (!code) return;
+  pushExecutionLogEntry({
+    category: classifyExecutionText(`${code} ${detail}`, "system"),
+    title: `Stage · ${code}`,
+    detail: detail || code,
+    tags: [code],
+  });
 
   if (code === "backend_start" || code === "session_ready" || code === "attachments_ready") {
     setRunStage("进行中", detail || "后端处理中", "prepare", "working");
@@ -2823,7 +3394,13 @@ function renderRunTrace(traceItems = [], toolEvents = []) {
 }
 
 function renderAgentPanels(panels = [], plan = [], activeRoles = new Set(), currentRole = null, roleStates = new Map()) {
+  state.latestAgentPanels = Array.isArray(panels) ? panels : [];
+  state.latestExecutionPlan = Array.isArray(plan) ? plan : [];
+  state.latestActiveRoles = activeRoles instanceof Set ? activeRoles : new Set();
+  state.latestCurrentRole = currentRole || null;
+  state.latestRoleStates = roleStates instanceof Map ? roleStates : new Map();
   renderRoleBoard(panels, activeRoles, currentRole, roleStates);
+  renderExecutionDag();
   if (!runAgentPanelsView) return;
 
   const lines = [];
@@ -3178,6 +3755,13 @@ async function runSandboxDrill() {
 
   state.drilling = true;
   updateDrillAvailability();
+  clearExecutionLog();
+  pushExecutionLogEntry({
+    category: "system",
+    title: "Sandbox Drill",
+    detail: `开始沙盒演练，execution_mode=${modeLabel}`,
+    tags: ["sandbox", modeLabel],
+  });
   setRunStage("进行中", `开始沙盒演练，执行环境 ${modeLabel}`, "prepare", "working");
   if (runPayloadView) {
     runPayloadView.textContent = `sandbox drill payload:\n${formatJsonPreview(payload)}`;
@@ -3226,6 +3810,12 @@ async function runSandboxDrill() {
       );
     });
     renderRunTrace(trace, []);
+    pushExecutionLogEntry({
+      category: data?.ok ? "tool" : "system",
+      title: "Sandbox Drill Result",
+      detail: String(data?.summary || "沙盒演练完成"),
+      tags: [data?.ok ? "pass" : "fail", `steps=${steps.length}`],
+    });
     renderAgentPanels([], [], new Set(), null, new Map());
     renderAnswerBundle({});
     renderLlmFlow([
@@ -3255,6 +3845,12 @@ async function runSandboxDrill() {
     }
   } catch (err) {
     const msg = `沙盒演练请求失败: ${String(err)}`;
+    pushExecutionLogEntry({
+      category: "system",
+      title: "Sandbox Drill Error",
+      detail: msg,
+      tags: ["error"],
+    });
     renderRunTrace([msg], []);
     renderAgentPanels([], [], new Set(), null, new Map());
     renderAnswerBundle({});
@@ -3300,6 +3896,13 @@ async function runEvalHarness() {
 
   state.evaluating = true;
   updateEvalAvailability();
+  clearExecutionLog();
+  pushExecutionLogEntry({
+    category: "system",
+    title: "Eval Harness",
+    detail: "开始执行默认回归测试集。",
+    tags: ["eval", "gate"],
+  });
   setRunStage("进行中", "开始回归测试（默认非 optional 用例）", "prepare", "working");
   if (runPayloadView) {
     runPayloadView.textContent = `eval harness payload:\n${formatJsonPreview(payload)}`;
@@ -3345,6 +3948,12 @@ async function runEvalHarness() {
       ...results.map((item) => summarizeEvalResult(item)),
     ];
     renderRunTrace(trace, []);
+    pushExecutionLogEntry({
+      category: failed.length ? "review" : "system",
+      title: "Eval Result",
+      detail: String(data?.summary || "回归测试完成"),
+      tags: [`passed=${Number(data?.passed || 0)}`, `failed=${failed.length}`, `skipped=${skipped.length}`],
+    });
 
     const panels = [
       {
@@ -3395,6 +4004,12 @@ async function runEvalHarness() {
     }
   } catch (err) {
     const msg = `回归测试请求失败: ${String(err)}`;
+    pushExecutionLogEntry({
+      category: "system",
+      title: "Eval Error",
+      detail: msg,
+      tags: ["error"],
+    });
     renderRunTrace([msg], []);
     renderAgentPanels([], [], new Set(), null, new Map());
     renderAnswerBundle({});
@@ -3424,6 +4039,7 @@ async function sendMessage() {
   const isForegroundSession = () => currentSessionKey() === requestSessionId;
 
   setRunStage("进行中", "正在准备本轮请求参数", "prepare", "working");
+  clearExecutionLog();
 
   if (!requestSessionId) {
     try {
@@ -3461,6 +4077,16 @@ async function sendMessage() {
       attachment_ids: state.attachments.map((x) => x.id),
       settings: getSettings(),
     };
+    pushExecutionLogEntry({
+      category: "planning",
+      title: "Request Prepared",
+      detail: `session=${requestSessionId} · chars=${message.length} · attachments=${state.attachments.length}`,
+      tags: [
+        body?.settings?.model || "default-model",
+        body?.settings?.execution_mode || "backend-default",
+        body?.settings?.enable_tools ? "tools-on" : "tools-off",
+      ],
+    });
     renderRunPayload(
       body,
       state.attachments.map((x) => x.name)
@@ -3507,6 +4133,11 @@ async function sendMessage() {
         if (!isForegroundSession()) return;
         const line = String(payload?.message || "").trim();
         if (!line) return;
+        pushExecutionLogEntry({
+          category: classifyExecutionText(line, "system"),
+          title: "Trace",
+          detail: line,
+        });
         liveTrace.push(line);
         renderRunTrace(liveTrace, liveToolEvents);
       },
@@ -3514,6 +4145,12 @@ async function sendMessage() {
         if (!isForegroundSession()) return;
         const item = payload?.item;
         if (!item || typeof item !== "object") return;
+        pushExecutionLogEntry({
+          category: classifyExecutionText(`${item?.stage || ""} ${item?.title || ""} ${item?.detail || ""}`, "planning"),
+          title: String(item?.title || item?.stage || "Debug Event"),
+          detail: String(item?.detail || "").trim() || String(item?.stage || "").trim(),
+          tags: [String(item?.stage || "").trim()].filter(Boolean),
+        });
         liveFlow.push(item);
         if (!liveActiveRoles.size) {
           liveActiveRoles = inferActiveRolesFromDebugItem(item);
@@ -3525,6 +4162,15 @@ async function sendMessage() {
         if (!isForegroundSession()) return;
         const item = payload?.item;
         if (!item || typeof item !== "object") return;
+        pushExecutionLogEntry({
+          category: "tool",
+          title: String(item?.name || "Tool Event"),
+          detail: String(item?.output_preview || item?.detail || "工具事件已记录。").trim(),
+          tags: [
+            String(item?.module_id || "").trim(),
+            String(item?.module_group || "").trim(),
+          ].filter(Boolean),
+        });
         liveToolEvents.push(item);
         renderRunTrace(liveTrace, liveToolEvents);
       },
@@ -3536,17 +4182,49 @@ async function sendMessage() {
         const liveCurrentRole = normalizeRoleId(payload?.current_role);
         liveRoleStates = normalizeRoleStateMap(payload?.role_states);
         if (liveCurrentRole) liveActiveRoles.add(liveCurrentRole);
+        pushExecutionLogEntry({
+          category: classifyExecutionText(`${liveCurrentRole} ${(liveExecutionPlan || []).join(" ")}`, "planning"),
+          title: liveCurrentRole ? `Role State · ${liveCurrentRole}` : "Role State",
+          detail: liveExecutionPlan.length
+            ? `execution_plan=${liveExecutionPlan.join(" | ")}`
+            : "已收到最新角色状态。",
+          tags: Array.from(liveActiveRoles).slice(0, 4),
+        });
         renderAgentPanels(liveAgentPanels, liveExecutionPlan, liveActiveRoles, liveCurrentRole || null, liveRoleStates);
       },
       onHeartbeat: () => {
         if (!isForegroundSession()) return;
         heartbeatCount += 1;
+        pushExecutionLogEntry({
+          category: "system",
+          title: "Heartbeat",
+          detail: `连接正常，后端仍在处理中（约 ${heartbeatCount * 10}s 无新事件）。`,
+          tags: ["heartbeat"],
+        });
         if (heartbeatCount === 1 || heartbeatCount % 3 === 0) {
           liveTrace.push(
             `后端心跳：仍在处理中（约 ${heartbeatCount * 10}s 无新事件，连接正常）`
           );
           renderRunTrace(liveTrace, liveToolEvents);
         }
+      },
+      onFinal: (payload) => {
+        if (!isForegroundSession() || !payload || typeof payload !== "object") return;
+        pushExecutionLogEntry({
+          category: classifyExecutionText(
+            `${payload?.selected_business_module || ""} ${payload?.kernel_routing?.selection_summary || ""} ${payload?.business_result?.result_grade || ""}`,
+            "system"
+          ),
+          title: "Final Response",
+          detail:
+            String(payload?.kernel_routing?.selection_summary || "").trim() ||
+            `module=${String(payload?.selected_business_module || "unknown")}`,
+          tags: [
+            String(payload?.selected_business_module || "").trim(),
+            String(payload?.business_result?.result_grade || "").trim(),
+            String(payload?.business_result?.return_strategy || "").trim(),
+          ].filter(Boolean),
+        });
       },
     });
     if (typeof stopWaitTicker === "function") {
@@ -3619,6 +4297,12 @@ async function sendMessage() {
       stopWaitTicker();
       stopWaitTicker = null;
     }
+    pushExecutionLogEntry({
+      category: "system",
+      title: "Request Error",
+      detail: String(err),
+      tags: ["error"],
+    });
     if (isForegroundSession()) {
       renderRunTrace([`请求失败: ${String(err)}`], []);
       renderAgentPanels([], [], new Set(), null, new Map());
@@ -3751,6 +4435,93 @@ if (clearStatsBtn) {
   });
 }
 
+if (executionLogView) {
+  executionLogView.addEventListener("scroll", () => {
+    const nearBottom =
+      executionLogView.scrollHeight - executionLogView.scrollTop - executionLogView.clientHeight < 24;
+    state.executionLogAutoScroll = nearBottom;
+    if (executionLogAutoBtn) {
+      executionLogAutoBtn.textContent = state.executionLogAutoScroll ? "自动滚动中" : "恢复自动滚动";
+    }
+  });
+}
+
+if (executionLogAutoBtn) {
+  executionLogAutoBtn.addEventListener("click", () => {
+    state.executionLogAutoScroll = !state.executionLogAutoScroll;
+    if (state.executionLogAutoScroll && executionLogView) {
+      executionLogView.scrollTop = executionLogView.scrollHeight;
+    }
+    renderExecutionLog();
+  });
+}
+
+if (commandPaletteBtn) {
+  commandPaletteBtn.addEventListener("click", () => openCommandPalette());
+}
+
+if (commandPalette) {
+  commandPalette.addEventListener("click", (event) => {
+    const target = event.target;
+    if (target instanceof HTMLElement && target.dataset.closePalette === "1") {
+      closeCommandPalette();
+    }
+  });
+}
+
+if (commandPaletteInput) {
+  commandPaletteInput.addEventListener("input", () => {
+    state.commandPaletteQuery = String(commandPaletteInput.value || "");
+    state.commandPaletteIndex = 0;
+    renderCommandPalette();
+  });
+  commandPaletteInput.addEventListener("keydown", async (event) => {
+    const commands = getVisibleCommandPaletteCommands();
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      state.commandPaletteIndex = Math.min(state.commandPaletteIndex + 1, Math.max(commands.length - 1, 0));
+      renderCommandPalette();
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      state.commandPaletteIndex = Math.max(state.commandPaletteIndex - 1, 0);
+      renderCommandPalette();
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const command = commands[state.commandPaletteIndex];
+      if (!command) return;
+      closeCommandPalette();
+      rememberCommandUse(command.id);
+      await Promise.resolve(command.run());
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCommandPalette();
+    }
+  });
+}
+
+document.addEventListener("keydown", (event) => {
+  const isPaletteShortcut = (event.metaKey || event.ctrlKey) && String(event.key || "").toLowerCase() === "k";
+  if (isPaletteShortcut) {
+    event.preventDefault();
+    if (state.commandPaletteOpen) {
+      closeCommandPalette();
+    } else {
+      openCommandPalette();
+    }
+    return;
+  }
+  if (state.commandPaletteOpen && event.key === "Escape") {
+    event.preventDefault();
+    closeCommandPalette();
+  }
+});
+
 if (refreshSessionsBtn) {
   refreshSessionsBtn.addEventListener("click", async () => {
     await refreshSessionHistory();
@@ -3771,9 +4542,17 @@ if (deleteSessionBtn) {
 (async function boot() {
   applyModePreset("general", false);
   restorePanelDebugMode();
+  state.panelLayout = getStoredPanelLayout();
+  applyPanelLayout();
+  loadRecentCommands();
+  setupRailResizer(leftRailResizer, "left");
+  setupRailResizer(rightRailResizer, "right");
   setRunStage("空闲", "等待发送请求", null, "idle");
   updateDrillAvailability();
   updateEvalAvailability();
+  renderExecutionDag();
+  renderExecutionLog();
+  renderCommandPalette();
   renderBusinessResultSummary({});
   renderRunPayload(
     {
