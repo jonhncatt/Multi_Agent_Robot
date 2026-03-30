@@ -132,7 +132,7 @@ const roleLabRuntimeMetrics = document.getElementById("roleLabRuntimeMetrics");
 const roleLabRegistry = document.getElementById("roleLabRegistry");
 const roleLabRunGraph = document.getElementById("roleLabRunGraph");
 const roleLabRunFailures = document.getElementById("roleLabRunFailures");
-const runtimeDebugSections = Array.from(document.querySelectorAll(".runtime-panel .debug-only"));
+const runtimeDebugSections = Array.from(document.querySelectorAll(".debug-only"));
 
 const RUN_FLOW_STEPS = [
   { id: "prepare", label: "1. 准备请求" },

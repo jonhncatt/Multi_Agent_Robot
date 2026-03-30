@@ -1855,9 +1855,6 @@ body {
 
 .console-topbar {
   grid-area: top;
-  position: sticky;
-  top: 12px;
-  z-index: 8;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2030,7 +2027,7 @@ body {
 .workspace-shell {
   grid-area: center;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 16px;
   min-width: 0;
 }
@@ -2040,6 +2037,10 @@ body {
   align-self: start;
   display: grid;
   gap: 16px;
+}
+
+.ops-card--inspector {
+  gap: 10px;
 }
 
 .live-ops-grid {
@@ -2803,6 +2804,14 @@ textarea {
   cursor: pointer;
   font-weight: 700;
   color: #1b3f59;
+}
+
+.ops-card .runtime-details {
+  background: rgba(247, 250, 252, 0.7);
+}
+
+.ops-card .runtime-pre {
+  max-height: 220px;
 }
 
 body.panel-debug-off .runtime-details {

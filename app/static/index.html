@@ -292,56 +292,6 @@
             <div id="runRoleBoard" class="role-board"></div>
           </section>
 
-          <details class="runtime-details debug-only">
-            <summary>本轮发送信息</summary>
-            <pre id="runPayloadView" class="runtime-pre">暂无请求</pre>
-          </details>
-          <details class="runtime-details debug-only">
-            <summary>本轮执行流程</summary>
-            <pre id="runTraceView" class="runtime-pre">暂无执行轨迹</pre>
-          </details>
-          <details class="runtime-details debug-only">
-            <summary>多 Role 图例</summary>
-            <pre class="runtime-pre">阶段 3 状态: MVP 已完成
-
-固定角色:
-Router -> Coordinator -> Worker
-
-按需角色:
-Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Worker -> [Conflict Detector?] -> [Reviewer?] -> [Revision?] -> [Structurer?]
-
-术语:
-- role = 所有执行角色的总称
-- agent = 由 LLM 驱动的 role
-- processor = 不依赖 LLM 的 role
-- Router = agent + processor（规则路由 + 可选 LLM 路由）
-- Coordinator = processor，负责切换 tool_mode、重绑 Worker、抑制反复确认
-- Worker 一定存在
-- worker_mode=direct_answer: Worker 直接回答
-- worker_mode=uses_tools: Worker 会调用工具链
-
-常见路径:
-1. 简单理解
-   Router -> Coordinator -> Summarizer -> Worker
-
-2. 联网查证
-   Router -> Coordinator -> Researcher -> Planner -> Worker(tools) -> Reviewer -> Revision? -> Structurer
-
-3. 文档定位
-   Router -> Coordinator -> FileReader -> Planner -> Worker(tools) -> Reviewer -> Structurer</pre>
-          </details>
-          <details class="runtime-details debug-only">
-            <summary>多 Role 透明层</summary>
-            <pre id="runAgentPanelsView" class="runtime-pre">暂无多 Role 摘要</pre>
-          </details>
-          <details class="runtime-details debug-only">
-            <summary>结构化证据包</summary>
-            <pre id="runAnswerBundleView" class="runtime-pre">暂无结构化证据包</pre>
-          </details>
-          <details class="runtime-details debug-only">
-            <summary>LLM ↔ 后端交换（调试）</summary>
-            <pre id="runLlmFlowView" class="runtime-pre">暂无交换记录</pre>
-          </details>
         </div>
 
         <div id="chatList" class="chat-list"></div>
@@ -430,6 +380,65 @@ Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Wo
             <a class="ops-link-button" href="/api/role-lab/runtime" target="_blank" rel="noreferrer">/api/role-lab/runtime</a>
             <a class="ops-link-button" href="http://localhost:8081" target="_blank" rel="noreferrer">8081 Role Lab</a>
           </div>
+        </section>
+
+        <section class="ops-card ops-card--inspector debug-only">
+          <div class="ops-card-head">
+            <div>
+              <div class="rail-kicker">Execution Inspector</div>
+              <div class="rail-title">本轮调试细节</div>
+            </div>
+          </div>
+          <details class="runtime-details" open>
+            <summary>本轮发送信息</summary>
+            <pre id="runPayloadView" class="runtime-pre">暂无请求</pre>
+          </details>
+          <details class="runtime-details" open>
+            <summary>本轮执行流程</summary>
+            <pre id="runTraceView" class="runtime-pre">暂无执行轨迹</pre>
+          </details>
+          <details class="runtime-details">
+            <summary>多 Role 图例</summary>
+            <pre class="runtime-pre">阶段 3 状态: MVP 已完成
+
+固定角色:
+Router -> Coordinator -> Worker
+
+按需角色:
+Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Worker -> [Conflict Detector?] -> [Reviewer?] -> [Revision?] -> [Structurer?]
+
+术语:
+- role = 所有执行角色的总称
+- agent = 由 LLM 驱动的 role
+- processor = 不依赖 LLM 的 role
+- Router = agent + processor（规则路由 + 可选 LLM 路由）
+- Coordinator = processor，负责切换 tool_mode、重绑 Worker、抑制反复确认
+- Worker 一定存在
+- worker_mode=direct_answer: Worker 直接回答
+- worker_mode=uses_tools: Worker 会调用工具链
+
+常见路径:
+1. 简单理解
+   Router -> Coordinator -> Summarizer -> Worker
+
+2. 联网查证
+   Router -> Coordinator -> Researcher -> Planner -> Worker(tools) -> Reviewer -> Revision? -> Structurer
+
+3. 文档定位
+   Router -> Coordinator -> FileReader -> Planner -> Worker(tools) -> Reviewer -> Structurer</pre>
+          </details>
+          <details class="runtime-details" open>
+            <summary>多 Role 透明层</summary>
+            <pre id="runAgentPanelsView" class="runtime-pre">暂无多 Role 摘要</pre>
+          </details>
+          <details class="runtime-details">
+            <summary>结构化证据包</summary>
+            <pre id="runAnswerBundleView" class="runtime-pre">暂无结构化证据包</pre>
+          </details>
+          <details class="runtime-details">
+            <summary>LLM ↔ 后端交换（调试）</summary>
+            <pre id="runLlmFlowView" class="runtime-pre">暂无交换记录</pre>
+          </details>
         </section>
 
         <section class="ops-card">
