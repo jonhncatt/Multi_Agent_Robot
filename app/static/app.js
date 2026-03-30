@@ -7,6 +7,8 @@ const state = {
   evaluating: false,
   runtimeViewMode: null,
   lastHealth: null,
+  operationsOverview: null,
+  lastBusinessResponse: null,
 };
 const SESSION_STORAGE_KEY = "officetool.session_id";
 const RUNTIME_VIEW_STORAGE_KEY = "officetool.runtime_view";
@@ -29,6 +31,25 @@ const clearStatsBtn = document.getElementById("clearStatsBtn");
 const appVersionView = document.getElementById("appVersionView");
 const productTitleView = document.getElementById("productTitle");
 const productHintView = document.getElementById("productHint");
+const platformStatusHeadline = document.getElementById("platformStatusHeadline");
+const platformStatusMeta = document.getElementById("platformStatusMeta");
+const platformStatusSignals = document.getElementById("platformStatusSignals");
+const moduleRouteHeadline = document.getElementById("moduleRouteHeadline");
+const moduleRouteMeta = document.getElementById("moduleRouteMeta");
+const moduleRouteTags = document.getElementById("moduleRouteTags");
+const qualityOverviewHeadline = document.getElementById("qualityOverviewHeadline");
+const qualityOverviewMeta = document.getElementById("qualityOverviewMeta");
+const qualityOverviewGrid = document.getElementById("qualityOverviewGrid");
+const resultModuleView = document.getElementById("resultModuleView");
+const resultGradeView = document.getElementById("resultGradeView");
+const resultStrategyView = document.getElementById("resultStrategyView");
+const resultModelView = document.getElementById("resultModelView");
+const resultReliabilityView = document.getElementById("resultReliabilityView");
+const resultContextView = document.getElementById("resultContextView");
+const gateSummaryGrid = document.getElementById("gateSummaryGrid");
+const replaySummaryView = document.getElementById("replaySummaryView");
+const smokeSummaryView = document.getElementById("smokeSummaryView");
+const operationsIndexView = document.getElementById("operationsIndexView");
 
 const modelInput = document.getElementById("modelInput");
 const execModeInput = document.getElementById("execModeInput");
@@ -1416,6 +1437,204 @@ const MODULE_LABELS = {
   "provider:codex_auth": { title: "Provider / Codex", desc: "本地 Codex auth 调试通道。" },
 };
 
+function moduleLabel(moduleId) {
+  const value = String(moduleId || "").trim();
+  if (value === "research_module") return "Research Module";
+  if (value === "office_module") return "Office Module";
+  if (value === "coding_module") return "Coding Module";
+  if (value === "adaptation_module") return "Adaptation Module";
+  return value || "等待请求";
+}
+
+function summarizeGateLine(item) {
+  const label = String(item?.label || "Gate");
+  const passed = Number(item?.passed || 0);
+  const total = Number(item?.total || 0);
+  const status = String(item?.status || "missing");
+  const prefix = status === "pass" ? "通过" : status === "fail" ? "失败" : "缺失";
+  return `${label}: ${prefix} ${passed}/${total}`;
+}
+
+function createChip(text, className = "hero-chip") {
+  const node = document.createElement("span");
+  node.className = className;
+  node.textContent = String(text || "");
+  return node;
+}
+
+function renderPlatformStatusSummary(health = {}) {
+  if (!platformStatusHeadline || !platformStatusMeta || !platformStatusSignals) return;
+  const hostRuntime = health?.kernel_host_runtime || {};
+  const blackboard = hostRuntime?.blackboard || {};
+  const selected = health?.kernel_selected_modules || {};
+  const executionMode = String(health?.execution_mode_default || "host").trim();
+  const authMode = String(health?.auth_mode || "unknown").trim();
+  const primaryAgent = String(hostRuntime?.primary_agent_module?.module_id || "-");
+  const primaryTool = String(hostRuntime?.primary_tool_module?.module_id || "-");
+  const activeCount = Array.isArray(blackboard?.active_module_ids) ? blackboard.active_module_ids.length : 0;
+  const product = String(health?.product_title || "Officetool Console").trim();
+  platformStatusHeadline.textContent = Object.keys(selected).length ? `${product} 已在线` : `${product} 待机`;
+  platformStatusMeta.textContent = `auth=${authMode} · exec=${executionMode} · blackboard=${String(blackboard?.status || "idle")} · active_modules=${activeCount}`;
+  platformStatusSignals.innerHTML = "";
+  [
+    `primary agent: ${primaryAgent}`,
+    `primary tool: ${primaryTool}`,
+    `docker: ${health?.docker_available ? "ready" : "not ready"}`,
+  ].forEach((item) => platformStatusSignals.appendChild(createChip(item)));
+}
+
+function renderOperationsOverview(overview = {}) {
+  state.operationsOverview = overview || {};
+  const gates = Array.isArray(overview?.gates) ? overview.gates : [];
+  const greenCount = gates.filter((item) => String(item?.status || "") === "pass").length;
+
+  if (qualityOverviewHeadline) {
+    qualityOverviewHeadline.textContent = overview?.headline || `运营摘要待生成`;
+  }
+  if (qualityOverviewMeta) {
+    qualityOverviewMeta.textContent =
+      overview?.subheadline || `gate / smoke / replay 样本库尚未加载。`;
+  }
+  if (qualityOverviewGrid) {
+    qualityOverviewGrid.innerHTML = "";
+    gates.forEach((item) => {
+      const node = document.createElement("div");
+      node.className = `hero-mini-card status-${String(item?.status || "missing")}`;
+      node.innerHTML = `
+        <span>${String(item?.label || "Gate")}</span>
+        <strong>${Number(item?.passed || 0)}/${Number(item?.total || 0)}</strong>
+      `;
+      qualityOverviewGrid.appendChild(node);
+    });
+    if (!gates.length) {
+      qualityOverviewGrid.textContent = "当前没有 gate 摘要。";
+    }
+  }
+
+  if (gateSummaryGrid) {
+    gateSummaryGrid.innerHTML = "";
+    gates.forEach((item) => {
+      const node = document.createElement("div");
+      node.className = `ops-gate-card status-${String(item?.status || "missing")}`;
+      node.innerHTML = `
+        <span>${String(item?.label || "Gate")}</span>
+        <strong>${Number(item?.passed || 0)}/${Number(item?.total || 0)}</strong>
+        <div class="ops-note">${String(item?.artifact_path || "")}</div>
+      `;
+      gateSummaryGrid.appendChild(node);
+    });
+    if (!gates.length) {
+      gateSummaryGrid.textContent = "当前没有 gate 数据。";
+    }
+  }
+
+  if (replaySummaryView) {
+    const replay = overview?.replay || {};
+    const families = replay?.families || {};
+    replaySummaryView.textContent = `root=${String(replay?.root || "evals/replay_samples")} · total=${Number(replay?.total_samples || 0)} · office=${Number(families.office || 0)} · research=${Number(families.research || 0)} · swarm=${Number(families.swarm || 0)}`;
+  }
+
+  if (smokeSummaryView) {
+    const smokeLayers = Array.isArray(overview?.smoke_layers) ? overview.smoke_layers : [];
+    smokeSummaryView.textContent = smokeLayers.map((item) => `${String(item?.label || "-")}${item?.ci ? " (CI)" : " (release-only)"}`).join(" · ") || "未加载 smoke 分层";
+  }
+
+  if (operationsIndexView) {
+    operationsIndexView.innerHTML = "";
+    const entries = Array.isArray(overview?.docs_index) ? overview.docs_index : [];
+    entries.forEach((item) => {
+      const node = document.createElement("div");
+      node.className = "ops-entry";
+      node.innerHTML = `
+        <div class="ops-entry-label">${escapeHtml(String(item?.label || "Entry"))}</div>
+        <div class="ops-entry-path">${escapeHtml(String(item?.path || ""))}</div>
+      `;
+      operationsIndexView.appendChild(node);
+    });
+    if (!entries.length) {
+      operationsIndexView.textContent = "当前没有运营入口索引。";
+    }
+  }
+
+  if (!moduleRouteTags?.childElementCount && gates.length) {
+    moduleRouteTags.innerHTML = "";
+    moduleRouteTags.appendChild(createChip(`${greenCount}/${gates.length} gates green`));
+    gates.forEach((item) => moduleRouteTags.appendChild(createChip(summarizeGateLine(item))));
+  }
+}
+
+function renderBusinessResultSummary(data = {}) {
+  state.lastBusinessResponse = data || {};
+  const selectedModule = String(data?.selected_business_module || "").trim();
+  const routing = data?.kernel_routing || {};
+  const businessResult = data?.business_result || {};
+  const grade = String(businessResult?.result_grade || "").trim();
+  const strategy = String(businessResult?.return_strategy || "").trim();
+  const reliability = String(businessResult?.reliability_note || "").trim();
+  const effectiveModel = String(data?.effective_model || "").trim();
+  const selectionSummary = String(routing?.selection_summary || "").trim();
+  const conflictDetected = Boolean(businessResult?.conflict_detected);
+  const degraded = grade === "degraded";
+  const sourceCount = Number(businessResult?.source_count || 0);
+  const branchCount = Number(businessResult?.branch_count || 0);
+  const mergedFindingCount = Number(businessResult?.merged_finding_count || 0);
+
+  if (moduleRouteHeadline) {
+    moduleRouteHeadline.textContent = selectedModule ? `${moduleLabel(selectedModule)} 已接管本轮请求` : "等待本轮模块选择";
+  }
+  if (moduleRouteMeta) {
+    moduleRouteMeta.textContent =
+      selectionSummary ||
+      "显式 module_id / task_type 优先；通用 chat 会在 office 与 research 间选择。";
+  }
+  if (moduleRouteTags) {
+    moduleRouteTags.innerHTML = "";
+    if (selectedModule) moduleRouteTags.appendChild(createChip(moduleLabel(selectedModule)));
+    if (effectiveModel) moduleRouteTags.appendChild(createChip(`model: ${effectiveModel}`));
+    if (grade) moduleRouteTags.appendChild(createChip(`grade: ${grade}`));
+    if (strategy) moduleRouteTags.appendChild(createChip(`strategy: ${strategy}`));
+    if (sourceCount) moduleRouteTags.appendChild(createChip(`sources: ${sourceCount}`));
+    if (branchCount) moduleRouteTags.appendChild(createChip(`branches: ${branchCount}`));
+    if (mergedFindingCount) moduleRouteTags.appendChild(createChip(`merged: ${mergedFindingCount}`));
+    if (conflictDetected) moduleRouteTags.appendChild(createChip("conflict detected"));
+    if (degraded) moduleRouteTags.appendChild(createChip("degraded path"));
+  }
+
+  if (resultModuleView) resultModuleView.textContent = moduleLabel(selectedModule);
+  if (resultGradeView) resultGradeView.textContent = grade || "-";
+  if (resultStrategyView) resultStrategyView.textContent = strategy || "-";
+  if (resultModelView) resultModelView.textContent = effectiveModel || "-";
+  if (resultReliabilityView) {
+    resultReliabilityView.textContent =
+      reliability ||
+      (selectedModule ? "本轮未返回额外可靠性说明。" : "等待首轮响应后显示可靠性说明与降级信息。");
+  }
+  if (resultContextView) {
+    resultContextView.innerHTML = "";
+    const contextChips = [];
+    if (String(data?.attachment_context_mode || "").trim()) contextChips.push(`attachments: ${String(data.attachment_context_mode)}`);
+    if (Number(data?.queue_wait_ms || 0) > 0) contextChips.push(`queue: ${Number(data.queue_wait_ms)} ms`);
+    if (String(data?.route_state_scope || "").trim()) contextChips.push(`route_state: ${String(data.route_state_scope)}`);
+    if (businessResult?.evidence_completeness) contextChips.push(`evidence: ${String(businessResult.evidence_completeness)}`);
+    if (businessResult?.provider_fallback_used) contextChips.push("provider fallback");
+    if (businessResult?.partial_results) contextChips.push("partial results");
+    contextChips.forEach((item) => resultContextView.appendChild(createChip(item, "ops-chip")));
+  }
+}
+
+async function refreshOperationsOverview() {
+  try {
+    const res = await fetch("/api/operations/overview");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderOperationsOverview(data);
+    return data;
+  } catch {
+    renderOperationsOverview({});
+    return {};
+  }
+}
+
 function formatRelativeTime(raw) {
   const value = String(raw || "").trim();
   if (!value) return "未知";
@@ -2069,6 +2288,7 @@ async function refreshSystemDashboard() {
   renderBackendPolicy(health);
   renderKernelConsole(health);
   renderRoleLabRuntime(health);
+  renderPlatformStatusSummary(health);
   return health;
 }
 
@@ -3191,6 +3411,7 @@ async function runEvalHarness() {
   } finally {
     state.evaluating = false;
     updateEvalAvailability();
+    refreshOperationsOverview().catch(() => {});
   }
 }
 
@@ -3380,6 +3601,7 @@ async function sendMessage() {
       renderAgentPanels(data.agent_panels || [], data.execution_plan || [], liveActiveRoles, finalCurrentRole || null, liveRoleStates);
       renderAnswerBundle(data.answer_bundle || {});
       renderLlmFlow(data.debug_flow || []);
+      renderBusinessResultSummary(data);
       addBubble("assistant", data.text, data.answer_bundle || null);
     }
     await refreshSessionHistory();
@@ -3552,6 +3774,7 @@ if (deleteSessionBtn) {
   setRunStage("空闲", "等待发送请求", null, "idle");
   updateDrillAvailability();
   updateEvalAvailability();
+  renderBusinessResultSummary({});
   renderRunPayload(
     {
       session_id: null,
@@ -3566,6 +3789,7 @@ if (deleteSessionBtn) {
   renderLlmFlow([]);
   try {
     const health = await refreshSystemDashboard();
+    await refreshOperationsOverview();
     modelInput.placeholder = health.model_default || MODE_PRESETS.general.model;
     if (!modelInput.value) {
       modelInput.value = health.model_default || MODE_PRESETS.general.model;

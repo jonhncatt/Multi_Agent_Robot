@@ -59,6 +59,7 @@ from app.models import (
     UploadResponse,
 )
 from app.openai_auth import OpenAIAuthManager
+from app.operations_overview import build_platform_operations_overview
 from app.pricing import estimate_usage_cost
 from app.product_profiles import ensure_product_profile_env
 from app import session_context as session_context_impl
@@ -346,6 +347,12 @@ def evolution_runtime_state(limit: int = 10) -> EvolutionRuntimeResponse:
         assistant_overlay_profile=dict(payload.get("overlay_profile") or {}),
         assistant_evolution_recent=list(payload.get("recent_events") or []),
     )
+
+
+@app.get("/api/operations/overview")
+def platform_operations_overview() -> dict[str, Any]:
+    repo_root = Path(__file__).resolve().parent.parent
+    return build_platform_operations_overview(repo_root)
 
 
 def _find_shadow_replay_record(run_id: str | None = None) -> dict[str, Any] | None:
@@ -1477,6 +1484,9 @@ def _process_chat_request(
             token_usage=TokenUsage(**token_usage),
             session_token_totals=TokenTotals(**session_totals_raw),
             global_token_totals=TokenTotals(**global_totals_raw),
+            selected_business_module=selected_module_id,
+            kernel_routing=kernel_routing,
+            business_result=dict(payload.get("swarm") or payload.get("research") or {}),
             turn_count=len(session.get("turns", [])),
             summarized=summarized,
         )

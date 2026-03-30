@@ -146,6 +146,9 @@ class ChatResponse(BaseModel):
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)
     global_token_totals: TokenTotals = Field(default_factory=TokenTotals)
+    selected_business_module: str = ""
+    kernel_routing: dict[str, object] = Field(default_factory=dict)
+    business_result: dict[str, object] = Field(default_factory=dict)
     turn_count: int
     summarized: bool = False
 
