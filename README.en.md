@@ -4,12 +4,47 @@
 
 [中文 README](README.md)
 
-[![Regression CI](https://github.com/jonhncatt/Multi_Agent_Robot/actions/workflows/regression-ci.yml/badge.svg?branch=main)](https://github.com/jonhncatt/Multi_Agent_Robot/actions/workflows/regression-ci.yml)
-[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](requirements.txt)
-[![FastAPI](https://img.shields.io/badge/FastAPI-app-009688.svg)](https://fastapi.tiangolo.com/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+## Final Architecture
 
-`Multi_Agent_Robot` is a local Agent OS-style system: stable core, pluggable modules, and evolvable tool paths.
+The project now follows a **minimal kernel architecture**:
+
+- One stable Kernel (startup, context, health)
+- One central LLM router (`app/kernel/llm_router.py`)
+- 12 fully independent agent plugins (`app/agents/*_agent`)
+
+Design goal: **least code, least layers, easiest maintenance, isolated failures**.
+
+## Independent Agents (12)
+
+1. worker_agent
+2. researcher_agent
+3. planner_agent
+4. critic_agent
+5. executor_agent
+6. summarizer_agent
+7. coder_agent
+8. reviewer_agent
+9. coordinator_agent
+10. tool_user_agent
+11. office_specialist_agent
+12. navigator_agent
+
+Each agent folder only has:
+
+- `agent.py` with `handle_task`
+- `manifest.json` with description/capabilities/version
+
+## Simplified Layout
+
+```text
+app/
+├── agents/
+├── kernel/
+│   ├── host.py
+│   └── llm_router.py
+├── api/
+└── main.py
+```
 
 ## Quick Start
 
@@ -23,12 +58,17 @@ cp .env.example .env
 ./run.sh
 ```
 
-Main UI: <http://127.0.0.1:8080>  
-Lab UI: `./run-role-agent-lab.sh` -> <http://127.0.0.1:8081>
+Open: <http://127.0.0.1:8080>
 
-## LLM Provider Config (Generic)
+## Key APIs
 
-Use provider-agnostic env keys as the default:
+- `POST /api/chat` (central LLM routing + independent agents)
+- `POST /api/chat/stream`
+- `GET /api/agents`
+- `POST /api/agents/{name}/reload`
+- `GET /api/health`
+
+## Generic LLM Env
 
 ```env
 OFFICETOOL_LLM_PROVIDER=openai
@@ -36,40 +76,12 @@ OFFICETOOL_LLM_AUTH_MODE=auto
 OFFICETOOL_LLM_API_KEY=<YOUR_API_KEY>
 OFFICETOOL_LLM_BASE_URL=https://api.openai.com/v1
 OFFICETOOL_LLM_MODEL=gpt-5.1-chat
+OFFICETOOL_ROUTER_MODEL=gpt-4o-mini
 ```
 
-Notes:
-- The current runtime path supports OpenAI-compatible API and Codex auth.
-- Legacy keys (`OPENAI_API_KEY`, `OFFICETOOL_OPENAI_*`) are still supported.
-- The UI can boot without credentials, but `/api/chat` will not return model output until auth is configured.
+## Evolution Workflow
 
-## UI
-
-### Multi_Agent_Robot
-![Multi_Agent_Robot home](docs/assets/screenshots/kernel_robot_home.png)
-
-### Multi_Agent_Robot Lab
-![Multi_Agent_Robot Lab home](docs/assets/screenshots/role_agent_lab_home.png)
-
-## Common Commands
-
-- Main product: `./run.sh` or `./run-multi-agent-robot.sh`
-- Compatibility alias: `./run-kernel-robot.sh`
-- Minimal smoke: `python scripts/demo_minimal_agent_os.py --check`
-- Regression tests: `pytest`
-
-## Project Layout (Short)
-
-- `app/`: UI, API, kernel, module assembly
-- `packages/`: shared runtime and boundaries
-- `scripts/`: demos and run scripts
-- `tests/`: regression coverage
-- `docs/`: architecture, modules, operations, roadmap
-
-## More Docs
-
-- Module integration: `docs/modules/module_integration_guide.md`
-- Platform metrics: `docs/operations/platform_metrics.md`
-- Evolution direction (2026): `docs/roadmap/evolution_direction_2026.md`
-- Swarm roadmap: `docs/swarm-roadmap.md`
+- Update one agent under `app/agents/<name>_agent/`
+- Call `POST /api/agents/{name}/reload`
+- Validate immediately without restarting the full kernel
 

@@ -72,6 +72,7 @@ class KernelHost:
         self._trace_enabled = bool(int(str(os.environ.get("AGENT_OS_TRACE", "0") or "0")))
         self._trace_verbose = bool(int(str(os.environ.get("AGENT_OS_TRACE_VERBOSE", "0") or "0")))
         self._logger = logging.getLogger("agent_os.kernel")
+        self.llm_router: Any | None = None
         for event_name in (
             "module_registered",
             "provider_registered",
@@ -133,6 +134,9 @@ class KernelHost:
 
     def select_module(self, request: TaskRequest, module_id: str | None = None) -> ModuleSelectionDecision:
         return self.module_selector.select(request, module_id)
+
+    def attach_llm_router(self, router: Any) -> None:
+        self.llm_router = router
 
     def resolve_module(self, request: TaskRequest, module_id: str | None = None) -> BaseBusinessModule | None:
         return self.select_module(request, module_id).module

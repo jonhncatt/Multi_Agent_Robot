@@ -8,6 +8,7 @@ from app.business_modules import AdaptationModule, CodingModule, OfficeModule, R
 from app.config import AppConfig
 from app.contracts import TaskRequest, TaskResponse, ToolContract
 from app.kernel import KernelHost
+from app.kernel.llm_router import LLMRouter
 from app.local_tools import LocalToolExecutor
 from app.system_modules import MemoryModule, OutputModule, PolicyModule, ToolRuntimeModule
 from packages.office_modules.agent_module import create_office_legacy_surface
@@ -379,6 +380,7 @@ def assemble_runtime(
         kernel.register_provider(provider)  # type: ignore[arg-type]
 
     kernel.init()
+    kernel.attach_llm_router(LLMRouter(kernel))
 
     runtime = AgentOSRuntime(
         kernel=kernel,

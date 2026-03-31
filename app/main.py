@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import os
@@ -23,6 +24,7 @@ from app.core.bootstrap import build_kernel_runtime
 from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
 from app.evolution import EvolutionStore
+from app.kernel.llm_router import LLMRouter
 from app.models import (
     ChatRequest,
     ChatResponse,
@@ -198,6 +200,15 @@ def get_evolution_store() -> EvolutionStore:
 def get_agent_os_runtime() -> AgentOSRuntime:
     return agent_os_runtime
 
+
+def get_llm_router() -> LLMRouter:
+    router = getattr(agent_os_runtime.kernel, "llm_router", None)
+    if router is None:
+        router = LLMRouter(agent_os_runtime.kernel)
+        agent_os_runtime.kernel.attach_llm_router(router)
+    return router
+
+
 app = FastAPI(title=PRODUCT_PROFILE.app_title, version=APP_VERSION)
 
 app.add_middleware(
@@ -226,6 +237,14 @@ async def disable_static_cache(request, call_next):
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(str(static_dir / "index.html"))
+
+
+@app.on_event("startup")
+async def startup_discover_agents() -> None:
+    try:
+        await get_llm_router().discover_agents(force=False)
+    except Exception as exc:
+        print(f"[startup] discover_agents skipped: {exc}")
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -840,6 +859,22 @@ def list_sessions(limit: int = 50) -> SessionListResponse:
     return SessionListResponse(sessions=[SessionListItem(**row) for row in rows])
 
 
+@app.get("/api/agents")
+def list_independent_agents() -> dict[str, Any]:
+    router = get_llm_router()
+    _run_coro_sync(router.discover_agents(force=False))
+    return {"ok": True, "count": len(router.list_agents()), "agents": router.list_agents()}
+
+
+@app.post("/api/agents/{name}/reload")
+def reload_independent_agent(name: str) -> dict[str, Any]:
+    router = get_llm_router()
+    result = _run_coro_sync(router.reload_single_agent(name))
+    if not bool(result.get("ok")):
+        raise HTTPException(status_code=404, detail=str(result.get("error") or "reload failed"))
+    return result
+
+
 @app.post("/api/upload", response_model=UploadResponse)
 async def upload(file: UploadFile = File(...)) -> UploadResponse:
     if not file.filename:
@@ -881,7 +916,7 @@ def clear_stats() -> ClearStatsResponse:
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    return _process_chat_request(req)
+    return _process_chat_request_minimal(req)
 
 
 def _resolve_execution_mode(requested_mode: str | None) -> str:
@@ -1088,6 +1123,129 @@ def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: 
         progress_cb({"event": event, **payload})
     except Exception:
         pass
+
+
+def _run_coro_sync(coro):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    raise RuntimeError("Cannot run sync coroutine bridge inside an active event loop")
+
+
+def _process_chat_request_minimal(
+    req: ChatRequest, progress_cb: Callable[[dict[str, Any]], None] | None = None
+) -> ChatResponse:
+    auth_summary = OpenAIAuthManager(config).auth_summary()
+    if not bool(auth_summary.get("available")):
+        raise HTTPException(status_code=500, detail=str(auth_summary.get("reason") or "OpenAI credentials are required"))
+
+    run_id = str(uuid.uuid4())
+    _emit_progress(progress_cb, "stage", code="backend_start", detail=f"llm_router 已接收请求。run_id={run_id}", run_id=run_id)
+    seed_session = session_store.load_or_create(req.session_id)
+    session_id = str(seed_session.get("id") or "")
+    if not session_id:
+        raise HTTPException(status_code=500, detail="Session create failed")
+
+    queue_wait_ms = 0
+    with run_queue.run_slot(session_id) as ticket:
+        queue_wait_ms = int(ticket.wait_ms)
+        session = session_store.load_or_create(session_id)
+        history_turns = list(session.get("turns", []))
+        router = get_llm_router()
+        _emit_progress(progress_cb, "stage", code="routing", detail="中央调度器正在规划执行步骤。", run_id=run_id)
+        plan = _run_coro_sync(router.route(req.message, history_turns))
+        _emit_progress(progress_cb, "stage", code="executing", detail="独立 Agent 正在执行任务。", run_id=run_id)
+        execution = _run_coro_sync(router.execute(plan))
+        text = _run_coro_sync(router.summarize(user_query=req.message, plan=plan, execution=execution, history=history_turns))
+        text = str(text or "").strip() or "任务执行完成。"
+
+        execution_plan = [
+            f"{index}. {str(step.get('agent') or '')}: {str(step.get('task') or '')}"
+            for index, step in enumerate(list(plan.get("steps") or []), start=1)
+            if isinstance(step, dict)
+        ]
+        execution_trace = [f"调度方案: {str(plan.get('plan') or 'llm_router_plan')}"]
+        for item in list(execution.get("results") or []):
+            if not isinstance(item, dict):
+                continue
+            agent_name = str(item.get("agent") or "unknown")
+            status = str(item.get("status") or "unknown")
+            if status == "success":
+                execution_trace.append(f"[{agent_name}] success")
+            else:
+                execution_trace.append(f"[{agent_name}] failed: {str(item.get('error') or '')}")
+
+        agent_panels = []
+        for item in list(execution.get("results") or []):
+            if not isinstance(item, dict):
+                continue
+            agent_panels.append(
+                {
+                    "role": str(item.get("agent") or "agent"),
+                    "title": str(item.get("agent") or "Agent"),
+                    "kind": "agent",
+                    "summary": str(item.get("status") or ""),
+                    "bullets": [str(item.get("result") or item.get("error") or "")[:240]],
+                }
+            )
+
+        session_store.append_turn(session, role="user", text=req.message.strip())
+        session_store.append_turn(session, role="assistant", text=text)
+        session_store.save(session)
+
+        selected_model = req.settings.model or str(get_llm_router().model)
+        token_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "llm_calls": 0,
+            "estimated_cost_usd": 0.0,
+            "pricing_known": False,
+            "pricing_model": selected_model,
+            "input_price_per_1m": None,
+            "output_price_per_1m": None,
+        }
+        stats_snapshot = token_stats_store.add_usage(
+            session_id=session["id"],
+            usage=token_usage,
+            model=selected_model,
+        )
+        session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
+        global_totals_raw = stats_snapshot.get("totals", {})
+        response = ChatResponse(
+            session_id=session["id"],
+            run_id=run_id,
+            effective_model=selected_model,
+            queue_wait_ms=queue_wait_ms,
+            text=text,
+            tool_events=[],
+            execution_plan=execution_plan,
+            execution_trace=execution_trace,
+            debug_flow=[],
+            agent_panels=agent_panels,
+            active_roles=[str(step.get("agent") or "") for step in list(plan.get("steps") or []) if isinstance(step, dict)],
+            current_role=str(list(plan.get("steps") or [{}])[0].get("agent") or "") if list(plan.get("steps") or []) else None,
+            role_states=[],
+            answer_bundle={},
+            attachment_context_mode="none",
+            effective_attachment_ids=[],
+            auto_linked_attachment_ids=[],
+            auto_linked_attachment_names=[],
+            missing_attachment_ids=[],
+            route_state_scope="none",
+            attachment_context_key="",
+            token_usage=TokenUsage(**token_usage),
+            session_token_totals=TokenTotals(**session_totals_raw),
+            global_token_totals=TokenTotals(**global_totals_raw),
+            selected_business_module="llm_router_core",
+            kernel_routing={"mode": "llm_router", "plan": plan},
+            business_result={"plan": plan, "execution": execution},
+            turn_count=len(session.get("turns", [])),
+            summarized=False,
+        )
+        _emit_progress(progress_cb, "stage", code="ready", detail="llm_router 返回完成。", run_id=run_id)
+        return response
 
 
 def _process_chat_request(
@@ -1519,7 +1677,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
 
         def worker() -> None:
             try:
-                response = _process_chat_request(req, progress_cb=emit)
+                response = _process_chat_request_minimal(req, progress_cb=emit)
                 events.put({"event": "final", "payload": {"response": response.model_dump()}})
             except HTTPException as exc:
                 events.put(

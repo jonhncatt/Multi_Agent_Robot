@@ -4,12 +4,47 @@
 
 [English README](README.en.md)
 
-[![Regression CI](https://github.com/jonhncatt/Multi_Agent_Robot/actions/workflows/regression-ci.yml/badge.svg?branch=main)](https://github.com/jonhncatt/Multi_Agent_Robot/actions/workflows/regression-ci.yml)
-[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](requirements.txt)
-[![FastAPI](https://img.shields.io/badge/FastAPI-app-009688.svg)](https://fastapi.tiangolo.com/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+## 核心定位（最终版）
 
-`Multi_Agent_Robot` 是一个本地 Agent OS 风格系统：底盘稳定、模块可插拔、工具链可演进。
+`Multi_Agent_Robot` 现在采用 **极简主核架构**：
+
+- 一个稳定 Kernel（启动、上下文、状态）
+- 一个 LLM 中央调度器（`app/kernel/llm_router.py`）
+- 12 个完全独立的 Agent 插件（`app/agents/*_agent`）
+
+目标是：**层级最少、代码最少、维护最简单、单 Agent 故障不影响全局**。
+
+## 独立 Agent 列表（12）
+
+1. worker_agent
+2. researcher_agent
+3. planner_agent
+4. critic_agent
+5. executor_agent
+6. summarizer_agent
+7. coder_agent
+8. reviewer_agent
+9. coordinator_agent
+10. tool_user_agent
+11. office_specialist_agent
+12. navigator_agent
+
+每个 Agent 目录只包含：
+
+- `agent.py`：统一入口 `handle_task`
+- `manifest.json`：能力描述与版本
+
+## 目录（简化视角）
+
+```text
+app/
+├── agents/                 # 12 independent agents
+├── kernel/
+│   ├── host.py             # stable kernel host
+│   └── llm_router.py       # central LLM router
+├── api/
+└── main.py                 # FastAPI endpoints
+```
 
 ## 快速启动
 
@@ -23,12 +58,17 @@ cp .env.example .env
 ./run.sh
 ```
 
-主界面：<http://127.0.0.1:8080>  
-实验界面：`./run-role-agent-lab.sh` -> <http://127.0.0.1:8081>
+访问：<http://127.0.0.1:8080>
 
-## LLM Provider 配置（通用）
+## 关键 API
 
-从现在开始，推荐使用通用命名的环境变量：
+- `POST /api/chat`：走 LLM 中央调度 + 独立 Agent 执行
+- `POST /api/chat/stream`：流式返回
+- `GET /api/agents`：查看已加载 Agent
+- `POST /api/agents/{name}/reload`：热重载单 Agent
+- `GET /api/health`：平台健康状态
+
+## LLM 环境变量（通用）
 
 ```env
 OFFICETOOL_LLM_PROVIDER=openai
@@ -36,40 +76,17 @@ OFFICETOOL_LLM_AUTH_MODE=auto
 OFFICETOOL_LLM_API_KEY=<YOUR_API_KEY>
 OFFICETOOL_LLM_BASE_URL=https://api.openai.com/v1
 OFFICETOOL_LLM_MODEL=gpt-5.1-chat
+OFFICETOOL_ROUTER_MODEL=gpt-4o-mini
 ```
 
 说明：
-- 当前主链路支持 OpenAI-compatible API 与 Codex auth。
-- 旧变量（如 `OPENAI_API_KEY`、`OFFICETOOL_OPENAI_*`）仍保留兼容。
-- 未配置 API key 或 Codex auth 时，页面可打开，但 `/api/chat` 无法正常返回模型结果。
 
-## 界面
+- 支持 OpenAI-compatible 与 Codex auth。
+- 若未配置可用凭据，`/api/chat` 无法返回真实模型结果。
 
-### Multi_Agent_Robot
-![Multi_Agent_Robot home](docs/assets/screenshots/kernel_robot_home.png)
+## 开发说明
 
-### Multi_Agent_Robot Lab
-![Multi_Agent_Robot Lab home](docs/assets/screenshots/role_agent_lab_home.png)
-
-## 常用命令
-
-- 主产品：`./run.sh` 或 `./run-multi-agent-robot.sh`
-- 兼容入口：`./run-kernel-robot.sh`
-- 最小 smoke：`python scripts/demo_minimal_agent_os.py --check`
-- 回归测试：`pytest`
-
-## 项目结构（简版）
-
-- `app/`: Web UI、API、内核、模块装配
-- `packages/`: 共享 runtime 与模块边界
-- `scripts/`: demo 与运行脚本
-- `tests/`: 回归测试
-- `docs/`: 架构、模块、运维与路线图
-
-## 更多文档
-
-- 模块接入：`docs/modules/module_integration_guide.md`
-- 平台指标：`docs/operations/platform_metrics.md`
-- 进化方向（2026）：`docs/roadmap/evolution_direction_2026.md`
-- Swarm 路线图：`docs/swarm-roadmap.md`
+- 新增/替换 Agent：只改 `app/agents/<name>_agent/`。
+- Agent 热插拔：修改后调用 `POST /api/agents/{name}/reload`。
+- 不需要改 Kernel 主链路，即可演进单个 Agent。
 
