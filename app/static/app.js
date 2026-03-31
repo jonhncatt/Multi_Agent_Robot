@@ -24,13 +24,11 @@ const state = {
   workspaceView: null,
   chatInfoOpen: false,
   sidebarSessionsOpen: false,
-  panelLayout: { leftWidth: 280, rightWidth: 320, leftCollapsed: false, rightCollapsed: false },
 };
 const SESSION_STORAGE_KEY = "officetool.session_id";
 const RUNTIME_VIEW_STORAGE_KEY = "officetool.runtime_view";
 const WORKSPACE_VIEW_STORAGE_KEY = "officetool.workspace_view";
 const CHAT_INFO_STORAGE_KEY = "officetool.chat_info_open";
-const PANEL_LAYOUT_STORAGE_KEY = "officetool.panel_layout";
 const RECENT_COMMANDS_STORAGE_KEY = "officetool.recent_commands";
 
 const chatList = document.getElementById("chatList");
@@ -53,11 +51,6 @@ const sidebarSessionsToggleIcon = document.getElementById("sidebarSessionsToggle
 const tokenStatsView = document.getElementById("tokenStatsView");
 const clearStatsBtn = document.getElementById("clearStatsBtn");
 const appShell = document.getElementById("appShell");
-const controlRail = document.getElementById("controlRail");
-const workspaceShell = document.getElementById("workspaceShell");
-const opsRail = document.getElementById("opsRail");
-const leftRailResizer = document.getElementById("leftRailResizer");
-const rightRailResizer = document.getElementById("rightRailResizer");
 const appVersionView = document.getElementById("appVersionView");
 const productTitleView = document.getElementById("productTitle");
 const productHintView = document.getElementById("productHint");
@@ -159,12 +152,6 @@ const RUN_FLOW_STEPS = [
   { id: "done", label: "5. 完成" },
 ];
 const PANEL_DEBUG_STORAGE_KEY = "officetool.panel_debug";
-const LAYOUT_DEFAULTS = {
-  leftWidth: 280,
-  rightWidth: 320,
-  leftCollapsed: false,
-  rightCollapsed: false,
-};
 const LOG_FILTERS = [
   { id: "all", label: "全部" },
   { id: "routing", label: "Routing" },
@@ -1633,128 +1620,6 @@ function setRuntimeViewMode(mode) {
     // Ignore storage failures.
   }
   applyRuntimeViewMode(state.lastHealth || {}, mode);
-}
-
-function normalizePanelLayout(raw = {}) {
-  const leftWidth = Number(raw?.leftWidth || LAYOUT_DEFAULTS.leftWidth);
-  const rightWidth = Number(raw?.rightWidth || LAYOUT_DEFAULTS.rightWidth);
-  return {
-    leftWidth: Math.max(220, Math.min(420, Number.isFinite(leftWidth) ? leftWidth : LAYOUT_DEFAULTS.leftWidth)),
-    rightWidth: Math.max(260, Math.min(420, Number.isFinite(rightWidth) ? rightWidth : LAYOUT_DEFAULTS.rightWidth)),
-    leftCollapsed: Boolean(raw?.leftCollapsed),
-    rightCollapsed: Boolean(raw?.rightCollapsed),
-  };
-}
-
-function getStoredPanelLayout() {
-  try {
-    const raw = window.localStorage.getItem(PANEL_LAYOUT_STORAGE_KEY);
-    if (!raw) return { ...LAYOUT_DEFAULTS };
-    return normalizePanelLayout(JSON.parse(raw));
-  } catch {
-    return { ...LAYOUT_DEFAULTS };
-  }
-}
-
-function persistPanelLayout() {
-  try {
-    window.localStorage.setItem(PANEL_LAYOUT_STORAGE_KEY, JSON.stringify(normalizePanelLayout(state.panelLayout)));
-  } catch {
-    // Ignore storage failures.
-  }
-}
-
-function applyPanelLayout() {
-  if (!appShell) return;
-  const layout = normalizePanelLayout(state.panelLayout || LAYOUT_DEFAULTS);
-  state.panelLayout = layout;
-  appShell.style.setProperty("--left-rail-width", layout.leftCollapsed ? "0px" : `${layout.leftWidth}px`);
-  appShell.style.setProperty("--right-rail-width", layout.rightCollapsed ? "0px" : `${layout.rightWidth}px`);
-  appShell.classList.toggle("left-collapsed", layout.leftCollapsed);
-  appShell.classList.toggle("right-collapsed", layout.rightCollapsed);
-}
-
-function setRailCollapsed(side, collapsed) {
-  if (!state.panelLayout) state.panelLayout = { ...LAYOUT_DEFAULTS };
-  if (side === "left") {
-    state.panelLayout.leftCollapsed = Boolean(collapsed);
-  } else if (side === "right") {
-    state.panelLayout.rightCollapsed = Boolean(collapsed);
-  }
-  applyPanelLayout();
-  persistPanelLayout();
-}
-
-function setRailWidth(side, width) {
-  if (!state.panelLayout) state.panelLayout = { ...LAYOUT_DEFAULTS };
-  if (side === "left") {
-    state.panelLayout.leftWidth = Math.max(220, Math.min(420, Number(width || LAYOUT_DEFAULTS.leftWidth)));
-    state.panelLayout.leftCollapsed = false;
-  } else if (side === "right") {
-    state.panelLayout.rightWidth = Math.max(260, Math.min(420, Number(width || LAYOUT_DEFAULTS.rightWidth)));
-    state.panelLayout.rightCollapsed = false;
-  }
-  applyPanelLayout();
-  persistPanelLayout();
-}
-
-function setupRailResizer(handle, side) {
-  if (!handle || !appShell) return;
-
-  const adjustByKey = (delta) => {
-    const layout = normalizePanelLayout(state.panelLayout || LAYOUT_DEFAULTS);
-    const next = side === "left" ? layout.leftWidth + delta : layout.rightWidth - delta;
-    setRailWidth(side, next);
-  };
-
-  handle.addEventListener("dblclick", () => {
-    const layout = normalizePanelLayout(state.panelLayout || LAYOUT_DEFAULTS);
-    const collapsed = side === "left" ? layout.leftCollapsed : layout.rightCollapsed;
-    setRailCollapsed(side, !collapsed);
-  });
-
-  handle.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      adjustByKey(-24);
-    } else if (event.key === "ArrowRight") {
-      event.preventDefault();
-      adjustByKey(24);
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      handle.dispatchEvent(new MouseEvent("dblclick"));
-    }
-  });
-
-  handle.addEventListener("pointerdown", (event) => {
-    if (window.innerWidth <= 1180) return;
-    event.preventDefault();
-    const layout = normalizePanelLayout(state.panelLayout || LAYOUT_DEFAULTS);
-    if (side === "left" && layout.leftCollapsed) setRailCollapsed("left", false);
-    if (side === "right" && layout.rightCollapsed) setRailCollapsed("right", false);
-    const latestLayout = normalizePanelLayout(state.panelLayout || LAYOUT_DEFAULTS);
-    const startX = event.clientX;
-    const startWidth = side === "left" ? latestLayout.leftWidth : latestLayout.rightWidth;
-    handle.classList.add("is-dragging");
-    handle.setPointerCapture?.(event.pointerId);
-
-    const onMove = (moveEvent) => {
-      const delta = moveEvent.clientX - startX;
-      const nextWidth = side === "left" ? startWidth + delta : startWidth - delta;
-      setRailWidth(side, nextWidth);
-    };
-
-    const finish = () => {
-      handle.classList.remove("is-dragging");
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", finish);
-      window.removeEventListener("pointercancel", finish);
-    };
-
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", finish, { once: true });
-    window.addEventListener("pointercancel", finish, { once: true });
-  });
 }
 
 function loadRecentCommands() {
@@ -4750,11 +4615,7 @@ if (deleteSessionBtn) {
   state.chatInfoOpen = false;
   setChatInfoOpen(state.chatInfoOpen, { persist: false });
   setSidebarSessionsOpen(false);
-  state.panelLayout = getStoredPanelLayout();
-  applyPanelLayout();
   loadRecentCommands();
-  setupRailResizer(leftRailResizer, "left");
-  setupRailResizer(rightRailResizer, "right");
   setRunStage("空闲", "等待发送请求", null, "idle");
   updateDrillAvailability();
   updateEvalAvailability();

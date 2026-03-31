@@ -3450,6 +3450,8 @@ body.theme-openclaw [hidden] {
 
 body.theme-openclaw .app-shell--openclaw {
   max-width: none;
+  width: 100%;
+  margin: 0;
   min-height: 100vh;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   gap: 0;
@@ -3894,9 +3896,7 @@ body.theme-openclaw .workspace-view {
 }
 
 body.theme-openclaw .workspace-view--chat {
-  position: relative;
   min-height: 0;
-  grid-template-rows: minmax(0, 1fr);
 }
 
 body.theme-openclaw .workspace-section-head {
@@ -4255,7 +4255,7 @@ body.theme-openclaw .command-item {
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 640px) {
   body.theme-openclaw .app-shell--openclaw {
     grid-template-columns: 1fr;
   }
@@ -4310,7 +4310,7 @@ body.theme-openclaw .command-item {
   }
 }
 
-@media (max-width: 560px) {
+@media (max-width: 480px) {
   body.theme-openclaw .sidebar-nav {
     grid-template-columns: 1fr;
   }
