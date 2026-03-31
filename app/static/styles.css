@@ -3710,7 +3710,7 @@ body.theme-openclaw .workspace-shell--openclaw {
 
 body.theme-openclaw .workspace-topbar {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(360px, auto) auto;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
   gap: 16px;
   align-items: center;
   padding: 16px 18px;
@@ -3741,10 +3741,9 @@ body.theme-openclaw .workspace-topbar .hint {
 }
 
 body.theme-openclaw .topbar-status-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  display: flex;
   gap: 10px;
-  width: min(620px, 100%);
+  width: auto;
 }
 
 body.theme-openclaw .topbar-chip {
@@ -3764,12 +3763,34 @@ body.theme-openclaw .version-badge {
   color: var(--ink);
 }
 
+body.theme-openclaw .topbar-chip--build,
+body.theme-openclaw .topbar-chip--session {
+  display: none;
+}
+
 body.theme-openclaw .topbar-command-button {
   min-width: 128px;
   background: rgba(255, 255, 255, 0.88);
   color: var(--ink);
   border: 1px solid var(--line);
   box-shadow: none;
+}
+
+body.theme-openclaw .topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+body.theme-openclaw .topbar-command-button--ghost {
+  background: rgba(247, 247, 245, 0.92);
+}
+
+body.theme-openclaw .topbar-command-button--ghost.is-active {
+  background: rgba(245, 226, 223, 0.9);
+  border-color: rgba(232, 143, 132, 0.28);
+  color: var(--accent-dark);
 }
 
 body.theme-openclaw .workspace-views {
@@ -3783,11 +3804,9 @@ body.theme-openclaw .workspace-view {
 }
 
 body.theme-openclaw .workspace-view--chat {
-  grid-template-rows: minmax(0, 1fr) auto;
-}
-
-body.theme-openclaw .workspace-view--chat .compact-summary-strip {
-  display: none;
+  position: relative;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 body.theme-openclaw .workspace-section-head {
@@ -4090,7 +4109,7 @@ body.theme-openclaw .command-item {
 
 @media (max-width: 1380px) {
   body.theme-openclaw .workspace-topbar {
-    grid-template-columns: minmax(180px, 1fr) minmax(320px, auto) auto;
+    grid-template-columns: minmax(180px, 1fr) auto auto;
   }
 }
 
@@ -4118,6 +4137,16 @@ body.theme-openclaw .command-item {
     padding: 14px;
   }
 
+  body.theme-openclaw .workspace-topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  body.theme-openclaw .topbar-status-strip {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
   body.theme-openclaw .control-rail--openclaw {
     position: sticky;
     top: 14px;
@@ -4131,6 +4160,10 @@ body.theme-openclaw .command-item {
 
 @media (max-width: 760px) {
   body.theme-openclaw .app-shell--openclaw {
+    grid-template-columns: 1fr;
+  }
+
+  body.theme-openclaw .workspace-topbar {
     grid-template-columns: 1fr;
   }
 
@@ -4164,10 +4197,130 @@ body.theme-openclaw .command-item {
   body.theme-openclaw .bubble {
     max-width: 100%;
   }
+
+  body.theme-openclaw .topbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 @media (max-width: 560px) {
   body.theme-openclaw .sidebar-nav {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ========== Sidebar Drawer Chat Layout ========== */
+
+body.theme-openclaw .workspace-view--chat {
+  overflow: hidden;
+}
+
+body.theme-openclaw .chat-main-shell {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 16px;
+}
+
+body.theme-openclaw .chat-main-shell .chat-list,
+body.theme-openclaw .chat-main-shell .composer {
+  min-width: 0;
+}
+
+body.theme-openclaw .chat-main-shell .chat-list {
+  min-height: 0;
+}
+
+body.theme-openclaw .chat-info-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(23, 28, 35, 0.12);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+  z-index: 2;
+}
+
+body.theme-openclaw .workspace-view--chat.is-info-open .chat-info-backdrop {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+body.theme-openclaw .chat-info-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(336px, calc(100vw - 120px));
+  padding: 18px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 22px 50px rgba(17, 22, 28, 0.14);
+  backdrop-filter: blur(18px);
+  transform: translateX(calc(100% + 20px));
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 220ms ease,
+    opacity 180ms ease;
+  z-index: 3;
+}
+
+body.theme-openclaw .workspace-view--chat.is-info-open .chat-info-panel {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+body.theme-openclaw .chat-info-panel-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+body.theme-openclaw .chat-info-panel .compact-summary-strip {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+body.theme-openclaw .chat-info-panel .compact-summary-card {
+  padding: 16px;
+  display: grid;
+  gap: 8px;
+}
+
+body.theme-openclaw .chat-info-panel .compact-summary-value {
+  font-size: 18px;
+}
+
+body.theme-openclaw .chat-info-panel .compact-summary-grid {
+  grid-template-columns: 1fr;
+}
+
+@media (max-width: 1200px) {
+  body.theme-openclaw .chat-info-panel {
+    width: min(320px, calc(100vw - 56px));
+  }
+}
+
+@media (max-width: 760px) {
+  body.theme-openclaw .chat-info-panel {
+    top: 8px;
+    right: 8px;
+    bottom: 8px;
+    width: min(320px, calc(100vw - 32px));
+    border-radius: 20px;
   }
 }

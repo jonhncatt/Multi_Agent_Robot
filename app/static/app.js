@@ -22,11 +22,13 @@ const state = {
   commandPaletteIndex: 0,
   recentCommands: [],
   workspaceView: null,
+  chatInfoOpen: false,
   panelLayout: { leftWidth: 280, rightWidth: 320, leftCollapsed: false, rightCollapsed: false },
 };
 const SESSION_STORAGE_KEY = "officetool.session_id";
 const RUNTIME_VIEW_STORAGE_KEY = "officetool.runtime_view";
 const WORKSPACE_VIEW_STORAGE_KEY = "officetool.workspace_view";
+const CHAT_INFO_STORAGE_KEY = "officetool.chat_info_open";
 const PANEL_LAYOUT_STORAGE_KEY = "officetool.panel_layout";
 const RECENT_COMMANDS_STORAGE_KEY = "officetool.recent_commands";
 
@@ -56,11 +58,16 @@ const productTitleView = document.getElementById("productTitle");
 const productHintView = document.getElementById("productHint");
 const workspaceCurrentLabel = document.getElementById("workspaceCurrentLabel");
 const commandPaletteBtn = document.getElementById("commandPaletteBtn");
+const chatInfoToggleBtn = document.getElementById("chatInfoToggleBtn");
+const chatInfoCloseBtn = document.getElementById("chatInfoCloseBtn");
+const chatInfoPanel = document.getElementById("chatInfoPanel");
+const chatInfoBackdrop = document.getElementById("chatInfoBackdrop");
 const commandPalette = document.getElementById("commandPalette");
 const commandPaletteInput = document.getElementById("commandPaletteInput");
 const commandPaletteList = document.getElementById("commandPaletteList");
 const workspaceNavButtons = Array.from(document.querySelectorAll("[data-workspace-target]"));
 const workspaceViews = Array.from(document.querySelectorAll("[data-workspace-view]"));
+const chatWorkspaceView = document.querySelector('.workspace-view[data-workspace-view="chat"]');
 const platformStatusHeadline = document.getElementById("platformStatusHeadline");
 const platformStatusMeta = document.getElementById("platformStatusMeta");
 const platformStatusSignals = document.getElementById("platformStatusSignals");
@@ -776,6 +783,47 @@ function persistWorkspaceView(view) {
   }
 }
 
+function getStoredChatInfoOpen() {
+  try {
+    return String(window.localStorage.getItem(CHAT_INFO_STORAGE_KEY) || "").trim() === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistChatInfoOpen(open) {
+  try {
+    window.localStorage.setItem(CHAT_INFO_STORAGE_KEY, open ? "1" : "0");
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function setChatInfoOpen(open, { persist = true } = {}) {
+  const next = Boolean(open);
+  state.chatInfoOpen = next;
+
+  if (chatWorkspaceView) {
+    chatWorkspaceView.classList.toggle("is-info-open", next);
+  }
+  if (chatInfoPanel) {
+    chatInfoPanel.setAttribute("aria-hidden", next ? "false" : "true");
+  }
+  if (chatInfoBackdrop) {
+    chatInfoBackdrop.hidden = !next || state.workspaceView !== "chat";
+  }
+  if (chatInfoToggleBtn) {
+    chatInfoToggleBtn.hidden = state.workspaceView !== "chat";
+    chatInfoToggleBtn.classList.toggle("is-active", next);
+    chatInfoToggleBtn.setAttribute("aria-expanded", next ? "true" : "false");
+    chatInfoToggleBtn.textContent = next ? "收起信息" : "侧面信息";
+  }
+
+  if (persist) {
+    persistChatInfoOpen(next);
+  }
+}
+
 function setWorkspaceView(view, { persist = true } = {}) {
   const next = isWorkspaceViewEnabled(view) ? normalizeWorkspaceView(view) : "chat";
   state.workspaceView = next;
@@ -796,6 +844,16 @@ function setWorkspaceView(view, { persist = true } = {}) {
 
   if (workspaceCurrentLabel) {
     workspaceCurrentLabel.textContent = WORKSPACE_VIEWS[next]?.label || "聊天";
+  }
+
+  if (chatInfoToggleBtn) {
+    chatInfoToggleBtn.hidden = next !== "chat";
+  }
+  if (chatInfoBackdrop) {
+    chatInfoBackdrop.hidden = next !== "chat" || !state.chatInfoOpen;
+  }
+  if (next === "chat") {
+    setChatInfoOpen(state.chatInfoOpen, { persist: false });
   }
 
   if (persist) {
@@ -2009,6 +2067,15 @@ function buildCommandPaletteItems() {
     { id: "eval-harness", title: "运行回归测试", meta: "调用 /api/evals/run", run: () => evalHarnessBtn?.click() },
     { id: "clear-stats", title: "清除 Token 统计", meta: "重置本地累计 token 统计", run: () => clearStatsBtn?.click() },
     { id: "open-chat", title: "打开聊天视图", meta: "回到默认极简对话页", run: () => setWorkspaceView("chat") },
+    {
+      id: "toggle-chat-info",
+      title: state.chatInfoOpen ? "收起侧面信息" : "打开侧面信息",
+      meta: "在聊天页查看平台、路由和质量摘要",
+      run: () => {
+        setWorkspaceView("chat");
+        setChatInfoOpen(!state.chatInfoOpen);
+      },
+    },
     { id: "open-control", title: "打开控制视图", meta: "查看模型、模式与请求参数", run: () => setWorkspaceView("control") },
     { id: "open-runtime", title: "打开运行视图", meta: "查看执行链路与结构化日志", run: () => setWorkspaceView("runtime") },
     { id: "open-modules", title: "打开模块视图", meta: "查看主核、模块与角色运行态", run: () => setWorkspaceView("modules") },
@@ -4549,6 +4616,21 @@ if (commandPaletteBtn) {
   commandPaletteBtn.addEventListener("click", () => openCommandPalette());
 }
 
+if (chatInfoToggleBtn) {
+  chatInfoToggleBtn.addEventListener("click", () => {
+    setWorkspaceView("chat");
+    setChatInfoOpen(!state.chatInfoOpen);
+  });
+}
+
+if (chatInfoCloseBtn) {
+  chatInfoCloseBtn.addEventListener("click", () => setChatInfoOpen(false));
+}
+
+if (chatInfoBackdrop) {
+  chatInfoBackdrop.addEventListener("click", () => setChatInfoOpen(false));
+}
+
 if (commandPalette) {
   commandPalette.addEventListener("click", (event) => {
     const target = event.target;
@@ -4631,6 +4713,8 @@ if (deleteSessionBtn) {
 (async function boot() {
   applyModePreset("general", false);
   restorePanelDebugMode();
+  state.chatInfoOpen = getStoredChatInfoOpen();
+  setChatInfoOpen(state.chatInfoOpen, { persist: false });
   state.panelLayout = getStoredPanelLayout();
   applyPanelLayout();
   loadRecentCommands();

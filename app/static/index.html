@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Multi_Agent_Robot</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260331c" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260331d" />
   </head>
   <body class="theme-openclaw" data-product-profile="multi_agent_robot">
     <div class="bg-shape bg1"></div>
@@ -111,48 +111,67 @@
               <span id="runStageText" class="runtime-head-text">等待发送请求</span>
             </div>
           </div>
-          <button id="commandPaletteBtn" class="topbar-command-button" type="button">快捷命令</button>
+          <div class="topbar-actions">
+            <button id="chatInfoToggleBtn" class="topbar-command-button topbar-command-button--ghost" type="button">
+              侧面信息
+            </button>
+            <button id="commandPaletteBtn" class="topbar-command-button" type="button">快捷命令</button>
+          </div>
         </header>
 
         <div class="workspace-views">
           <section class="workspace-view workspace-view--chat" data-workspace-view="chat">
-            <div class="compact-summary-strip">
-              <article class="compact-summary-card">
-                <div class="compact-summary-kicker">Platform</div>
-                <div id="platformStatusHeadline" class="compact-summary-value">等待健康数据</div>
-                <div id="platformStatusMeta" class="compact-summary-meta">主核、能力模块与执行环境尚未刷新。</div>
-                <div id="platformStatusSignals" class="compact-summary-note">等待实时运行摘要...</div>
-              </article>
+            <div class="chat-main-shell">
+              <div id="chatList" class="chat-list"></div>
 
-              <article class="compact-summary-card">
-                <div class="compact-summary-kicker">Routing</div>
-                <div id="moduleRouteHeadline" class="compact-summary-value">通用聊天默认走智能模块选择</div>
-                <div id="moduleRouteMeta" class="compact-summary-meta">显式 module_id / task_type 优先；通用 chat 会在 office 与 research 间选择。</div>
-                <div id="moduleRouteTags" class="hero-chip-row"></div>
-              </article>
-
-              <article class="compact-summary-card">
-                <div class="compact-summary-kicker">Quality</div>
-                <div id="qualityOverviewHeadline" class="compact-summary-value">等待运营摘要</div>
-                <div id="qualityOverviewMeta" class="compact-summary-meta">gate、smoke、replay sample 库将显示在这里。</div>
-                <div id="qualityOverviewGrid" class="compact-summary-grid"></div>
-              </article>
-            </div>
-
-            <div id="chatList" class="chat-list"></div>
-
-            <div class="composer">
-              <div id="dropZone" class="drop-zone">
-                <input id="fileInput" type="file" multiple />
-                <span>拖拽或点击上传图片、文档；附件会自动跟随当前会话发送。</span>
-              </div>
-              <div id="fileList" class="file-list"></div>
-              <textarea id="messageInput" placeholder="输入任务，例如：提炼文档结论、比较两张图片，再帮我检查本地项目状态。"></textarea>
-              <div class="field-hint">快捷键：Enter 发送，Shift+Enter 换行；支持 Ctrl/Cmd + V 直接粘贴截图上传。</div>
-              <div class="action-row">
-                <button id="sendBtn">发送</button>
+              <div class="composer">
+                <div id="dropZone" class="drop-zone">
+                  <input id="fileInput" type="file" multiple />
+                  <span>拖拽或点击上传图片、文档；附件会自动跟随当前会话发送。</span>
+                </div>
+                <div id="fileList" class="file-list"></div>
+                <textarea id="messageInput" placeholder="输入任务，例如：提炼文档结论、比较两张图片，再帮我检查本地项目状态。"></textarea>
+                <div class="field-hint">快捷键：Enter 发送，Shift+Enter 换行；支持 Ctrl/Cmd + V 直接粘贴截图上传。</div>
+                <div class="action-row">
+                  <button id="sendBtn">发送</button>
+                </div>
               </div>
             </div>
+
+            <button id="chatInfoBackdrop" class="chat-info-backdrop" type="button" hidden aria-label="关闭侧面信息"></button>
+
+            <aside id="chatInfoPanel" class="chat-info-panel" aria-label="侧面信息">
+              <div class="chat-info-panel-head">
+                <div>
+                  <div class="rail-kicker">Side Panel</div>
+                  <div class="rail-title">会话侧面信息</div>
+                </div>
+                <button id="chatInfoCloseBtn" class="secondary small" type="button">收起</button>
+              </div>
+
+              <div class="compact-summary-strip">
+                <article class="compact-summary-card">
+                  <div class="compact-summary-kicker">Platform</div>
+                  <div id="platformStatusHeadline" class="compact-summary-value">等待健康数据</div>
+                  <div id="platformStatusMeta" class="compact-summary-meta">主核、能力模块与执行环境尚未刷新。</div>
+                  <div id="platformStatusSignals" class="compact-summary-note">等待实时运行摘要...</div>
+                </article>
+
+                <article class="compact-summary-card">
+                  <div class="compact-summary-kicker">Routing</div>
+                  <div id="moduleRouteHeadline" class="compact-summary-value">通用聊天默认走智能模块选择</div>
+                  <div id="moduleRouteMeta" class="compact-summary-meta">显式 module_id / task_type 优先；通用 chat 会在 office 与 research 间选择。</div>
+                  <div id="moduleRouteTags" class="hero-chip-row"></div>
+                </article>
+
+                <article class="compact-summary-card">
+                  <div class="compact-summary-kicker">Quality</div>
+                  <div id="qualityOverviewHeadline" class="compact-summary-value">等待运营摘要</div>
+                  <div id="qualityOverviewMeta" class="compact-summary-meta">gate、smoke、replay sample 库将显示在这里。</div>
+                  <div id="qualityOverviewGrid" class="compact-summary-grid"></div>
+                </article>
+              </div>
+            </aside>
           </section>
 
           <section class="workspace-view" data-workspace-view="control" hidden>
@@ -607,6 +626,6 @@ Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Wo
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-    <script src="/static/app.js?v=20260331c"></script>
+    <script src="/static/app.js?v=20260331d"></script>
   </body>
 </html>
