@@ -40,6 +40,11 @@ def test_permission_gate_detects_cannot_upgrade_module_refusal() -> None:
     assert looks_like_permission_gate_text(text, request_requires_tools=True) is True
 
 
+def test_permission_gate_detects_cannot_autonomous_upgrade_refusal() -> None:
+    text = "我不能自主升级模块。"
+    assert looks_like_permission_gate_text(text, request_requires_tools=True) is True
+
+
 def test_request_likely_requires_tools_for_evolution_request() -> None:
     agent = _AgentStub()
     assert request_likely_requires_tools(
@@ -65,6 +70,16 @@ def test_request_likely_requires_tools_for_plain_upgrade_command() -> None:
     assert request_likely_requires_tools(
         agent,
         "你现在就去升级模块。",
+        [],
+        news_hints=("news", "新闻"),
+    ) is True
+
+
+def test_request_likely_requires_tools_for_upgrade_capability_question() -> None:
+    agent = _AgentStub()
+    assert request_likely_requires_tools(
+        agent,
+        "你现在能升级模块了吗？",
         [],
         news_hints=("news", "新闻"),
     ) is True

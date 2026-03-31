@@ -44,6 +44,13 @@ from tests.router.support import run_pipeline
             "code_lookup_with_tools",
         ),
         (
+            "你现在能升级模块了吗？",
+            [],
+            True,
+            "code_lookup",
+            "code_lookup_with_tools",
+        ),
+        (
             "Look up the repo function that handles retries",
             [],
             True,

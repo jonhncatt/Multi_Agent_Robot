@@ -179,16 +179,28 @@ def looks_like_permission_gate_text(
         "无法实现自我更新",
         "无法自我更新",
         "无法升级模块",
+        "无法自主升级模块",
         "不能升级模块",
+        "不能自主升级模块",
+        "不能自行升级模块",
+        "不能自主更新模块",
         "不能执行升级",
         "self-update is not allowed",
         "self update is not allowed",
         "cannot upgrade module",
+        "cannot autonomously upgrade modules",
+        "cannot upgrade modules autonomously",
+        "cannot self-upgrade modules",
+        "can't autonomously upgrade modules",
         "cannot implement self-update",
         "cannot design self-update",
         "cannot self-update",
     )
     if any(pattern in lowered for pattern in hard_refusal_patterns):
+        return True
+    if re.search(r"(不能|无法).{0,8}(自主|自行).{0,8}(升级|更新).{0,8}(模块)", lowered):
+        return True
+    if re.search(r"cannot.{0,24}(autonom|self).{0,24}(upgrade|update).{0,24}module", lowered):
         return True
     attachment_deferral_patterns = (
         "已完成解析", "已经完成解析", "已经完成了解析", "已解析完成", "已经解析完成", "无需调用工具",

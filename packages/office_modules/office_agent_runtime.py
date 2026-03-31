@@ -1499,6 +1499,8 @@ class OfficeAgent:
                     "禁止的是未经验证直接覆盖在线核心，不要笼统回复“这是禁止能力”。\n"
                     "这类升级任务优先调用 kernel_shadow_self_upgrade 或 kernel_shadow_pipeline / kernel_runtime_status，"
                     "不要改成泛化问答或反复追问。\n"
+                    "当用户问“现在能不能升级模块”时，先调用 kernel_runtime_status 给出现状；"
+                    "如果用户继续要求执行，就直接调用 kernel_shadow_self_upgrade，不要回答“不能自主升级模块”。\n"
                     "如果参数可合理推断（如标题、默认文件名、默认目录），请直接执行并在回复里说明假设；"
                     "不要因为参数不完整而连续多轮追问。\n"
                     "联网信息不足时，先自动换来源继续抓取；即使正文不完整，也先基于可访问到的标题/摘要给临时结论，"
@@ -2725,6 +2727,8 @@ class OfficeAgent:
                                 "并直接返回最终结果。",
                                 "不要再用“planner 约束只能输出计划/不能联网下载/禁止自我更新”做拒绝理由；",
                                 "涉及模块进化时应切到 shadow 修复与验证路径。",
+                                "如果用户在问“现在能不能升级模块”，先调 kernel_runtime_status 给出现状；",
+                                "如果用户要求执行升级，就直接调 kernel_shadow_self_upgrade。",
                             ]
                         )
                     else:
@@ -5386,9 +5390,16 @@ class OfficeAgent:
             "不能实现或设计任何形式的自我更新",
             "不能实现自我更新",
             "无法自我更新",
+            "不能自主升级模块",
+            "无法自主升级模块",
+            "不能自行升级模块",
+            "不能自主更新模块",
             "self-update is not allowed",
             "self update is not allowed",
             "cannot implement self-update",
+            "cannot autonomously upgrade modules",
+            "cannot upgrade modules autonomously",
+            "cannot self-upgrade modules",
             "forbidden capability",
             "没有可用的文件读取工具",
             "没有可用文件读取工具",
