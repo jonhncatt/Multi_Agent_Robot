@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Multi_Agent_Robot</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260331d" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260331f" />
   </head>
   <body class="theme-openclaw" data-product-profile="multi_agent_robot">
     <div class="bg-shape bg1"></div>
@@ -22,6 +22,8 @@
             <div class="sidebar-brand-meta">稳定底盘，按需装载模块与工具。</div>
           </div>
         </div>
+
+        <button id="newSessionBtn" class="sidebar-primary-action" type="button">新建会话</button>
 
         <nav class="sidebar-nav" aria-label="工作区导航">
           <div class="sidebar-group-label">工作区</div>
@@ -76,16 +78,21 @@
           </button>
         </nav>
 
-        <section class="sidebar-session-shell">
-          <div class="sidebar-session-head">
-            <div class="sidebar-group-label">会话</div>
+        <section id="sidebarSessionShell" class="sidebar-session-shell">
+          <button id="sidebarSessionsToggleBtn" class="sidebar-session-toggle" type="button" aria-expanded="false">
+            <span class="sidebar-session-toggle-copy">
+              <span class="sidebar-group-label">最近会话</span>
+              <span class="sidebar-session-toggle-note">按需展开</span>
+            </span>
+            <span id="sidebarSessionsToggleIcon" class="sidebar-session-toggle-icon">+</span>
+          </button>
+          <div id="sidebarSessionBody" class="sidebar-session-body" hidden>
             <div class="sidebar-session-actions">
               <button id="refreshSessionsBtn" class="secondary small" type="button">刷新</button>
               <button id="deleteSessionBtn" class="secondary small" type="button">删除</button>
             </div>
+            <div id="sessionHistoryView" class="session-history-list session-history-list--sidebar">加载中...</div>
           </div>
-          <button id="newSessionBtn" class="sidebar-primary-action" type="button">新建会话</button>
-          <div id="sessionHistoryView" class="session-history-list session-history-list--sidebar">加载中...</div>
         </section>
       </aside>
 
@@ -626,6 +633,6 @@ Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Wo
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-    <script src="/static/app.js?v=20260331d"></script>
+    <script src="/static/app.js?v=20260331f"></script>
   </body>
 </html>

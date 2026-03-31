@@ -23,6 +23,7 @@ const state = {
   recentCommands: [],
   workspaceView: null,
   chatInfoOpen: false,
+  sidebarSessionsOpen: false,
   panelLayout: { leftWidth: 280, rightWidth: 320, leftCollapsed: false, rightCollapsed: false },
 };
 const SESSION_STORAGE_KEY = "officetool.session_id";
@@ -45,6 +46,10 @@ const sessionIdView = document.getElementById("sessionIdView");
 const sessionHistoryView = document.getElementById("sessionHistoryView");
 const refreshSessionsBtn = document.getElementById("refreshSessionsBtn");
 const deleteSessionBtn = document.getElementById("deleteSessionBtn");
+const sidebarSessionShell = document.getElementById("sidebarSessionShell");
+const sidebarSessionBody = document.getElementById("sidebarSessionBody");
+const sidebarSessionsToggleBtn = document.getElementById("sidebarSessionsToggleBtn");
+const sidebarSessionsToggleIcon = document.getElementById("sidebarSessionsToggleIcon");
 const tokenStatsView = document.getElementById("tokenStatsView");
 const clearStatsBtn = document.getElementById("clearStatsBtn");
 const appShell = document.getElementById("appShell");
@@ -784,11 +789,7 @@ function persistWorkspaceView(view) {
 }
 
 function getStoredChatInfoOpen() {
-  try {
-    return String(window.localStorage.getItem(CHAT_INFO_STORAGE_KEY) || "").trim() === "1";
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 function persistChatInfoOpen(open) {
@@ -821,6 +822,24 @@ function setChatInfoOpen(open, { persist = true } = {}) {
 
   if (persist) {
     persistChatInfoOpen(next);
+  }
+}
+
+function setSidebarSessionsOpen(open) {
+  const next = Boolean(open);
+  state.sidebarSessionsOpen = next;
+
+  if (sidebarSessionShell) {
+    sidebarSessionShell.classList.toggle("is-open", next);
+  }
+  if (sidebarSessionBody) {
+    sidebarSessionBody.hidden = !next;
+  }
+  if (sidebarSessionsToggleBtn) {
+    sidebarSessionsToggleBtn.setAttribute("aria-expanded", next ? "true" : "false");
+  }
+  if (sidebarSessionsToggleIcon) {
+    sidebarSessionsToggleIcon.textContent = next ? "-" : "+";
   }
 }
 
@@ -3131,6 +3150,7 @@ async function refreshSessionHistory() {
 
       openBtn.addEventListener("click", async () => {
         await loadSessionById(sid, { announceMode: "switch" });
+        setSidebarSessionsOpen(false);
       });
 
       const renameBtn = document.createElement("button");
@@ -4575,6 +4595,7 @@ newSessionBtn.addEventListener("click", async () => {
   refreshFileList();
   clearChat();
   setWorkspaceView("chat");
+  setSidebarSessionsOpen(false);
   addBubble("system", "已新建会话。", null);
 });
 
@@ -4629,6 +4650,12 @@ if (chatInfoCloseBtn) {
 
 if (chatInfoBackdrop) {
   chatInfoBackdrop.addEventListener("click", () => setChatInfoOpen(false));
+}
+
+if (sidebarSessionsToggleBtn) {
+  sidebarSessionsToggleBtn.addEventListener("click", () => {
+    setSidebarSessionsOpen(!state.sidebarSessionsOpen);
+  });
 }
 
 if (commandPalette) {
@@ -4713,8 +4740,9 @@ if (deleteSessionBtn) {
 (async function boot() {
   applyModePreset("general", false);
   restorePanelDebugMode();
-  state.chatInfoOpen = getStoredChatInfoOpen();
+  state.chatInfoOpen = false;
   setChatInfoOpen(state.chatInfoOpen, { persist: false });
+  setSidebarSessionsOpen(false);
   state.panelLayout = getStoredPanelLayout();
   applyPanelLayout();
   loadRecentCommands();
