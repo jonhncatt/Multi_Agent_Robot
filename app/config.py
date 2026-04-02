@@ -2,12 +2,25 @@ from __future__ import annotations
 
 import os
 import platform as py_platform
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 
 def _split_csv(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _dedupe_keep_order(items: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        value = str(raw or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
 
 
 def _split_paths(raw: str) -> list[str]:
@@ -17,15 +30,40 @@ def _split_paths(raw: str) -> list[str]:
     return [item.strip() for item in merged.split(os.pathsep) if item.strip()]
 
 
-def _env(*keys: str, default: str | None = None) -> str | None:
+_CANONICAL_ENV_PREFIX = "MULTI_AGENT_TEAM_"
+
+
+def _env_key_candidates(key: str) -> list[str]:
+    normalized = str(key or "").strip()
+    if not normalized:
+        return []
+    upper = normalized.upper()
+    if upper.startswith(_CANONICAL_ENV_PREFIX):
+        return [upper]
+    return [normalized]
+
+
+def _expand_env_keys(keys: tuple[str, ...] | list[str]) -> list[str]:
+    expanded: list[str] = []
+    seen: set[str] = set()
     for key in keys:
+        for candidate in _env_key_candidates(key):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            expanded.append(candidate)
+    return expanded
+
+
+def _env(*keys: str, default: str | None = None) -> str | None:
+    for key in _expand_env_keys(keys):
         if key in os.environ:
             return os.environ.get(key)
     return default
 
 
 def _env_is_set(*keys: str) -> bool:
-    return any(key in os.environ for key in keys)
+    return any(key in os.environ for key in _expand_env_keys(keys))
 
 
 def _strip_optional_quotes(value: str) -> str:
@@ -34,24 +72,96 @@ def _strip_optional_quotes(value: str) -> str:
     return value
 
 
+_LLM_PROVIDER_PRESETS: dict[str, dict[str, str | bool]] = {
+    "openai": {
+        "api_key_env": "OPENAI_API_KEY",
+        "default_model": "gpt-5.1-chat",
+        "base_url": "",
+        "use_responses_api": False,
+    },
+    "deepseek": {
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "default_model": "deepseek-chat",
+        "base_url": "https://api.deepseek.com/v1",
+        "use_responses_api": False,
+    },
+    "qwen": {
+        "api_key_env": "DASHSCOPE_API_KEY",
+        "default_model": "qwen-plus",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "use_responses_api": False,
+    },
+    "moonshot": {
+        "api_key_env": "MOONSHOT_API_KEY",
+        "default_model": "moonshot-v1-8k",
+        "base_url": "https://api.moonshot.cn/v1",
+        "use_responses_api": False,
+    },
+    "openrouter": {
+        "api_key_env": "OPENROUTER_API_KEY",
+        "default_model": "openai/gpt-4o-mini",
+        "base_url": "https://openrouter.ai/api/v1",
+        "use_responses_api": False,
+    },
+    "groq": {
+        "api_key_env": "GROQ_API_KEY",
+        "default_model": "llama-3.3-70b-versatile",
+        "base_url": "https://api.groq.com/openai/v1",
+        "use_responses_api": False,
+    },
+    "ollama": {
+        "api_key_env": "OLLAMA_API_KEY",
+        "default_model": "llama3.2",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "use_responses_api": False,
+    },
+}
+
+_LLM_PROVIDER_ALIASES = {
+    "default": "openai",
+    "openai_compatible": "openai",
+}
+
+
+def _normalize_llm_provider(raw: str | None) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(raw or "").strip().lower()).strip("_")
+    if not normalized:
+        return "openai"
+    return _LLM_PROVIDER_ALIASES.get(normalized, normalized)
+
+
+def _provider_env_token(provider: str) -> str:
+    token = re.sub(r"[^a-z0-9]+", "_", str(provider or "").strip().lower()).strip("_")
+    if not token:
+        return "OPENAI"
+    return token.upper()
+
+
 def _should_dotenv_override(key: str) -> bool:
     normalized = key.strip().upper()
-    if normalized.startswith("OFFICETOOL_") or normalized.startswith("OFFCIATOOL_"):
+    if normalized.startswith(_CANONICAL_ENV_PREFIX):
         return True
     return normalized in {
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
-        "ANTHROPIC_API_KEY",
-        "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
-        "MISTRAL_API_KEY",
         "DEEPSEEK_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "MOONSHOT_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "OLLAMA_API_KEY",
         "SSL_CERT_FILE",
         "REQUESTS_CA_BUNDLE",
     }
 
 
 def _load_dotenv_if_present() -> None:
+    skip_raw = str(
+        os.environ.get("MULTI_AGENT_TEAM_SKIP_DOTENV") or ""
+    ).strip().lower()
+    if skip_raw in {"1", "true", "yes", "on"}:
+        return
+
     candidates = [
         (Path.cwd() / ".env").resolve(),
         (Path(__file__).resolve().parent.parent / ".env").resolve(),
@@ -120,6 +230,10 @@ class AppConfig:
     web_skip_tls_verify: bool
     web_ca_cert_path: str | None
     llm_provider: str
+    llm_primary_api_key_env: str
+    llm_api_key_env_keys: list[str]
+    llm_auth_file_api_key_keys: list[str]
+    llm_supports_codex_auth: bool
     openai_auth_mode: str
     openai_base_url: str | None
     openai_ca_cert_path: str | None
@@ -261,115 +375,101 @@ def get_access_roots(config: AppConfig) -> list[Path]:
 def load_config() -> AppConfig:
     _load_dotenv_if_present()
 
-    workspace_root = Path(_env("OFFICETOOL_WORKSPACE_ROOT", "OFFCIATOOL_WORKSPACE_ROOT", default=os.getcwd()) or os.getcwd()).resolve()
+    workspace_root = Path(_env("MULTI_AGENT_TEAM_WORKSPACE_ROOT", default=os.getcwd()) or os.getcwd()).resolve()
     modules_dir = Path(
         _env(
-            "OFFICETOOL_MODULES_DIR",
-            "OFFCIATOOL_MODULES_DIR",
+            "MULTI_AGENT_TEAM_MODULES_DIR",
             default=str(workspace_root / "app" / "modules"),
         )
         or str(workspace_root / "app" / "modules")
     ).resolve()
     capability_modules = _split_csv(
         _env(
-            "OFFICETOOL_CAPABILITY_MODULES",
-            "OFFCIATOOL_CAPABILITY_MODULES",
+            "MULTI_AGENT_TEAM_CAPABILITY_MODULES",
             default="packages.office_modules",
         )
         or "packages.office_modules"
     )
     runtime_dir = Path(
         _env(
-            "OFFICETOOL_RUNTIME_DIR",
-            "OFFCIATOOL_RUNTIME_DIR",
+            "MULTI_AGENT_TEAM_RUNTIME_DIR",
             default=str(workspace_root / "app" / "data" / "runtime"),
         )
         or str(workspace_root / "app" / "data" / "runtime")
     ).resolve()
     evolution_dir = Path(
         _env(
-            "OFFICETOOL_EVOLUTION_DIR",
-            "OFFCIATOOL_EVOLUTION_DIR",
+            "MULTI_AGENT_TEAM_EVOLUTION_DIR",
             default=str(workspace_root / "app" / "data" / "evolution"),
         )
         or str(workspace_root / "app" / "data" / "evolution")
     ).resolve()
     active_manifest_path = Path(
         _env(
-            "OFFICETOOL_ACTIVE_MANIFEST_PATH",
-            "OFFCIATOOL_ACTIVE_MANIFEST_PATH",
+            "MULTI_AGENT_TEAM_ACTIVE_MANIFEST_PATH",
             default=str(runtime_dir / "active_manifest.json"),
         )
         or str(runtime_dir / "active_manifest.json")
     ).resolve()
     shadow_manifest_path = Path(
         _env(
-            "OFFICETOOL_SHADOW_MANIFEST_PATH",
-            "OFFCIATOOL_SHADOW_MANIFEST_PATH",
+            "MULTI_AGENT_TEAM_SHADOW_MANIFEST_PATH",
             default=str(runtime_dir / "shadow_manifest.json"),
         )
         or str(runtime_dir / "shadow_manifest.json")
     ).resolve()
     rollback_pointer_path = Path(
         _env(
-            "OFFICETOOL_ROLLBACK_POINTER_PATH",
-            "OFFCIATOOL_ROLLBACK_POINTER_PATH",
+            "MULTI_AGENT_TEAM_ROLLBACK_POINTER_PATH",
             default=str(runtime_dir / "rollback_pointer.json"),
         )
         or str(runtime_dir / "rollback_pointer.json")
     ).resolve()
     module_health_path = Path(
         _env(
-            "OFFICETOOL_MODULE_HEALTH_PATH",
-            "OFFCIATOOL_MODULE_HEALTH_PATH",
+            "MULTI_AGENT_TEAM_MODULE_HEALTH_PATH",
             default=str(runtime_dir / "module_health.json"),
         )
         or str(runtime_dir / "module_health.json")
     ).resolve()
     overlay_profile_path = Path(
         _env(
-            "OFFICETOOL_OVERLAY_PROFILE_PATH",
-            "OFFCIATOOL_OVERLAY_PROFILE_PATH",
+            "MULTI_AGENT_TEAM_OVERLAY_PROFILE_PATH",
             default=str(evolution_dir / "overlay_profile.json"),
         )
         or str(evolution_dir / "overlay_profile.json")
     ).resolve()
     evolution_logs_dir = Path(
         _env(
-            "OFFICETOOL_EVOLUTION_LOGS_DIR",
-            "OFFCIATOOL_EVOLUTION_LOGS_DIR",
+            "MULTI_AGENT_TEAM_EVOLUTION_LOGS_DIR",
             default=str(evolution_dir / "logs"),
         )
         or str(evolution_dir / "logs")
     ).resolve()
     sessions_dir = Path(
         _env(
-            "OFFICETOOL_SESSIONS_DIR",
-            "OFFCIATOOL_SESSIONS_DIR",
+            "MULTI_AGENT_TEAM_SESSIONS_DIR",
             default=str(workspace_root / "app" / "data" / "sessions"),
         )
         or str(workspace_root / "app" / "data" / "sessions")
     ).resolve()
     uploads_dir = Path(
         _env(
-            "OFFICETOOL_UPLOADS_DIR",
-            "OFFCIATOOL_UPLOADS_DIR",
+            "MULTI_AGENT_TEAM_UPLOADS_DIR",
             default=str(workspace_root / "app" / "data" / "uploads"),
         )
         or str(workspace_root / "app" / "data" / "uploads")
     ).resolve()
     token_stats_path = Path(
         _env(
-            "OFFICETOOL_TOKEN_STATS_PATH",
-            "OFFCIATOOL_TOKEN_STATS_PATH",
+            "MULTI_AGENT_TEAM_TOKEN_STATS_PATH",
             default=str(workspace_root / "app" / "data" / "token_stats.json"),
         )
         or str(workspace_root / "app" / "data" / "token_stats.json")
     ).resolve()
     shadow_logs_dir = Path(
         _env(
-            "OFFICETOOL_SHADOW_LOGS_DIR",
-            "OFFCIATOOL_SHADOW_LOGS_DIR",
+            "MULTI_AGENT_TEAM_SHADOW_LOGS_DIR",
             default=str(workspace_root / "app" / "data" / "shadow_logs"),
         )
         or str(workspace_root / "app" / "data" / "shadow_logs")
@@ -386,44 +486,65 @@ def load_config() -> AppConfig:
     evolution_logs_dir.mkdir(parents=True, exist_ok=True)
 
     allowed_commands_raw = _env(
-        "OFFICETOOL_ALLOWED_COMMANDS",
-        "OFFCIATOOL_ALLOWED_COMMANDS",
+        "MULTI_AGENT_TEAM_ALLOWED_COMMANDS",
         default="pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv",
     ) or "pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv"
 
-    llm_provider = (
-        _env("OFFICETOOL_LLM_PROVIDER", "OFFCIATOOL_LLM_PROVIDER", default="openai") or "openai"
-    ).strip().lower()
-    if not llm_provider:
-        llm_provider = "openai"
-
-    openai_base_url = (
+    llm_provider = _normalize_llm_provider(
         _env(
-            "OFFICETOOL_LLM_BASE_URL",
-            "OFFCIATOOL_LLM_BASE_URL",
-            "OFFICETOOL_OPENAI_BASE_URL",
-            "OFFCIATOOL_OPENAI_BASE_URL",
-            "OPENAI_BASE_URL",
-            default="",
+            "MULTI_AGENT_TEAM_LLM_PROVIDER",
+            "MULTI_AGENT_TEAM_MODEL_PROVIDER",
+            default="openai",
         )
-        or ""
+        or "openai"
+    )
+    llm_provider_preset = _LLM_PROVIDER_PRESETS.get(llm_provider, {})
+    llm_provider_token = _provider_env_token(llm_provider)
+
+    preset_api_key_env = str(llm_provider_preset.get("api_key_env") or "").strip()
+    llm_api_key_env_keys = _dedupe_keep_order(
+        [
+            f"MULTI_AGENT_TEAM_PROVIDER_{llm_provider_token}_API_KEY",
+            "MULTI_AGENT_TEAM_LLM_API_KEY",
+            preset_api_key_env,
+            "OPENAI_API_KEY",
+        ]
+    )
+    llm_primary_api_key_env = llm_api_key_env_keys[0] if llm_api_key_env_keys else "OPENAI_API_KEY"
+    llm_auth_file_api_key_keys = _dedupe_keep_order(
+        [
+            f"MULTI_AGENT_TEAM_PROVIDER_{llm_provider_token}_API_KEY",
+            "MULTI_AGENT_TEAM_LLM_API_KEY",
+            preset_api_key_env,
+            "OPENAI_API_KEY",
+        ]
+    )
+
+    llm_base_url_keys = [
+        f"MULTI_AGENT_TEAM_PROVIDER_{llm_provider_token}_BASE_URL",
+        "MULTI_AGENT_TEAM_LLM_BASE_URL",
+        "MULTI_AGENT_TEAM_OPENAI_BASE_URL",
+        "OPENAI_BASE_URL",
+    ]
+    openai_base_url = (
+        _env(*llm_base_url_keys, default=str(llm_provider_preset.get("base_url") or "")) or ""
     ).strip() or None
     openai_auth_mode = (
         _env(
-            "OFFICETOOL_LLM_AUTH_MODE",
-            "OFFCIATOOL_LLM_AUTH_MODE",
-            "OFFICETOOL_OPENAI_AUTH_MODE",
-            "OFFCIATOOL_OPENAI_AUTH_MODE",
+            "MULTI_AGENT_TEAM_LLM_AUTH_MODE",
+            "MULTI_AGENT_TEAM_OPENAI_AUTH_MODE",
             default="auto",
         )
         or "auto"
     ).strip().lower()
     if openai_auth_mode not in {"auto", "api_key", "codex_auth"}:
         openai_auth_mode = "auto"
+    llm_supports_codex_auth = llm_provider == "openai"
+    if openai_auth_mode == "codex_auth" and not llm_supports_codex_auth:
+        openai_auth_mode = "api_key"
     codex_home = Path(
         _env(
-            "OFFICETOOL_CODEX_HOME",
-            "OFFCIATOOL_CODEX_HOME",
+            "MULTI_AGENT_TEAM_CODEX_HOME",
             "CODEX_HOME",
             default=str(Path.home() / ".codex"),
         )
@@ -431,34 +552,29 @@ def load_config() -> AppConfig:
     ).expanduser().resolve()
     codex_auth_file = Path(
         _env(
-            "OFFICETOOL_CODEX_AUTH_FILE",
-            "OFFCIATOOL_CODEX_AUTH_FILE",
+            "MULTI_AGENT_TEAM_CODEX_AUTH_FILE",
             default=str(codex_home / "auth.json"),
         )
         or str(codex_home / "auth.json")
     ).expanduser().resolve()
     codex_chatgpt_base_url = (
         _env(
-            "OFFICETOOL_CODEX_CHATGPT_BASE_URL",
-            "OFFCIATOOL_CODEX_CHATGPT_BASE_URL",
-            "OFFICETOOL_CHATGPT_BASE_URL",
-            "OFFCIATOOL_CHATGPT_BASE_URL",
+            "MULTI_AGENT_TEAM_CODEX_CHATGPT_BASE_URL",
+            "MULTI_AGENT_TEAM_CHATGPT_BASE_URL",
             default="https://chatgpt.com/backend-api/codex",
         )
         or "https://chatgpt.com/backend-api/codex"
     ).strip().rstrip("/")
     codex_refresh_url = (
         _env(
-            "OFFICETOOL_CODEX_REFRESH_URL",
-            "OFFCIATOOL_CODEX_REFRESH_URL",
+            "MULTI_AGENT_TEAM_CODEX_REFRESH_URL",
             default="https://auth.openai.com/oauth/token",
         )
         or "https://auth.openai.com/oauth/token"
     ).strip()
     codex_client_id = (
         _env(
-            "OFFICETOOL_CODEX_CLIENT_ID",
-            "OFFCIATOOL_CODEX_CLIENT_ID",
+            "MULTI_AGENT_TEAM_CODEX_CLIENT_ID",
             default="app_EMoamEEZ73f0CkXaXp7hrann",
         )
         or "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -466,26 +582,25 @@ def load_config() -> AppConfig:
     codex_refresh_interval_days = int(
         (
             _env(
-                "OFFICETOOL_CODEX_REFRESH_INTERVAL_DAYS",
-                "OFFCIATOOL_CODEX_REFRESH_INTERVAL_DAYS",
+                "MULTI_AGENT_TEAM_CODEX_REFRESH_INTERVAL_DAYS",
                 default="8",
             )
             or "8"
         ).strip()
     )
-    openai_ca_cert_path = (
-        _env("OFFICETOOL_CA_CERT_PATH", "OFFCIATOOL_CA_CERT_PATH", "SSL_CERT_FILE", default="") or ""
-    ).strip() or None
-    openai_temperature_raw = (
-        _env(
-            "OFFICETOOL_LLM_TEMPERATURE",
-            "OFFCIATOOL_LLM_TEMPERATURE",
-            "OFFICETOOL_TEMPERATURE",
-            "OFFCIATOOL_TEMPERATURE",
-            default="",
-        )
-        or ""
-    ).strip()
+    llm_ca_cert_keys = [
+        f"MULTI_AGENT_TEAM_PROVIDER_{llm_provider_token}_CA_CERT_PATH",
+        "MULTI_AGENT_TEAM_LLM_CA_CERT_PATH",
+        "MULTI_AGENT_TEAM_CA_CERT_PATH",
+        "SSL_CERT_FILE",
+    ]
+    openai_ca_cert_path = (_env(*llm_ca_cert_keys, default="") or "").strip() or None
+    llm_temperature_keys = [
+        f"MULTI_AGENT_TEAM_PROVIDER_{llm_provider_token}_TEMPERATURE",
+        "MULTI_AGENT_TEAM_LLM_TEMPERATURE",
+        "MULTI_AGENT_TEAM_TEMPERATURE",
+    ]
+    openai_temperature_raw = (_env(*llm_temperature_keys, default="") or "").strip()
     openai_temperature: float | None = None
     if openai_temperature_raw:
         try:
@@ -493,26 +608,24 @@ def load_config() -> AppConfig:
         except Exception:
             openai_temperature = None
 
+    default_use_responses = "true" if bool(llm_provider_preset.get("use_responses_api")) else "false"
+    llm_use_responses_keys = [
+        f"MULTI_AGENT_TEAM_PROVIDER_{llm_provider_token}_USE_RESPONSES_API",
+        "MULTI_AGENT_TEAM_LLM_USE_RESPONSES_API",
+        "MULTI_AGENT_TEAM_USE_RESPONSES_API",
+    ]
     use_responses_raw = (
-        _env(
-            "OFFICETOOL_LLM_USE_RESPONSES_API",
-            "OFFCIATOOL_LLM_USE_RESPONSES_API",
-            "OFFICETOOL_USE_RESPONSES_API",
-            "OFFCIATOOL_USE_RESPONSES_API",
-            default="false",
-        )
-        or "false"
+        _env(*llm_use_responses_keys, default=default_use_responses) or default_use_responses
     ).strip().lower()
     openai_use_responses_api = use_responses_raw in {"1", "true", "yes", "on"}
 
     model_fallbacks = _split_csv(
-        _env("OFFICETOOL_MODEL_FALLBACKS", "OFFCIATOOL_MODEL_FALLBACKS", default="") or ""
+        _env("MULTI_AGENT_TEAM_MODEL_FALLBACKS", default="") or ""
     )
     model_cooldown_base_sec = int(
         (
             _env(
-                "OFFICETOOL_MODEL_COOLDOWN_BASE_SEC",
-                "OFFCIATOOL_MODEL_COOLDOWN_BASE_SEC",
+                "MULTI_AGENT_TEAM_MODEL_COOLDOWN_BASE_SEC",
                 default="60",
             )
             or "60"
@@ -521,20 +634,18 @@ def load_config() -> AppConfig:
     model_cooldown_max_sec = int(
         (
             _env(
-                "OFFICETOOL_MODEL_COOLDOWN_MAX_SEC",
-                "OFFCIATOOL_MODEL_COOLDOWN_MAX_SEC",
+                "MULTI_AGENT_TEAM_MODEL_COOLDOWN_MAX_SEC",
                 default="3600",
             )
             or "3600"
         ).strip()
     )
 
-    allow_any_raw = (_env("OFFICETOOL_ALLOW_ANY_PATH", "OFFCIATOOL_ALLOW_ANY_PATH", default="false") or "false").strip().lower()
+    allow_any_raw = (_env("MULTI_AGENT_TEAM_ALLOW_ANY_PATH", default="false") or "false").strip().lower()
     allow_any_path = allow_any_raw in {"1", "true", "yes", "on"}
     sibling_access_raw = (
         _env(
-            "OFFICETOOL_ALLOW_WORKSPACE_SIBLING_ACCESS",
-            "OFFCIATOOL_ALLOW_WORKSPACE_SIBLING_ACCESS",
+            "MULTI_AGENT_TEAM_ALLOW_WORKSPACE_SIBLING_ACCESS",
             default="true",
         )
         or "true"
@@ -550,37 +661,35 @@ def load_config() -> AppConfig:
     default_extra_roots = [str(path) for path in default_extra_root_paths]
     extra_allowed_roots_source = (
         "env_override"
-        if _env_is_set("OFFICETOOL_EXTRA_ALLOWED_ROOTS", "OFFCIATOOL_EXTRA_ALLOWED_ROOTS")
+        if _env_is_set("MULTI_AGENT_TEAM_EXTRA_ALLOWED_ROOTS")
         else "platform_default"
     )
     extra_allowed_roots_raw = (
         _env(
-            "OFFICETOOL_EXTRA_ALLOWED_ROOTS",
-            "OFFCIATOOL_EXTRA_ALLOWED_ROOTS",
+            "MULTI_AGENT_TEAM_EXTRA_ALLOWED_ROOTS",
             default=os.pathsep.join(default_extra_roots),
         )
         or ""
     ).strip()
     extra_allowed_roots = [Path(item).resolve() for item in _split_paths(extra_allowed_roots_raw)]
 
-    web_domains_raw = (_env("OFFICETOOL_WEB_ALLOWED_DOMAINS", "OFFCIATOOL_WEB_ALLOWED_DOMAINS", default="") or "").strip()
+    web_domains_raw = (_env("MULTI_AGENT_TEAM_WEB_ALLOWED_DOMAINS", default="") or "").strip()
     web_allowed_domains = _split_csv(web_domains_raw)
     web_allow_all_domains = len(web_allowed_domains) == 0
 
     web_fetch_timeout_sec = int(
-        (_env("OFFICETOOL_WEB_FETCH_TIMEOUT_SEC", "OFFCIATOOL_WEB_FETCH_TIMEOUT_SEC", default="12") or "12").strip()
+        (_env("MULTI_AGENT_TEAM_WEB_FETCH_TIMEOUT_SEC", default="12") or "12").strip()
     )
     web_fetch_max_chars = int(
-        (_env("OFFICETOOL_WEB_FETCH_MAX_CHARS", "OFFCIATOOL_WEB_FETCH_MAX_CHARS", default="120000") or "120000").strip()
+        (_env("MULTI_AGENT_TEAM_WEB_FETCH_MAX_CHARS", default="120000") or "120000").strip()
     )
     web_skip_tls_verify_raw = (
-        _env("OFFICETOOL_WEB_SKIP_TLS_VERIFY", "OFFCIATOOL_WEB_SKIP_TLS_VERIFY", default="false") or "false"
+        _env("MULTI_AGENT_TEAM_WEB_SKIP_TLS_VERIFY", default="false") or "false"
     ).strip().lower()
     web_skip_tls_verify = web_skip_tls_verify_raw in {"1", "true", "yes", "on"}
     web_ca_cert_path = (
         _env(
-            "OFFICETOOL_WEB_CA_CERT_PATH",
-            "OFFCIATOOL_WEB_CA_CERT_PATH",
+            "MULTI_AGENT_TEAM_WEB_CA_CERT_PATH",
             default=(openai_ca_cert_path or ""),
         )
         or ""
@@ -598,8 +707,7 @@ def load_config() -> AppConfig:
     tool_result_soft_trim_chars = int(
         (
             _env(
-                "OFFICETOOL_TOOL_RESULT_SOFT_TRIM_CHARS",
-                "OFFCIATOOL_TOOL_RESULT_SOFT_TRIM_CHARS",
+                "MULTI_AGENT_TEAM_TOOL_RESULT_SOFT_TRIM_CHARS",
                 default="40000",
             )
             or "40000"
@@ -608,8 +716,7 @@ def load_config() -> AppConfig:
     tool_result_hard_clear_chars = int(
         (
             _env(
-                "OFFICETOOL_TOOL_RESULT_HARD_CLEAR_CHARS",
-                "OFFCIATOOL_TOOL_RESULT_HARD_CLEAR_CHARS",
+                "MULTI_AGENT_TEAM_TOOL_RESULT_HARD_CLEAR_CHARS",
                 default="180000",
             )
             or "180000"
@@ -618,8 +725,7 @@ def load_config() -> AppConfig:
     tool_result_head_chars = int(
         (
             _env(
-                "OFFICETOOL_TOOL_RESULT_HEAD_CHARS",
-                "OFFCIATOOL_TOOL_RESULT_HEAD_CHARS",
+                "MULTI_AGENT_TEAM_TOOL_RESULT_HEAD_CHARS",
                 default="8000",
             )
             or "8000"
@@ -628,8 +734,7 @@ def load_config() -> AppConfig:
     tool_result_tail_chars = int(
         (
             _env(
-                "OFFICETOOL_TOOL_RESULT_TAIL_CHARS",
-                "OFFCIATOOL_TOOL_RESULT_TAIL_CHARS",
+                "MULTI_AGENT_TEAM_TOOL_RESULT_TAIL_CHARS",
                 default="4000",
             )
             or "4000"
@@ -638,8 +743,7 @@ def load_config() -> AppConfig:
     tool_context_prune_keep_last = int(
         (
             _env(
-                "OFFICETOOL_TOOL_CONTEXT_PRUNE_KEEP_LAST",
-                "OFFCIATOOL_TOOL_CONTEXT_PRUNE_KEEP_LAST",
+                "MULTI_AGENT_TEAM_TOOL_CONTEXT_PRUNE_KEEP_LAST",
                 default="3",
             )
             or "3"
@@ -647,56 +751,56 @@ def load_config() -> AppConfig:
     )
     max_concurrent_runs = int(
         (
-            _env("OFFICETOOL_MAX_CONCURRENT_RUNS", "OFFCIATOOL_MAX_CONCURRENT_RUNS", default="2")
+            _env("MULTI_AGENT_TEAM_MAX_CONCURRENT_RUNS", default="2")
             or "2"
         ).strip()
     )
     run_queue_wait_notice_ms = int(
         (
             _env(
-                "OFFICETOOL_RUN_QUEUE_WAIT_NOTICE_MS",
-                "OFFCIATOOL_RUN_QUEUE_WAIT_NOTICE_MS",
+                "MULTI_AGENT_TEAM_RUN_QUEUE_WAIT_NOTICE_MS",
                 default="1500",
             )
             or "1500"
         ).strip()
     )
     execution_mode = (
-        _env("OFFICETOOL_EXECUTION_MODE", "OFFCIATOOL_EXECUTION_MODE", default="host") or "host"
+        _env("MULTI_AGENT_TEAM_EXECUTION_MODE", default="host") or "host"
     ).strip().lower()
     if execution_mode not in {"host", "docker"}:
         execution_mode = "host"
     docker_bin = (
-        _env("OFFICETOOL_DOCKER_BIN", "OFFCIATOOL_DOCKER_BIN", default="docker") or "docker"
+        _env("MULTI_AGENT_TEAM_DOCKER_BIN", default="docker") or "docker"
     ).strip()
     docker_image = (
-        _env("OFFICETOOL_DOCKER_IMAGE", "OFFCIATOOL_DOCKER_IMAGE", default="python:3.11-slim")
+        _env("MULTI_AGENT_TEAM_DOCKER_IMAGE", default="python:3.11-slim")
         or "python:3.11-slim"
     ).strip()
     docker_network = (
-        _env("OFFICETOOL_DOCKER_NETWORK", "OFFCIATOOL_DOCKER_NETWORK", default="none") or "none"
+        _env("MULTI_AGENT_TEAM_DOCKER_NETWORK", default="none") or "none"
     ).strip()
     docker_memory = (
-        _env("OFFICETOOL_DOCKER_MEMORY", "OFFCIATOOL_DOCKER_MEMORY", default="2g") or "2g"
+        _env("MULTI_AGENT_TEAM_DOCKER_MEMORY", default="2g") or "2g"
     ).strip()
     docker_cpus = (
-        _env("OFFICETOOL_DOCKER_CPUS", "OFFCIATOOL_DOCKER_CPUS", default="1.0") or "1.0"
+        _env("MULTI_AGENT_TEAM_DOCKER_CPUS", default="1.0") or "1.0"
     ).strip()
     docker_pids_limit = int(
-        (_env("OFFICETOOL_DOCKER_PIDS_LIMIT", "OFFCIATOOL_DOCKER_PIDS_LIMIT", default="256") or "256").strip()
+        (_env("MULTI_AGENT_TEAM_DOCKER_PIDS_LIMIT", default="256") or "256").strip()
     )
     docker_container_prefix = (
-        _env("OFFICETOOL_DOCKER_CONTAINER_PREFIX", "OFFCIATOOL_DOCKER_CONTAINER_PREFIX", default="officetool-sbx")
-        or "officetool-sbx"
+        _env("MULTI_AGENT_TEAM_DOCKER_CONTAINER_PREFIX", default="multi-agent-team-sbx")
+        or "multi-agent-team-sbx"
     ).strip()
     enable_session_tools_raw = (
-        _env("OFFICETOOL_ENABLE_SESSION_TOOLS", "OFFCIATOOL_ENABLE_SESSION_TOOLS", default="true") or "true"
+        _env("MULTI_AGENT_TEAM_ENABLE_SESSION_TOOLS", default="true") or "true"
     ).strip().lower()
     enable_session_tools = enable_session_tools_raw in {"1", "true", "yes", "on"}
     enable_shadow_logging_raw = (
-        _env("OFFICETOOL_ENABLE_SHADOW_LOGGING", "OFFCIATOOL_ENABLE_SHADOW_LOGGING", default="true") or "true"
+        _env("MULTI_AGENT_TEAM_ENABLE_SHADOW_LOGGING", default="true") or "true"
     ).strip().lower()
     enable_shadow_logging = enable_shadow_logging_raw in {"1", "true", "yes", "on"}
+    provider_default_model = str(llm_provider_preset.get("default_model") or "gpt-5.1-chat").strip() or "gpt-5.1-chat"
 
     return AppConfig(
         workspace_root=workspace_root,
@@ -728,6 +832,10 @@ def load_config() -> AppConfig:
         web_skip_tls_verify=web_skip_tls_verify,
         web_ca_cert_path=web_ca_cert_path,
         llm_provider=llm_provider,
+        llm_primary_api_key_env=llm_primary_api_key_env,
+        llm_api_key_env_keys=llm_api_key_env_keys,
+        llm_auth_file_api_key_keys=llm_auth_file_api_key_keys,
+        llm_supports_codex_auth=llm_supports_codex_auth,
         openai_auth_mode=openai_auth_mode,
         openai_base_url=openai_base_url,
         openai_ca_cert_path=openai_ca_cert_path,
@@ -740,38 +848,28 @@ def load_config() -> AppConfig:
         codex_client_id=codex_client_id or "app_EMoamEEZ73f0CkXaXp7hrann",
         codex_refresh_interval_days=max(1, min(30, codex_refresh_interval_days)),
         default_model=(
-            _env(
-                "OFFICETOOL_LLM_MODEL",
-                "OFFCIATOOL_LLM_MODEL",
-                "OFFICETOOL_DEFAULT_MODEL",
-                "OFFCIATOOL_DEFAULT_MODEL",
-                default="gpt-5.1-chat",
-            )
-            or "gpt-5.1-chat"
+            _env("MULTI_AGENT_TEAM_DEFAULT_MODEL", default=provider_default_model)
+            or provider_default_model
         ),
         model_fallbacks=model_fallbacks,
         model_cooldown_base_sec=max(10, min(3600, model_cooldown_base_sec)),
         model_cooldown_max_sec=max(60, min(86400, model_cooldown_max_sec)),
         summary_model=(
             _env(
-                "OFFICETOOL_LLM_SUMMARY_MODEL",
-                "OFFCIATOOL_LLM_SUMMARY_MODEL",
-                "OFFICETOOL_SUMMARY_MODEL",
-                "OFFICETOOL_SUMMARY_MODE",
-                "OFFCIATOOL_SUMMARY_MODEL",
-                "OFFCIATOOL_SUMMARY_MODE",
-                default="gpt-5.1-chat",
+                "MULTI_AGENT_TEAM_SUMMARY_MODEL",
+                "MULTI_AGENT_TEAM_SUMMARY_MODE",
+                default=provider_default_model,
             )
-            or "gpt-5.1-chat"
+            or provider_default_model
         ),
-        system_prompt=_env("OFFICETOOL_SYSTEM_PROMPT", "OFFCIATOOL_SYSTEM_PROMPT", default=DEFAULT_SYSTEM_PROMPT)
+        system_prompt=_env("MULTI_AGENT_TEAM_SYSTEM_PROMPT", default=DEFAULT_SYSTEM_PROMPT)
         or DEFAULT_SYSTEM_PROMPT,
         summary_trigger_turns=max(
             6,
             min(
                 10000,
                 int(
-                    _env("OFFICETOOL_SUMMARY_TRIGGER_TURNS", "OFFCIATOOL_SUMMARY_TRIGGER_TURNS", default="2000")
+                    _env("MULTI_AGENT_TEAM_SUMMARY_TRIGGER_TURNS", default="2000")
                     or "2000"
                 ),
             ),
@@ -780,7 +878,7 @@ def load_config() -> AppConfig:
             2,
             min(
                 2000,
-                int(_env("OFFICETOOL_MAX_CONTEXT_TURNS", "OFFCIATOOL_MAX_CONTEXT_TURNS", default="2000") or "2000"),
+                int(_env("MULTI_AGENT_TEAM_MAX_CONTEXT_TURNS", default="2000") or "2000"),
             ),
         ),
         max_attachment_chars=max(
@@ -788,14 +886,14 @@ def load_config() -> AppConfig:
             min(
                 1000000,
                 int(
-                    _env("OFFICETOOL_MAX_ATTACHMENT_CHARS", "OFFCIATOOL_MAX_ATTACHMENT_CHARS", default="1000000")
+                    _env("MULTI_AGENT_TEAM_MAX_ATTACHMENT_CHARS", default="1000000")
                     or "1000000"
                 ),
             ),
         ),
         max_upload_mb=max(
             1,
-            min(2048, int(_env("OFFICETOOL_MAX_UPLOAD_MB", "OFFCIATOOL_MAX_UPLOAD_MB", default="200") or "200")),
+            min(2048, int(_env("MULTI_AGENT_TEAM_MAX_UPLOAD_MB", default="200") or "200")),
         ),
         tool_result_soft_trim_chars=max(2000, min(1_000_000, tool_result_soft_trim_chars)),
         tool_result_hard_clear_chars=max(4000, min(2_000_000, tool_result_hard_clear_chars)),
@@ -811,7 +909,7 @@ def load_config() -> AppConfig:
         docker_memory=docker_memory or "2g",
         docker_cpus=docker_cpus or "1.0",
         docker_pids_limit=max(16, min(4096, docker_pids_limit)),
-        docker_container_prefix=docker_container_prefix or "officetool-sbx",
+        docker_container_prefix=docker_container_prefix or "multi-agent-team-sbx",
         enable_session_tools=enable_session_tools,
         enable_shadow_logging=enable_shadow_logging,
         allowed_commands=_split_csv(allowed_commands_raw),

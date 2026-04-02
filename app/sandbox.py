@@ -183,8 +183,8 @@ class DockerSandboxManager:
             ]
             if self.network:
                 cmd.extend(["--network", self.network])
-            cmd.extend(["--label", "officetool.sandbox=1"])
-            cmd.extend(["--label", f"officetool.workspace={self.workspace_root}"])
+            cmd.extend(["--label", "multi_agent_team.sandbox=1"])
+            cmd.extend(["--label", f"multi_agent_team.workspace={self.workspace_root}"])
             for host_root, mount_point in self._mounts:
                 cmd.extend(["-v", f"{host_root}:{mount_point}"])
 

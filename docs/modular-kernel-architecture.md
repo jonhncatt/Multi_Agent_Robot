@@ -126,7 +126,7 @@ flowchart TD
 
 当前已经支持：
 
-- `OFFICETOOL_CAPABILITY_MODULES` 配置多个 capability module
+- `MULTI_AGENT_TEAM_CAPABILITY_MODULES` 配置多个 capability module
 - loader 按顺序加载多个能力包
 - role registry 由多个能力包合并
 - `AgentModule` 当前由能力包显式导出

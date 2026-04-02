@@ -145,7 +145,7 @@ def legacy_evolution_overlay_snapshot(agent: Any) -> dict[str, Any]:
 
 
 def legacy_evolution_turn_update() -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-evolution-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-evolution-") as tmp_dir:
         base = Path(tmp_dir).resolve()
         store = EvolutionStore(base / "overlay_profile.json", base / "logs")
         event = store.record_turn(

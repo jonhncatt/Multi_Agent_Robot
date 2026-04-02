@@ -7,10 +7,12 @@ APP_JS = REPO_ROOT / 'app' / 'static' / 'app.js'
 
 def test_workstation_shell_mounts_exist() -> None:
     html = INDEX_HTML.read_text()
+    assert 'app-shell--two-column' in html
+    assert 'rightRailResizer' not in html
     required_ids = [
         'appShell',
         'leftRailResizer',
-        'rightRailResizer',
+        'opsRail',
         'commandPalette',
         'commandPaletteInput',
         'commandPaletteList',
@@ -27,7 +29,6 @@ def test_workstation_shell_behaviors_are_wired() -> None:
     script = APP_JS.read_text()
     required_tokens = [
         'setupRailResizer(leftRailResizer, "left")',
-        'setupRailResizer(rightRailResizer, "right")',
         'renderExecutionDag()',
         'renderExecutionLog()',
         'openCommandPalette()',
@@ -35,3 +36,4 @@ def test_workstation_shell_behaviors_are_wired() -> None:
     ]
     for token in required_tokens:
         assert token in script, token
+    assert 'collapse-right' not in script

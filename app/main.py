@@ -78,7 +78,9 @@ APP_VERSION = "0.3.5"
 
 
 def _resolve_build_version() -> str:
-    override = str(os.environ.get("OFFICETOOL_BUILD_VERSION") or "").strip()
+    override = str(
+        os.environ.get("MULTI_AGENT_TEAM_BUILD_VERSION") or ""
+    ).strip()
     if override:
         return override
 
@@ -119,6 +121,188 @@ def _resolve_build_version() -> str:
 
 
 BUILD_VERSION = _resolve_build_version()
+
+
+_FALLBACK_AGENT_PLUGIN_KEYS: tuple[str, ...] = (
+    "router_agent",
+    "coordinator_agent",
+    "planner_agent",
+    "researcher_agent",
+    "file_reader_agent",
+    "summarizer_agent",
+    "fixer_agent",
+    "worker_agent",
+    "conflict_detector_agent",
+    "reviewer_agent",
+    "revision_agent",
+    "structurer_agent",
+)
+
+_AGENT_PLUGIN_META: dict[str, dict[str, object]] = {
+    "router_agent": {
+        "sprite_role": "router",
+        "supports_swarm": True,
+        "swarm_mode": "fanout_router",
+        "capability_tags": ["intent-routing", "policy-gate", "swarm-dispatch"],
+        "summary": "入口分流与多插件调度分发。",
+    },
+    "coordinator_agent": {
+        "sprite_role": "coordinator",
+        "supports_swarm": True,
+        "swarm_mode": "supervisor",
+        "capability_tags": ["task-coordination", "multi-agent-sync", "swarm-supervision"],
+        "summary": "负责跨插件协作、合流与冲突仲裁。",
+    },
+    "planner_agent": {
+        "sprite_role": "planner",
+        "supports_swarm": True,
+        "swarm_mode": "plan-then-swarm",
+        "capability_tags": ["plan-decomposition", "constraint-check", "swarm-plan"],
+        "summary": "生成执行计划并分配到子插件。",
+    },
+    "researcher_agent": {
+        "sprite_role": "researcher",
+        "supports_swarm": True,
+        "swarm_mode": "parallel-research",
+        "capability_tags": ["evidence-search", "citation-merge", "swarm-retrieval"],
+        "summary": "并行检索信息并汇总证据。",
+    },
+    "file_reader_agent": {
+        "sprite_role": "file_reader",
+        "supports_swarm": False,
+        "swarm_mode": "none",
+        "capability_tags": ["document-parse", "attachment-extract"],
+        "summary": "读取附件并提取结构化文本。",
+    },
+    "summarizer_agent": {
+        "sprite_role": "summarizer",
+        "supports_swarm": False,
+        "swarm_mode": "none",
+        "capability_tags": ["context-compress", "summary-write"],
+        "summary": "上下文压缩与结论摘要。",
+    },
+    "fixer_agent": {
+        "sprite_role": "fixer",
+        "supports_swarm": False,
+        "swarm_mode": "none",
+        "capability_tags": ["error-repair", "patch-hint"],
+        "summary": "定位故障并给出修复策略。",
+    },
+    "worker_agent": {
+        "sprite_role": "worker",
+        "supports_swarm": True,
+        "swarm_mode": "tool-swarm",
+        "capability_tags": ["tool-execution", "action-loop", "swarm-worker"],
+        "summary": "执行主任务与工具调用循环。",
+    },
+    "conflict_detector_agent": {
+        "sprite_role": "conflict_detector",
+        "supports_swarm": True,
+        "swarm_mode": "consensus-check",
+        "capability_tags": ["conflict-detect", "consistency-check", "swarm-vote"],
+        "summary": "检测结论冲突并给出一致性判断。",
+    },
+    "reviewer_agent": {
+        "sprite_role": "reviewer",
+        "supports_swarm": True,
+        "swarm_mode": "multi-review",
+        "capability_tags": ["quality-review", "risk-check", "swarm-review"],
+        "summary": "对结果做质量审阅与风险评估。",
+    },
+    "revision_agent": {
+        "sprite_role": "revision",
+        "supports_swarm": False,
+        "swarm_mode": "none",
+        "capability_tags": ["revision", "final-polish"],
+        "summary": "根据审阅意见生成最终修订版。",
+    },
+    "structurer_agent": {
+        "sprite_role": "structurer",
+        "supports_swarm": False,
+        "swarm_mode": "none",
+        "capability_tags": ["format-structuring", "output-shaping"],
+        "summary": "将结果整理成目标结构与格式。",
+    },
+}
+
+
+def _agent_title_from_key(key: str) -> str:
+    normalized = str(key or "").strip().replace("-", "_")
+    if not normalized:
+        return "LLM Agent"
+    words = [item for item in normalized.split("_") if item]
+    return " ".join(word.capitalize() for word in words)
+
+
+def _agent_sprite_role_from_key(key: str) -> str:
+    raw = str(key or "").strip().replace("-", "_")
+    if raw.endswith("_agent"):
+        raw = raw[:-6]
+    return raw or "worker"
+
+
+def _build_agent_plugin_descriptor(*, key: str, path: str, exists: bool) -> dict[str, object]:
+    meta = _AGENT_PLUGIN_META.get(key, {})
+    sprite_role = str(meta.get("sprite_role") or _agent_sprite_role_from_key(key))
+    capability_tags = [str(item).strip() for item in (meta.get("capability_tags") or []) if str(item).strip()]
+    supports_swarm = bool(meta.get("supports_swarm"))
+    swarm_mode = str(meta.get("swarm_mode") or ("none" if not supports_swarm else "generic-swarm")).strip()
+    return {
+        "key": key,
+        "title": _agent_title_from_key(key),
+        "path": path,
+        "exists": bool(exists),
+        "sprite_role": sprite_role,
+        "supports_swarm": supports_swarm,
+        "swarm_mode": swarm_mode,
+        "capability_tags": capability_tags,
+        "summary": str(meta.get("summary") or ""),
+    }
+
+
+def _build_control_panel_topology(repo_root: Path) -> dict[str, object]:
+    kernel_path = repo_root / "app" / "kernel" / "host.py"
+    router_path = repo_root / "app" / "kernel" / "llm_router.py"
+    agents_dir = repo_root / "app" / "agents"
+
+    plugin_paths_by_key = {item.stem: item for item in agents_dir.glob("*_agent.py")}
+    ordered_keys = [key for key in _FALLBACK_AGENT_PLUGIN_KEYS if key in plugin_paths_by_key]
+    ordered_keys.extend(sorted(key for key in plugin_paths_by_key.keys() if key not in ordered_keys))
+    if ordered_keys:
+        plugin_defs = [
+            _build_agent_plugin_descriptor(
+                key=key,
+                path=str(plugin_paths_by_key[key].relative_to(repo_root)),
+                exists=plugin_paths_by_key[key].is_file(),
+            )
+            for key in ordered_keys[:12]
+        ]
+    else:
+        plugin_defs = [
+            _build_agent_plugin_descriptor(
+                key=key,
+                path=str((agents_dir / f"{key}.py").relative_to(repo_root)),
+                exists=(agents_dir / f"{key}.py").is_file(),
+            )
+            for key in _FALLBACK_AGENT_PLUGIN_KEYS
+        ]
+
+    return {
+        "kernel": {
+            "key": "kernel_core",
+            "title": "稳定 Kernel",
+            "path": str(kernel_path.relative_to(repo_root)),
+            "exists": kernel_path.is_file(),
+        },
+        "central_router": {
+            "key": "llm_central_router",
+            "title": "LLM 中央调度器",
+            "path": str(router_path.relative_to(repo_root)),
+            "exists": router_path.is_file(),
+        },
+        "agent_plugins": plugin_defs,
+        "slot_count": 12,
+    }
 
 
 class AgentRunQueue:
@@ -250,6 +434,7 @@ def health() -> HealthResponse:
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
     host_runtime = runtime.debug_kernel_host_snapshot()
     host_runtime["agent_os_runtime"] = get_agent_os_runtime().snapshot()
+    control_panel_topology = _build_control_panel_topology(Path(__file__).resolve().parent.parent)
     role_lab_runtime = runtime.debug_role_lab_runtime_snapshot()
     evolution_payload = get_evolution_store().runtime_payload(limit=10)
     tool_registry = runtime.debug_tool_registry_snapshot()
@@ -267,6 +452,8 @@ def health() -> HealthResponse:
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
         model_default=config.default_model,
+        llm_provider=str(auth_summary.get("provider") or config.llm_provider or ""),
+        llm_api_key_env=str(auth_summary.get("api_key_env") or config.llm_primary_api_key_env or ""),
         auth_mode=str(auth_summary.get("mode") or ""),
         execution_mode_default=config.execution_mode,
         docker_available=docker_ok,
@@ -296,6 +483,7 @@ def health() -> HealthResponse:
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
         kernel_tool_registry=dict(tool_registry or {}),
         kernel_host_runtime=dict(host_runtime or {}),
+        control_panel_topology=dict(control_panel_topology or {}),
         role_lab_runtime=dict(role_lab_runtime or {}),
         assistant_overlay_profile=dict(evolution_payload.get("overlay_profile") or {}),
         assistant_evolution_recent=list(evolution_payload.get("recent_events") or []),
@@ -1033,7 +1221,7 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
                 steps,
                 name="run_shell_python3_version",
                 ok=True,
-                detail="skipped: python3 is not in OFFICETOOL_ALLOWED_COMMANDS",
+                detail="skipped: python3 is not in MULTI_AGENT_TEAM_ALLOWED_COMMANDS",
                 started_at=started,
             )
 
@@ -1132,6 +1320,16 @@ def _process_chat_request_minimal(
     req: ChatRequest, progress_cb: Callable[[dict[str, Any]], None] | None = None
 ) -> ChatResponse:
     auth_summary = OpenAIAuthManager(config).auth_summary()
+    if not bool(auth_summary.get("available")):
+        raise HTTPException(status_code=500, detail=str(auth_summary.get("reason") or "LLM credentials are required"))
+    run_id = str(uuid.uuid4())
+    _emit_progress(
+        progress_cb,
+        "stage",
+        code="backend_start",
+        detail=f"后端已接收请求，开始处理。run_id={run_id}, auth_mode={auth_summary.get('mode')}",
+        run_id=run_id,
+    )
 
     run_id = str(uuid.uuid4())
     _emit_progress(progress_cb, "stage", code="backend_start", detail=f"llm_router 已接收请求。run_id={run_id}", run_id=run_id)

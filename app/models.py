@@ -223,6 +223,8 @@ class HealthResponse(BaseModel):
     app_version: str = ""
     build_version: str = ""
     model_default: str
+    llm_provider: str = ""
+    llm_api_key_env: str = ""
     auth_mode: str = ""
     execution_mode_default: Literal["host", "docker"] = "host"
     docker_available: bool = False
@@ -252,6 +254,7 @@ class HealthResponse(BaseModel):
     kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
     kernel_tool_registry: dict[str, object] = Field(default_factory=dict)
     kernel_host_runtime: dict[str, object] = Field(default_factory=dict)
+    control_panel_topology: dict[str, object] = Field(default_factory=dict)
     role_lab_runtime: dict[str, object] = Field(default_factory=dict)
     assistant_overlay_profile: dict[str, object] = Field(default_factory=dict)
     assistant_evolution_recent: list[dict[str, object]] = Field(default_factory=list)

@@ -25,7 +25,7 @@ def _runtime_config(agent: Any, runtime_dir: Path, *, modules_dir: Path | None =
 
 
 def debug_kernel_shadow_stage_and_smoke(agent: Any, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-smoke-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-smoke-") as tmp_dir:
         runtime_dir = Path(tmp_dir).resolve()
         runtime = build_kernel_runtime(_runtime_config(agent, runtime_dir))
         stage = runtime.stage_shadow_manifest(overrides={"router": str(target_router_ref)})
@@ -34,7 +34,7 @@ def debug_kernel_shadow_stage_and_smoke(agent: Any, target_router_ref: str = "ro
 
 
 def debug_kernel_shadow_upgrade_flow(agent: Any, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-") as tmp_dir:
         runtime_dir = Path(tmp_dir).resolve()
         runtime = build_kernel_runtime(_runtime_config(agent, runtime_dir))
         shadow = runtime.load_shadow_manifest()
@@ -58,7 +58,7 @@ def debug_kernel_shadow_validation_rejects_broken_manifest(
     agent: Any,
     broken_router_ref: str = "router_rules@999.0.0",
 ) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-bad-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-bad-") as tmp_dir:
         runtime_dir = Path(tmp_dir).resolve()
         runtime = build_kernel_runtime(_runtime_config(agent, runtime_dir))
         initial_active = runtime.supervisor.load_active_manifest().to_dict()
@@ -77,7 +77,7 @@ def debug_kernel_shadow_validation_rejects_broken_manifest(
 
 
 def debug_kernel_shadow_replay(agent: Any, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-replay-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-replay-") as tmp_dir:
         runtime_dir = Path(tmp_dir).resolve()
         runtime = build_kernel_runtime(_runtime_config(agent, runtime_dir))
         runtime.stage_shadow_manifest(overrides={"router": str(target_router_ref)})
@@ -95,21 +95,21 @@ def debug_kernel_shadow_replay(agent: Any, target_router_ref: str = "router_rule
 
 
 def debug_kernel_shadow_contracts(agent: Any) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-contracts-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-contracts-") as tmp_dir:
         runtime_dir = Path(tmp_dir).resolve()
         runtime = build_kernel_runtime(_runtime_config(agent, runtime_dir))
         return {"contracts": runtime.run_shadow_contracts()}
 
 
 def debug_kernel_active_contracts(agent: Any) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-active-contracts-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-active-contracts-") as tmp_dir:
         runtime_dir = Path(tmp_dir).resolve()
         runtime = build_kernel_runtime(_runtime_config(agent, runtime_dir))
         return {"contracts": runtime.run_active_contracts()}
 
 
 def debug_kernel_shadow_pipeline(agent: Any, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-pipeline-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-pipeline-") as tmp_dir:
         runtime_dir = Path(tmp_dir).resolve()
         runtime = build_kernel_runtime(_runtime_config(agent, runtime_dir))
         pipeline = runtime.run_shadow_pipeline(
@@ -146,7 +146,7 @@ def debug_kernel_shadow_pipeline_classifies_broken_manifest(
     agent: Any,
     broken_router_ref: str = "router_rules@999.0.0",
 ) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-pipeline-bad-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-pipeline-bad-") as tmp_dir:
         runtime_dir = Path(tmp_dir).resolve()
         runtime = build_kernel_runtime(_runtime_config(agent, runtime_dir))
         pipeline = runtime.run_shadow_pipeline(
@@ -167,7 +167,7 @@ def debug_kernel_shadow_auto_repair_broken_manifest(
     agent: Any,
     broken_router_ref: str = "router_rules@999.0.0",
 ) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-repair-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-repair-") as tmp_dir:
         runtime_dir = Path(tmp_dir).resolve()
         runtime = build_kernel_runtime(_runtime_config(agent, runtime_dir))
         broken_pipeline = runtime.run_shadow_pipeline(
@@ -195,7 +195,7 @@ def debug_kernel_shadow_auto_repair_broken_manifest(
 
 
 def debug_kernel_shadow_promote_rejects_path_refs(agent: Any) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-promote-path-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-promote-path-") as tmp_dir:
         runtime_dir = Path(tmp_dir).resolve()
         cfg = _runtime_config(agent, runtime_dir)
         runtime = build_kernel_runtime(cfg)
@@ -215,7 +215,7 @@ def debug_kernel_shadow_promote_rejects_path_refs(agent: Any) -> dict[str, Any]:
 
 
 def debug_kernel_shadow_patch_worker_persists_missing_tasks(agent: Any) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-patch-empty-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-patch-empty-") as tmp_dir:
         runtime_dir = Path(tmp_dir).resolve()
         runtime = build_kernel_runtime(_runtime_config(agent, runtime_dir))
         patch_worker = runtime.run_shadow_patch_worker(
@@ -233,7 +233,7 @@ def debug_kernel_shadow_patch_worker_persists_missing_tasks(agent: Any) -> dict[
 
 
 def debug_kernel_shadow_package_path_router(agent: Any) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-package-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-package-") as tmp_dir:
         root = Path(tmp_dir).resolve()
         runtime_dir = root / "runtime"
         modules_dir = root / "modules"
@@ -258,7 +258,7 @@ def debug_kernel_shadow_package_path_router(agent: Any) -> dict[str, Any]:
 
 
 def debug_kernel_shadow_package_syncs_module_version(agent: Any) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-package-version-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-package-version-") as tmp_dir:
         root = Path(tmp_dir).resolve()
         runtime_dir = root / "runtime"
         modules_dir = root / "modules"
@@ -284,7 +284,7 @@ def debug_kernel_shadow_package_syncs_module_version(agent: Any) -> dict[str, An
 
 
 def debug_kernel_shadow_promote_rejects_module_version_mismatch(agent: Any) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-version-mismatch-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-version-mismatch-") as tmp_dir:
         root = Path(tmp_dir).resolve()
         runtime_dir = root / "runtime"
         modules_dir = root / "modules"
@@ -308,7 +308,7 @@ def debug_kernel_shadow_promote_rejects_module_version_mismatch(agent: Any) -> d
 
 
 def debug_kernel_shadow_promote_rejects_dependency_mismatch(agent: Any) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-dependency-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-shadow-dependency-") as tmp_dir:
         root = Path(tmp_dir).resolve()
         runtime_dir = root / "runtime"
         modules_dir = root / "modules"
@@ -344,7 +344,7 @@ def debug_kernel_shadow_promote_rejects_dependency_mismatch(agent: Any) -> dict[
 
 
 def debug_kernel_shadow_self_upgrade_flow(agent: Any) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="officetool-kernel-self-upgrade-") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="multi-agent-team-kernel-self-upgrade-") as tmp_dir:
         root = Path(tmp_dir).resolve()
         runtime_dir = root / "runtime"
         modules_dir = root / "modules"

@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
-export OFFICETOOL_APP_PROFILE="${OFFICETOOL_APP_PROFILE:-role_agent_lab}"
-export OFFICETOOL_APP_MODULE="${OFFICETOOL_APP_MODULE:-app.role_agent_lab_main:app}"
-export OFFICETOOL_APP_PORT="${OFFICETOOL_APP_PORT:-8081}"
+export MULTI_AGENT_TEAM_APP_PROFILE="${MULTI_AGENT_TEAM_APP_PROFILE:-role_agent_lab}"
+export MULTI_AGENT_TEAM_APP_MODULE="${MULTI_AGENT_TEAM_APP_MODULE:-app.role_agent_lab_main:app}"
+export MULTI_AGENT_TEAM_APP_PORT="${MULTI_AGENT_TEAM_APP_PORT:-8081}"
 
 exec ./run.sh

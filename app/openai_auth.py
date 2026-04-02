@@ -49,13 +49,50 @@ class OpenAIAuthManager:
         self.config = config
         self._refresh_lock = threading.Lock()
 
+    def _llm_provider(self) -> str:
+        provider = str(getattr(self.config, "llm_provider", "") or "").strip().lower()
+        return provider or "openai"
+
+    def _llm_supports_codex_auth(self) -> bool:
+        return bool(getattr(self.config, "llm_supports_codex_auth", True))
+
+    def _api_key_env_keys(self) -> list[str]:
+        keys = getattr(self.config, "llm_api_key_env_keys", [])
+        if isinstance(keys, list):
+            normalized = [str(item or "").strip() for item in keys if str(item or "").strip()]
+            if normalized:
+                return normalized
+        return ["OPENAI_API_KEY"]
+
+    def _api_key_file_keys(self) -> list[str]:
+        keys = getattr(self.config, "llm_auth_file_api_key_keys", [])
+        if isinstance(keys, list):
+            normalized = [str(item or "").strip() for item in keys if str(item or "").strip()]
+            if normalized:
+                return normalized
+        return ["OPENAI_API_KEY"]
+
+    def _primary_api_key_env(self) -> str:
+        configured = str(getattr(self.config, "llm_primary_api_key_env", "") or "").strip()
+        if configured:
+            return configured
+        keys = self._api_key_env_keys()
+        return keys[0] if keys else "OPENAI_API_KEY"
+
     def resolve(self) -> ResolvedOpenAIAuth:
+        provider = self._llm_provider()
+        supports_codex_auth = self._llm_supports_codex_auth()
         requested_mode = str(self.config.openai_auth_mode or "auto").strip().lower()
         if requested_mode not in {"auto", "api_key", "codex_auth"}:
             requested_mode = "auto"
 
         api_key_auth = self._resolve_api_key_auth()
-        codex_auth = self._resolve_codex_auth()
+        codex_auth = self._resolve_codex_auth() if supports_codex_auth else ResolvedOpenAIAuth(
+            mode="codex_auth",
+            source="disabled",
+            available=False,
+            reason=f"Provider '{provider}' does not support codex_auth.",
+        )
 
         if requested_mode == "api_key":
             if api_key_auth.available:
@@ -64,10 +101,17 @@ class OpenAIAuthManager:
                 mode="api_key",
                 source="config",
                 available=False,
-                reason="Missing API key. Set OFFICETOOL_LLM_API_KEY or OPENAI_API_KEY.",
+                reason=api_key_auth.reason or f"{self._primary_api_key_env()} is missing.",
             )
 
         if requested_mode == "codex_auth":
+            if not supports_codex_auth:
+                return ResolvedOpenAIAuth(
+                    mode="codex_auth",
+                    source="config",
+                    available=False,
+                    reason=f"Provider '{provider}' does not support codex_auth.",
+                )
             if codex_auth.available:
                 return codex_auth
             return ResolvedOpenAIAuth(
@@ -79,19 +123,28 @@ class OpenAIAuthManager:
 
         if api_key_auth.available:
             return api_key_auth
-        if codex_auth.available:
+        if supports_codex_auth and codex_auth.available:
             return codex_auth
+        unavailable_reason = (
+            f"API key is missing for provider '{provider}'. "
+            f"Set {self._primary_api_key_env()} in env or .env."
+        )
+        if supports_codex_auth:
+            unavailable_reason = (
+                f"{unavailable_reason} "
+                "You can also use codex_auth by configuring MULTI_AGENT_TEAM_LLM_AUTH_MODE=codex_auth."
+            )
         return ResolvedOpenAIAuth(
             mode="unconfigured",
             source="auto",
             available=False,
-            reason="Neither API key (OFFICETOOL_LLM_API_KEY / OPENAI_API_KEY) nor Codex auth credentials are available.",
+            reason=unavailable_reason,
         )
 
     def require(self, *, allow_refresh: bool = True) -> ResolvedOpenAIAuth:
         resolved = self.resolve()
         if not resolved.available:
-            raise RuntimeError(resolved.reason or "OpenAI credentials are not available.")
+            raise RuntimeError(resolved.reason or "LLM credentials are not available.")
         if resolved.mode != "codex_auth" or not allow_refresh:
             return resolved
         if self._codex_refresh_needed(resolved):
@@ -99,6 +152,8 @@ class OpenAIAuthManager:
         return resolved
 
     def refresh_codex_auth(self, *, force: bool = True) -> ResolvedOpenAIAuth:
+        if not self._llm_supports_codex_auth():
+            raise RuntimeError(f"Provider '{self._llm_provider()}' does not support codex_auth.")
         with self._refresh_lock:
             resolved = self._resolve_codex_auth()
             if not resolved.available:
@@ -157,6 +212,9 @@ class OpenAIAuthManager:
     def auth_summary(self) -> dict[str, Any]:
         resolved = self.resolve()
         return {
+            "provider": self._llm_provider(),
+            "api_key_env": self._primary_api_key_env(),
+            "api_key_env_keys": self._api_key_env_keys(),
             "mode": resolved.mode,
             "source": resolved.source,
             "available": resolved.available,
@@ -171,44 +229,46 @@ class OpenAIAuthManager:
         }
 
     def _resolve_api_key_auth(self) -> ResolvedOpenAIAuth:
-        llm_api_key = str(
-            os.environ.get("OFFICETOOL_LLM_API_KEY")
-            or os.environ.get("OFFCIATOOL_LLM_API_KEY")
-            or ""
-        ).strip()
-        if llm_api_key:
+        provider = self._llm_provider()
+        if provider == "ollama":
+            # Local Ollama deployments commonly run without credential checks.
             return ResolvedOpenAIAuth(
                 mode="api_key",
-                source="env:OFFICETOOL_LLM_API_KEY",
+                source="implicit:ollama_no_key",
                 available=True,
-                api_key=llm_api_key,
+                api_key=str(os.environ.get("OLLAMA_API_KEY") or "ollama"),
             )
 
-        api_key = str(os.environ.get("OPENAI_API_KEY") or "").strip()
-        if api_key:
+        for env_key in self._api_key_env_keys():
+            api_key = str(os.environ.get(env_key) or "").strip()
+            if not api_key:
+                continue
             return ResolvedOpenAIAuth(
                 mode="api_key",
-                source="env:OPENAI_API_KEY",
+                source=f"env:{env_key}",
                 available=True,
                 api_key=api_key,
             )
 
         auth_json = self._read_auth_json(self.config.codex_auth_file)
-        file_api_key = str(auth_json.get("OPENAI_API_KEY") or "").strip()
-        if file_api_key:
+        for file_key in self._api_key_file_keys():
+            file_api_key = str(auth_json.get(file_key) or "").strip()
+            if not file_api_key:
+                continue
             return ResolvedOpenAIAuth(
                 mode="api_key",
-                source=f"file:{self.config.codex_auth_file}",
+                source=f"file:{self.config.codex_auth_file}:{file_key}",
                 available=True,
                 api_key=file_api_key,
                 auth_file_path=self.config.codex_auth_file,
             )
 
+        expected = self._primary_api_key_env()
         return ResolvedOpenAIAuth(
             mode="api_key",
             source="env",
             available=False,
-            reason="Missing API key. Set OFFICETOOL_LLM_API_KEY or OPENAI_API_KEY.",
+            reason=f"API key is missing for provider '{provider}'. Expected env: {expected}.",
         )
 
     def _resolve_codex_auth(self) -> ResolvedOpenAIAuth:
