@@ -59,6 +59,27 @@ Lab app: <http://127.0.0.1:8081>
 - research module demo: `python scripts/demo_research_module.py --check`
 - research Swarm demo: `python scripts/demo_research_swarm.py --check`
 
+## Execution Path Reality Check (April 2, 2026)
+
+If you still see the old flow text, this is what is true in current code:
+
+- `Frontend -> POST /api/chat`: true (`app/main.py`).
+- `LLMRouter reads 12 agent manifest.json files`: false. `/api/chat` does not go through `app/kernel/llm_router.py`, and `app/agents/*_agent.py` is not loaded from `manifest.json`. The control panel topology is built by scanning `*_agent.py` in `app/main.py`.
+- `LLM always generates shortest 1~4 steps`: false. `execution_plan` is runtime-generated and not constrained by a global 1~4-step contract.
+- `Selected agent runs handle_task`: false. The business entrypoint is `handle/invoke` (`KernelHost.dispatch -> business_module.handle`), not a unified plugin `handle_task`.
+- `Aggregate result and write session`: true (`session_store.append_turn(...)` + `session_store.save(...)` in `app/main.py`).
+
+Current runtime path:
+
+```text
+HTTP / UI
+  -> app/bootstrap/assemble.py
+  -> KernelHost.dispatch(TaskRequest)
+  -> business module handle
+  -> ToolBus / ToolRegistry / ProviderRegistry
+  -> response + trace + persisted session
+```
+
 ## Operations Entry
 
 Start here if you want the current platform status, gate status, metrics summary, replay sample overview, and reporting template:
@@ -100,3 +121,10 @@ flowchart LR
     Research --> Swarm["Module-local Swarm MVP"]
     Swarm --> Aggregator["merge / deduplicate / mark conflicts"]
 ```
+
+## Swarm and Tool Status
+
+- Swarm is currently a formal capability inside `research_module` (parallel branch execution + join + serial replay degradation).
+- `office_module` has internal role orchestration (`Router/Planner/Worker/Reviewer/Revision`), but this is module-internal, not kernel-level 12-plugin dispatch.
+- Tool execution path is `KernelHost.dispatch -> business module -> tool_runtime_module -> ToolBus/ToolRegistry -> ProviderRegistry`.
+- Providers are assembled in `app/bootstrap/assemble.py` (`local_workspace`, `local_file`, `http_web`, `patch_write`, optional `session_store`).

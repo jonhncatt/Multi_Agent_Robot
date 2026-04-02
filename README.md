@@ -364,7 +364,7 @@ cd $HOME\Desktop\Multi_Agent_Team
 - 若要“完整复制一个文件”，请让助手使用 `copy_file`，不要用 `read_text_file + write_text_file`（前者是全量复制，后者可能按 `max_chars` 截断）
 - 解压 zip 请使用 `extract_zip`（内置路径穿越防护与体积/文件数限制）
 - 大文件建议让助手按块读取（例如每次 `max_chars=200000`，再用下一块 `start_char=end_char` 继续）
-- 前端默认走 `/api/chat/stream` 实时流式接口；如需非流式可继续使用 `/api/chat`
+- 当前 Web 前端默认走 `/api/chat`；`/api/chat/stream` 为可选 SSE 流式接口（同一后端链路）
 
 ### 架构关系
 
@@ -394,6 +394,23 @@ HTTP / UI
   -> ToolBus / ToolRegistry / ProviderRegistry
   -> response + trace
 ```
+
+### 执行链路核对（2026-04-02）
+
+如果你在旧文档里看到下面这条描述，请按当前代码理解：
+
+- `前端请求进入 POST /api/chat`：是（入口在 `app/main.py`）。
+- `LLMRouter 读取 12 个 Agent 的 manifest.json`：否。`/api/chat` 主链路不经过 `app/kernel/llm_router.py`；`app/agents/*_agent.py` 也不是通过 `manifest.json` 装载。控制面板拓扑来自 `app/main.py::_build_control_panel_topology()` 对 `*_agent.py` 的扫描。
+- `LLM 生成最短执行步骤（1~4 步）`：否（不是固定协议）。`execution_plan` 来自业务模块运行时动态生成，没有全局 1~4 步硬约束。
+- `对应 Agent 执行 handle_task`：否。当前业务模块入口是 `handle/invoke`（`KernelHost.dispatch -> business_module.handle`），并非 12 个插件统一 `handle_task`。
+- `汇总返回，并写入会话`：是。结果会在 `app/main.py` 里通过 `session_store.append_turn(...)` 和 `session_store.save(...)` 持久化。
+
+### Swarm 与 Tool（当前实现）
+
+- `Swarm` 当前是 `research_module` 内的正式能力：当 `request.context.swarm_inputs` 至少 2 条时，进入并行 branch + join 聚合；失败分支会触发 `serial_replay` 降级回放。
+- `office_module` 内部有 `Router/Planner/Worker/Reviewer/Revision` 多角色协作，但这是模块内编排，不是 Kernel 顶层“12 插件调度”主路径。
+- Tool 执行主链路为：`KernelHost.dispatch -> business module -> tool_runtime_module -> ToolBus/ToolRegistry -> ProviderRegistry`。
+- Provider 在 `app/bootstrap/assemble.py` 装配（`local_workspace/local_file/http_web/patch_write/session_store`），再由业务模块按策略选择调用。
 
 当前推荐入口：
 
