@@ -59,25 +59,25 @@ Lab app: <http://127.0.0.1:8081>
 - research module demo: `python scripts/demo_research_module.py --check`
 - research Swarm demo: `python scripts/demo_research_swarm.py --check`
 
-## Execution Path Reality Check (April 2, 2026)
+## Execution Path Reality Check (April 3, 2026)
 
 If you still see the old flow text, this is what is true in current code:
 
 - `Frontend -> POST /api/chat`: true (`app/main.py`).
-- `LLMRouter reads 12 agent manifest.json files`: partially true. `/api/chat` still follows `KernelHost.dispatch -> business_module` and does not execute all 12 plugins directly, but **Control Panel + `/api/agent-plugins`** are now manifest-driven via `app/agents/manifests/*.json` and `AgentPluginRuntime`.
+- `LLMRouter reads 12 agent manifest.json files`: true. `/api/chat` now defaults to the **central scheduler + 12-plugin orchestration path** (`router_agent -> stage plan -> target plugin -> review/revision/structurer`). It falls back to `KernelHost.dispatch -> business_module` only when plugin orchestration fails.
 - `LLM always generates shortest 1~4 steps`: false. `execution_plan` is runtime-generated and not constrained by a global 1~4-step contract.
-- `Selected agent runs handle_task`: false. The business entrypoint is `handle/invoke` (`KernelHost.dispatch -> business_module.handle`), not a unified plugin `handle_task`.
+- `Selected agent runs handle_task`: false. Plugin path uses `AgentPluginRuntime.run_plugin(...)`; fallback business path is still `KernelHost.dispatch -> business_module.handle`.
 - `Aggregate result and write session`: true (`session_store.append_turn(...)` + `session_store.save(...)` in `app/main.py`).
 
 Current runtime path:
 
 ```text
 HTTP / UI
-  -> app/bootstrap/assemble.py
-  -> KernelHost.dispatch(TaskRequest)
-  -> business module handle
-  -> ToolBus / ToolRegistry / ProviderRegistry
+  -> app/main.py (/api/chat)
+  -> AgentPluginRuntime (router + staged plugin orchestration)
+  -> tool runtime / providers
   -> response + trace + persisted session
+  -> fallback only if needed: KernelHost.dispatch(TaskRequest)
 ```
 
 Plugin runtime surface:
@@ -137,3 +137,4 @@ flowchart LR
 - Tool execution path is `KernelHost.dispatch -> business module -> tool_runtime_module -> ToolBus/ToolRegistry -> ProviderRegistry`.
 - Providers are assembled in `app/bootstrap/assemble.py` (`local_workspace`, `local_file`, `http_web`, `patch_write`, optional `session_store`).
 - `POST /api/agent-plugins/run` supports standalone plugin runs; for swarm-capable plugins, pass `context.swarm.enabled=true` and optional `max_depth/max_children/join_policy/failure_policy`.
+- `/api/chat` main path also uses plugin orchestration and can trigger swarm on the target plugin when conditions are met; swarm topology is traceable via `decision.swarm`.

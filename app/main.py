@@ -1387,6 +1387,516 @@ def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: 
         pass
 
 
+_MAIN_CHAT_SWARM_KEYWORDS: tuple[str, ...] = (
+    "swarm",
+    "并行",
+    "父子",
+    "分支",
+    "协作",
+    "multi-agent",
+    "multi agent",
+)
+
+_MAIN_PLUGIN_PREFLIGHT: tuple[str, ...] = (
+    "coordinator_agent",
+    "planner_agent",
+)
+
+_MAIN_PLUGIN_POSTFLIGHT: tuple[str, ...] = (
+    "conflict_detector_agent",
+    "reviewer_agent",
+    "revision_agent",
+    "structurer_agent",
+)
+
+
+def _main_contains_any(text: str, keywords: tuple[str, ...]) -> bool:
+    lowered = str(text or "").lower()
+    for item in keywords:
+        token = str(item or "").strip().lower()
+        if token and token in lowered:
+            return True
+    return False
+
+
+def _main_preview(text: Any, *, limit: int = 240) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    compact = " ".join(raw.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(12, limit - 3)] + "..."
+
+
+def _main_extract_json_object(text: str) -> dict[str, Any] | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        candidate = raw[start : end + 1]
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return None
+    return None
+
+
+def _merge_usage_dicts(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(left or {})
+    other = dict(right or {})
+    for key in ("input_tokens", "output_tokens", "total_tokens", "llm_calls"):
+        merged[key] = int(merged.get(key, 0) or 0) + int(other.get(key, 0) or 0)
+    merged["estimated_cost_usd"] = float(merged.get("estimated_cost_usd", 0.0) or 0.0) + float(
+        other.get("estimated_cost_usd", 0.0) or 0.0
+    )
+    if "pricing_known" in merged or "pricing_known" in other:
+        merged["pricing_known"] = bool(merged.get("pricing_known")) or bool(other.get("pricing_known"))
+    for key in ("pricing_model", "input_price_per_1m", "output_price_per_1m"):
+        if merged.get(key) in {"", None} and other.get(key) not in {"", None}:
+            merged[key] = other.get(key)
+    return merged
+
+
+def _build_answer_bundle_from_plugin_text(text: str) -> dict[str, Any]:
+    raw_text = str(text or "").strip()
+    parsed = _main_extract_json_object(raw_text)
+    if not isinstance(parsed, dict):
+        return {"summary": raw_text, "claims": [], "citations": [], "warnings": []}
+
+    summary = str(parsed.get("summary") or parsed.get("final_answer") or raw_text).strip()
+    warnings_raw = parsed.get("warnings")
+    if not isinstance(warnings_raw, list):
+        warnings_raw = []
+    warnings = [str(item or "").strip() for item in warnings_raw if str(item or "").strip()]
+    claims_raw = parsed.get("claims")
+    claims: list[dict[str, Any]] = []
+    if isinstance(claims_raw, list):
+        for item in claims_raw[:12]:
+            if isinstance(item, dict):
+                statement = str(item.get("statement") or item.get("claim") or "").strip()
+                if not statement:
+                    continue
+                claims.append(
+                    {
+                        "statement": statement,
+                        "citation_ids": list(item.get("citation_ids") or []),
+                        "confidence": str(item.get("confidence") or "medium"),
+                        "status": str(item.get("status") or "supported"),
+                    }
+                )
+            else:
+                statement = str(item or "").strip()
+                if not statement:
+                    continue
+                claims.append(
+                    {
+                        "statement": statement,
+                        "citation_ids": [],
+                        "confidence": "medium",
+                        "status": "supported",
+                    }
+                )
+    return {
+        "summary": summary,
+        "claims": claims,
+        "citations": [],
+        "warnings": warnings,
+    }
+
+
+def _normalize_tool_events_from_plugin(
+    *,
+    plugin_id: str,
+    plugin_title: str,
+    tool_events: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for raw in list(tool_events or []):
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        item["module_id"] = str(item.get("module_id") or plugin_id)
+        item["module_title"] = str(item.get("module_title") or plugin_title)
+        item["module_group"] = str(item.get("module_group") or "agent_plugin")
+        normalized.append(item)
+    return normalized
+
+
+def _build_main_plugin_stage_plan(target_agent: str, available_ids: set[str]) -> list[str]:
+    plan: list[str] = []
+    for item in _MAIN_PLUGIN_PREFLIGHT:
+        if item in available_ids:
+            plan.append(item)
+    if target_agent in available_ids and target_agent != "router_agent":
+        plan.append(target_agent)
+    elif "worker_agent" in available_ids:
+        plan.append("worker_agent")
+    for item in _MAIN_PLUGIN_POSTFLIGHT:
+        if item in available_ids:
+            plan.append(item)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in plan:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    return deduped
+
+
+def _run_main_chat_plugin_orchestration(
+    *,
+    req: ChatRequest,
+    session_id: str,
+    route_state_input: dict[str, Any],
+    attachments: list[dict[str, Any]],
+    progress_cb: Callable[[dict[str, Any]], None] | None,
+    run_id: str,
+) -> dict[str, Any]:
+    runtime = get_agent_plugin_runtime()
+    manifests = runtime.list_manifests()
+    manifest_by_id = {item.plugin_id: item for item in manifests}
+    available_ids = set(manifest_by_id.keys())
+    if not available_ids:
+        raise RuntimeError("agent plugin runtime has no manifests")
+
+    attachment_refs = [
+        {
+            "id": str(item.get("id") or ""),
+            "name": str(item.get("original_name") or item.get("name") or ""),
+            "mime": str(item.get("mime") or ""),
+        }
+        for item in attachments
+        if isinstance(item, dict)
+    ]
+    base_context: dict[str, Any] = {
+        "source": "chat_main",
+        "session_id": session_id,
+        "route_state": dict(route_state_input or {}),
+        "attachments": attachment_refs,
+    }
+
+    router_context = {
+        **base_context,
+        "swarm": {"enabled": False},
+        "orchestration": {
+            "stage": "router_agent",
+            "role": "central_router",
+            "run_id": run_id,
+        },
+    }
+    router_result = runtime.run_plugin(
+        plugin_id="router_agent",
+        message=req.message,
+        settings=req.settings,
+        context=router_context,
+    )
+    router_decision = dict(router_result.get("decision") or {})
+    target_agent = str(router_decision.get("target_agent") or "").strip()
+    if target_agent not in available_ids or target_agent == "router_agent":
+        target_agent = "worker_agent" if "worker_agent" in available_ids else sorted(available_ids)[0]
+    stage_plan = _build_main_plugin_stage_plan(target_agent, available_ids)
+    if not stage_plan:
+        raise RuntimeError("plugin stage plan is empty")
+
+    execution_plan: list[str] = [f"router_agent -> {target_agent}"] + [f"{idx + 1}. {pid}" for idx, pid in enumerate(stage_plan)]
+    execution_trace: list[str] = []
+    execution_trace.append(
+        f"中央调度路由: router_agent -> {target_agent} (reason={router_decision.get('reason') or 'default'})"
+    )
+    _emit_progress(
+        progress_cb,
+        "trace",
+        message=execution_trace[-1],
+        index=len(execution_trace),
+        run_id=run_id,
+    )
+
+    pipeline_hooks: list[dict[str, Any]] = []
+    debug_flow: list[dict[str, Any]] = []
+    agent_panels: list[dict[str, Any]] = []
+    active_roles: list[str] = []
+    role_states: list[dict[str, Any]] = []
+    current_role = ""
+    aggregated_tools: list[dict[str, Any]] = []
+    aggregated_notes: list[str] = []
+    usage_total = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "llm_calls": 0}
+    stage_results: dict[str, dict[str, Any]] = {}
+    reviewer_verdict = ""
+
+    for index, plugin_id in enumerate(stage_plan, start=1):
+        if plugin_id == "revision_agent" and reviewer_verdict == "pass":
+            role_states.append(
+                {
+                    "role": plugin_id,
+                    "status": "skipped",
+                    "phase": "gated",
+                    "detail": "reviewer verdict=pass",
+                }
+            )
+            execution_trace.append("revision_agent 已跳过（reviewer verdict=pass）")
+            continue
+
+        manifest = manifest_by_id.get(plugin_id)
+        if manifest is None:
+            role_states.append(
+                {
+                    "role": plugin_id,
+                    "status": "failed",
+                    "phase": "missing",
+                    "detail": "manifest missing",
+                }
+            )
+            execution_trace.append(f"{plugin_id} 失败：manifest 缺失")
+            continue
+
+        upstream_preview = {
+            key: _main_preview((stage_results.get(key) or {}).get("text"), limit=280)
+            for key in stage_results.keys()
+        }
+        stage_message = "\n".join(
+            [
+                f"orchestration_stage: {plugin_id}",
+                "user_message:",
+                str(req.message or "").strip(),
+                "",
+                "upstream_stage_previews_json:",
+                json.dumps(upstream_preview, ensure_ascii=False),
+            ]
+        )
+        enable_swarm = bool(
+            manifest.supports_swarm
+            and (
+                plugin_id == target_agent
+                or _main_contains_any(req.message, _MAIN_CHAT_SWARM_KEYWORDS)
+            )
+        )
+        stage_context: dict[str, Any] = {
+            **base_context,
+            "orchestration": {
+                "stage": plugin_id,
+                "stage_index": index,
+                "target_agent": target_agent,
+                "plan": stage_plan,
+                "upstream_preview": upstream_preview,
+                "run_id": run_id,
+            },
+            "swarm": {
+                "enabled": enable_swarm,
+                "max_depth": 2,
+                "max_children": 2,
+                "join_policy": "merge",
+                "failure_policy": "serial_replay",
+                "expand_children": True,
+            },
+        }
+
+        try:
+            stage_result = runtime.run_plugin(
+                plugin_id=plugin_id,
+                message=stage_message,
+                settings=req.settings,
+                context=stage_context,
+            )
+        except Exception as exc:
+            stage_result = {
+                "ok": False,
+                "plugin_id": plugin_id,
+                "text": "",
+                "effective_model": "",
+                "tool_events": [],
+                "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "llm_calls": 0},
+                "notes": [f"plugin_stage_failed:{exc}"],
+                "decision": {},
+            }
+
+        stage_results[plugin_id] = stage_result
+        active_roles.append(plugin_id)
+        current_role = plugin_id
+
+        usage_total = _merge_usage_dicts(usage_total, dict(stage_result.get("token_usage") or {}))
+        stage_notes = [str(item or "").strip() for item in list(stage_result.get("notes") or []) if str(item or "").strip()]
+        aggregated_notes.extend([f"{plugin_id}:{item}" for item in stage_notes])
+        aggregated_tools.extend(
+            _normalize_tool_events_from_plugin(
+                plugin_id=plugin_id,
+                plugin_title=manifest.title,
+                tool_events=list(stage_result.get("tool_events") or []),
+            )
+        )
+
+        status = "done" if bool(stage_result.get("ok")) else "failed"
+        role_states.append(
+            {
+                "role": plugin_id,
+                "status": status,
+                "phase": "completed" if status == "done" else "error",
+                "detail": _main_preview(stage_result.get("text"), limit=120) or ",".join(stage_notes[:2]),
+            }
+        )
+        stage_swarm = dict((stage_result.get("decision") or {}).get("swarm") or {})
+        swarm_note = (
+            f", swarm nodes={stage_swarm.get('node_count')}, degraded={stage_swarm.get('degraded_node_count')}"
+            if stage_swarm
+            else ""
+        )
+        stage_trace = (
+            f"{plugin_id}: ok={bool(stage_result.get('ok'))}, "
+            f"tools={len(stage_result.get('tool_events') or [])}{swarm_note}"
+        )
+        execution_trace.append(stage_trace)
+        _emit_progress(
+            progress_cb,
+            "trace",
+            message=stage_trace,
+            index=len(execution_trace),
+            run_id=run_id,
+        )
+        pipeline_hooks.append(
+            {
+                "phase": f"plugin_stage_{index}",
+                "handler": plugin_id,
+                "changed_fields": [],
+                "route_changed": False,
+                "task_type_before": "chat",
+                "task_type_after": "chat",
+                "primary_intent_before": "standard",
+                "primary_intent_after": "standard",
+                "execution_policy_before": "plugin_orchestrator",
+                "execution_policy_after": "plugin_orchestrator",
+                "prompt_injection_count": 0,
+                "trace_note_count": len(stage_notes),
+                "debug_entry_count": 0,
+            }
+        )
+        debug_flow.append(
+            {
+                "step": len(debug_flow) + 1,
+                "stage": "plugin_stage",
+                "title": plugin_id,
+                "detail": stage_trace,
+            }
+        )
+        agent_panels.append(
+            {
+                "role": plugin_id,
+                "title": manifest.title,
+                "kind": "agent",
+                "summary": _main_preview(stage_result.get("text"), limit=140),
+                "bullets": [
+                    f"ok={bool(stage_result.get('ok'))}",
+                    f"tools={len(stage_result.get('tool_events') or [])}",
+                    f"notes={len(stage_notes)}",
+                ],
+            }
+        )
+
+        if plugin_id == "reviewer_agent":
+            reviewer_payload = _main_extract_json_object(str(stage_result.get("text") or ""))
+            if isinstance(reviewer_payload, dict):
+                reviewer_verdict = str(reviewer_payload.get("verdict") or "").strip().lower()
+
+    final_candidate_order = [
+        "structurer_agent",
+        "revision_agent",
+        "reviewer_agent",
+        target_agent,
+        "worker_agent",
+        "summarizer_agent",
+        "planner_agent",
+        "coordinator_agent",
+    ]
+    final_result: dict[str, Any] | None = None
+    for plugin_id in final_candidate_order:
+        candidate = stage_results.get(plugin_id)
+        if not isinstance(candidate, dict):
+            continue
+        if not bool(candidate.get("ok")):
+            continue
+        if str(candidate.get("text") or "").strip():
+            final_result = candidate
+            break
+    if final_result is None:
+        final_result = stage_results.get(target_agent) or {"text": "(empty response)", "effective_model": "", "decision": {}}
+
+    final_text = str(final_result.get("text") or "").strip() or "(empty response)"
+    final_model = str(final_result.get("effective_model") or req.settings.model or config.default_model).strip()
+
+    kernel_routing = {
+        "mode": "plugin_orchestrator_v1",
+        "selection_summary": f"router_agent -> {target_agent}",
+        "router_decision": router_decision,
+        "target_agent": target_agent,
+        "stage_plan": stage_plan,
+    }
+
+    dedup_notes: list[str] = []
+    seen_notes: set[str] = set()
+    for item in aggregated_notes:
+        key = str(item or "").strip()
+        if not key or key in seen_notes:
+            continue
+        seen_notes.add(key)
+        dedup_notes.append(key)
+
+    execution_trace.append(f"主结果来源: {str(final_result.get('plugin_id') or target_agent)}")
+    if dedup_notes:
+        execution_trace.append(f"质量备注: {', '.join(dedup_notes[:6])}")
+
+    business_result = {
+        "mode": "plugin_orchestrator_v1",
+        "target_agent": target_agent,
+        "stage_count": len(stage_results),
+        "stages": [
+            {
+                "plugin_id": pid,
+                "ok": bool((stage_results.get(pid) or {}).get("ok")),
+                "notes": list((stage_results.get(pid) or {}).get("notes") or []),
+                "swarm": dict(((stage_results.get(pid) or {}).get("decision") or {}).get("swarm") or {}),
+            }
+            for pid in stage_results.keys()
+        ],
+        "notes": dedup_notes,
+        "router": router_decision,
+    }
+    target_swarm = dict(((stage_results.get(target_agent) or {}).get("decision") or {}).get("swarm") or {})
+    if target_swarm:
+        business_result["swarm"] = target_swarm
+
+    return {
+        "text": final_text,
+        "selected_module_id": target_agent,
+        "kernel_routing": kernel_routing,
+        "tool_events": aggregated_tools,
+        "attachment_note": "",
+        "execution_plan": execution_plan,
+        "execution_trace": execution_trace,
+        "pipeline_hooks": pipeline_hooks,
+        "debug_flow": debug_flow,
+        "agent_panels": agent_panels,
+        "active_roles": active_roles,
+        "current_role": current_role,
+        "role_states": role_states,
+        "answer_bundle": _build_answer_bundle_from_plugin_text(final_text),
+        "token_usage": usage_total,
+        "effective_model": final_model,
+        "route_state": dict(route_state_input or {}),
+        "business_result": business_result,
+    }
+
+
 def _process_chat_request(
     req: ChatRequest, progress_cb: Callable[[dict[str, Any]], None] | None = None
 ) -> ChatResponse:
@@ -1532,56 +2042,114 @@ def _process_chat_request(
                 attachment_ids=resolved_attachment_ids,
             )
 
-        _emit_progress(progress_cb, "stage", code="agent_run_start", detail="开始通过 KernelHost 进行业务模块分发。", run_id=run_id)
-        task_request = TaskRequest(
-            task_id=run_id,
-            task_type="chat",
-            message=req.message,
-            attachments=attachments,
-            settings=req.settings.model_dump(),
-            context={
-                "history_turns": session.get("turns", []),
-                "summary": session.get("summary", ""),
-                "session_id": session_id,
-                "route_state": route_state_input,
-                "progress_cb": progress_cb,
-            },
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="agent_run_start",
+            detail="开始通过 LLM 中央调度 + 12 插件编排执行。",
+            run_id=run_id,
         )
-        module_response = get_agent_os_runtime().dispatch(task_request)
-        if not module_response.ok:
-            raise HTTPException(status_code=500, detail=module_response.error or "business module dispatch failed")
-        payload = dict(module_response.payload or {})
-        text = str(module_response.text or "")
-        selected_module_id = str(payload.get("module_id") or "worker_agent")
-        kernel_routing = dict(payload.get("kernel_routing") or {})
-        tool_events = list(payload.get("tool_events") or [])
-        attachment_note = str(payload.get("attachment_note") or "")
-        execution_plan = list(payload.get("execution_plan") or [])
-        execution_trace = list(payload.get("execution_trace") or [])
-        pipeline_hooks = list(payload.get("pipeline_hooks") or [])
-        debug_flow = list(payload.get("debug_flow") or [])
-        agent_panels = list(payload.get("agent_panels") or [])
-        active_roles = list(payload.get("active_roles") or [])
-        current_role = str(payload.get("current_role") or "")
-        role_states = list(payload.get("role_states") or [])
-        answer_bundle = payload.get("answer_bundle") or {}
-        token_usage = dict(payload.get("usage_total") or {})
-        effective_model = str(payload.get("effective_model") or "")
-        route_state = payload.get("route_state") if isinstance(payload.get("route_state"), dict) else {}
-        if kernel_routing:
-            routing_message = f"平台模块选择: {kernel_routing.get('selection_summary') or selected_module_id}"
-            execution_trace.insert(0, routing_message)
-            _emit_progress(progress_cb, "trace", message=routing_message, index=1, run_id=run_id)
-        if selected_module_id == "research_module":
-            research_payload = dict(payload.get("research") or {})
-            research_trace = (
-                "Research 模块结果: "
-                f"grade={research_payload.get('result_grade') or '-'} · "
-                f"sources={research_payload.get('source_count') or 0} · "
-                f"strategy={research_payload.get('return_strategy') or '-'}"
+        plugin_result: dict[str, Any] | None = None
+        plugin_error = ""
+        try:
+            plugin_result = _run_main_chat_plugin_orchestration(
+                req=req,
+                session_id=session_id,
+                route_state_input=route_state_input,
+                attachments=attachments,
+                progress_cb=progress_cb,
+                run_id=run_id,
             )
-            execution_trace.append(research_trace)
-            _emit_progress(progress_cb, "trace", message=research_trace, index=len(execution_trace), run_id=run_id)
+        except Exception as exc:
+            plugin_error = str(exc)
+            _emit_progress(
+                progress_cb,
+                "trace",
+                message=f"插件编排主链路失败，回退 legacy business module：{plugin_error}",
+                run_id=run_id,
+            )
+
+        payload: dict[str, Any] = {}
+        if isinstance(plugin_result, dict):
+            text = str(plugin_result.get("text") or "")
+            selected_module_id = str(plugin_result.get("selected_module_id") or "worker_agent")
+            kernel_routing = dict(plugin_result.get("kernel_routing") or {})
+            tool_events = list(plugin_result.get("tool_events") or [])
+            attachment_note = str(plugin_result.get("attachment_note") or "")
+            execution_plan = list(plugin_result.get("execution_plan") or [])
+            execution_trace = list(plugin_result.get("execution_trace") or [])
+            pipeline_hooks = list(plugin_result.get("pipeline_hooks") or [])
+            debug_flow = list(plugin_result.get("debug_flow") or [])
+            agent_panels = list(plugin_result.get("agent_panels") or [])
+            active_roles = list(plugin_result.get("active_roles") or [])
+            current_role = str(plugin_result.get("current_role") or "")
+            role_states = list(plugin_result.get("role_states") or [])
+            answer_bundle = plugin_result.get("answer_bundle") or {}
+            token_usage = dict(plugin_result.get("token_usage") or {})
+            effective_model = str(plugin_result.get("effective_model") or "")
+            route_state = (
+                plugin_result.get("route_state")
+                if isinstance(plugin_result.get("route_state"), dict)
+                else dict(route_state_input or {})
+            )
+            business_result = dict(plugin_result.get("business_result") or {})
+            payload = {
+                "mode": "plugin_orchestrator_v1",
+                "swarm": dict(business_result.get("swarm") or {}),
+                "research": dict(business_result),
+            }
+        else:
+            task_request = TaskRequest(
+                task_id=run_id,
+                task_type="chat",
+                message=req.message,
+                attachments=attachments,
+                settings=req.settings.model_dump(),
+                context={
+                    "history_turns": session.get("turns", []),
+                    "summary": session.get("summary", ""),
+                    "session_id": session_id,
+                    "route_state": route_state_input,
+                    "progress_cb": progress_cb,
+                },
+            )
+            module_response = get_agent_os_runtime().dispatch(task_request)
+            if not module_response.ok:
+                raise HTTPException(status_code=500, detail=module_response.error or "business module dispatch failed")
+            payload = dict(module_response.payload or {})
+            text = str(module_response.text or "")
+            selected_module_id = str(payload.get("module_id") or "worker_agent")
+            kernel_routing = dict(payload.get("kernel_routing") or {})
+            tool_events = list(payload.get("tool_events") or [])
+            attachment_note = str(payload.get("attachment_note") or "")
+            execution_plan = list(payload.get("execution_plan") or [])
+            execution_trace = list(payload.get("execution_trace") or [])
+            pipeline_hooks = list(payload.get("pipeline_hooks") or [])
+            debug_flow = list(payload.get("debug_flow") or [])
+            agent_panels = list(payload.get("agent_panels") or [])
+            active_roles = list(payload.get("active_roles") or [])
+            current_role = str(payload.get("current_role") or "")
+            role_states = list(payload.get("role_states") or [])
+            answer_bundle = payload.get("answer_bundle") or {}
+            token_usage = dict(payload.get("usage_total") or {})
+            effective_model = str(payload.get("effective_model") or "")
+            route_state = payload.get("route_state") if isinstance(payload.get("route_state"), dict) else {}
+            business_result = dict(payload.get("swarm") or payload.get("research") or {})
+            if kernel_routing:
+                routing_message = f"平台模块选择: {kernel_routing.get('selection_summary') or selected_module_id}"
+                execution_trace.insert(0, routing_message)
+                _emit_progress(progress_cb, "trace", message=routing_message, index=1, run_id=run_id)
+            if selected_module_id == "research_module":
+                research_payload = dict(payload.get("research") or {})
+                research_trace = (
+                    "Research 模块结果: "
+                    f"grade={research_payload.get('result_grade') or '-'} · "
+                    f"sources={research_payload.get('source_count') or 0} · "
+                    f"strategy={research_payload.get('return_strategy') or '-'}"
+                )
+                execution_trace.append(research_trace)
+                _emit_progress(progress_cb, "trace", message=research_trace, index=len(execution_trace), run_id=run_id)
+
         _emit_progress(progress_cb, "stage", code="agent_run_done", detail="模型推理结束，开始写入会话与统计。", run_id=run_id)
         if missing_attachment_ids:
             warning_msg = f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
@@ -1750,6 +2318,7 @@ def _process_chat_request(
                     "kernel_module_health": kernel_health.get("module_health") or {},
                     "selected_business_module": selected_module_id,
                     "kernel_routing": kernel_routing,
+                    "business_result": business_result,
                     "message_preview": req.message[:500],
                     "response_preview": text[:500],
                 }
@@ -1790,7 +2359,7 @@ def _process_chat_request(
             global_token_totals=TokenTotals(**global_totals_raw),
             selected_business_module=selected_module_id,
             kernel_routing=kernel_routing,
-            business_result=dict(payload.get("swarm") or payload.get("research") or {}),
+            business_result=dict(business_result or {}),
             turn_count=len(session.get("turns", [])),
             summarized=summarized,
         )

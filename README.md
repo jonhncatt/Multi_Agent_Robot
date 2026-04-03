@@ -395,21 +395,22 @@ HTTP / UI
   -> response + trace
 ```
 
-### 执行链路核对（2026-04-02）
+### 执行链路核对（2026-04-03）
 
 如果你在旧文档里看到下面这条描述，请按当前代码理解：
 
 - `前端请求进入 POST /api/chat`：是（入口在 `app/main.py`）。
-- `LLMRouter 读取 12 个 Agent 的 manifest.json`：部分成立。`/api/chat` 主链路仍是 `KernelHost.dispatch -> business_module`，不会直接按 12 插件逐个执行；但 **Control Panel 与 `/api/agent-plugins`** 已由 `app/agents/manifests/*.json` + `AgentPluginRuntime` 驱动，插件-工具绑定关系在运行时可查询。
+- `LLMRouter 读取 12 个 Agent 的 manifest.json`：是。`/api/chat` 已默认优先走 **中央调度 + 12 插件编排主链路**（`router_agent -> stage plan -> target plugin -> review/revision/structurer`），失败时才回退 `KernelHost.dispatch -> business_module`。
 - `LLM 生成最短执行步骤（1~4 步）`：否（不是固定协议）。`execution_plan` 来自业务模块运行时动态生成，没有全局 1~4 步硬约束。
-- `对应 Agent 执行 handle_task`：否。当前业务模块入口是 `handle/invoke`（`KernelHost.dispatch -> business_module.handle`），并非 12 个插件统一 `handle_task`。
-- `汇总返回，并写入会话`：是。结果会在 `app/main.py` 里通过 `session_store.append_turn(...)` 和 `session_store.save(...)` 持久化。
+- `对应 Agent 执行 handle_task`：否。插件链路使用 `AgentPluginRuntime.run_plugin(...)`，业务模块回退链路仍是 `KernelHost.dispatch -> business_module.handle`。
+- `汇总返回，并写入会话`：是。插件主链路与回退链路都会在 `app/main.py` 中统一落盘（`session_store.append_turn(...)` + `session_store.save(...)`）。
 
 ### Swarm 与 Tool（当前实现）
 
 - `Swarm` 有两条正式能力链路：  
   1) `research_module` 内部 Swarm（`swarm_inputs` 并行 branch + join + `serial_replay`）；  
   2) `AgentPluginRuntime` 的独立插件 Swarm（manifest 驱动的父子分支、递归深度控制、join 策略、失败回放）。
+- `/api/chat` 主链路会通过 `router_agent` 选目标插件，并按阶段调用 12 插件编排；目标插件在满足条件时会启用 manifest 声明的 Swarm 分支能力（含 `decision.swarm` 可追踪树）。
 - `office_module` 内部有 `Router/Planner/Worker/Reviewer/Revision` 多角色协作，但这是模块内编排，不是 Kernel 顶层“12 插件调度”主路径。
 - `Agent 插件 Tool 关系`：`app/agents/manifests/*.json` 为每个插件声明 `tool_profile / allowed_tools / max_tool_rounds`；运行时由 `app/agents/plugin_runtime.py` 解析，并暴露到 `GET /api/health`（control_panel_topology）与 `GET /api/agent-plugins`。
 - `Agent 插件质量标准`：运行时对每个插件应用 legacy 经验基线（`quality_profile / scope / stop_rules / response_contract / tool_expectation`），并在独立运行接口里执行 JSON 契约校验、工具取证 nudge 和质量 notes。
