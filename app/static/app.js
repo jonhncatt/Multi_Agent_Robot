@@ -1,8 +1,22 @@
-import React, { useEffect, useRef, useState } from "https://esm.sh/react@18.3.1";
-import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
-import htm from "https://esm.sh/htm@3.1.1";
+const ReactRuntime = window.React;
+const ReactDomRuntime = window.ReactDOM;
+const htmRuntime = window.htm;
 
-const html = htm.bind(React.createElement);
+if (!ReactRuntime || !ReactDomRuntime || !htmRuntime) {
+  const root = document.getElementById("root");
+  if (root) {
+    root.innerHTML = `
+      <div style="padding:24px;font:14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;color:#1f2328;">
+        前端资源加载失败。请刷新页面；如果问题持续，请检查 /static/vendor 下的本地脚本是否可访问。
+      </div>
+    `;
+  }
+  throw new Error("Local frontend vendor scripts are unavailable.");
+}
+
+const { useEffect, useRef, useState } = ReactRuntime;
+const { createRoot } = ReactDomRuntime;
+const html = htmRuntime.bind(ReactRuntime.createElement);
 
 const SESSION_STORAGE_KEY = "vintage_programmer.session_id";
 const DEFAULT_SETTINGS = {
