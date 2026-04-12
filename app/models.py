@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class ChatSettings(BaseModel):
+    provider: str | None = None
     model: str | None = None
     max_output_tokens: int = Field(default=128000, ge=120, le=128000)
     max_context_turns: int = Field(default=2000, ge=2, le=2000)
@@ -17,6 +18,7 @@ class ChatSettings(BaseModel):
 
 class ChatRequest(BaseModel):
     session_id: str | None = None
+    project_id: str | None = None
     message: str = Field(min_length=1)
     attachment_ids: list[str] = Field(default_factory=list)
     settings: ChatSettings = Field(default_factory=ChatSettings)
@@ -27,8 +29,12 @@ class ToolEvent(BaseModel):
     input: dict | None = None
     output_preview: str
     status: str = "ok"
+    group: str = ""
+    source: str = ""
     summary: str = ""
     source_refs: list[str] = Field(default_factory=list)
+    project_root: str = ""
+    cwd: str = ""
     module_id: str = ""
     module_title: str = ""
     module_group: str = ""
@@ -156,6 +162,11 @@ class UploadResponse(BaseModel):
 
 class NewSessionResponse(BaseModel):
     session_id: str
+    project_id: str = ""
+
+
+class NewSessionRequest(BaseModel):
+    project_id: str | None = None
 
 
 class UpdateSessionTitleRequest(BaseModel):
@@ -185,6 +196,11 @@ class SessionDetailResponse(BaseModel):
     title: str = ""
     summary: str = ""
     turn_count: int = 0
+    project_id: str = ""
+    project_title: str = ""
+    project_root: str = ""
+    git_branch: str = ""
+    cwd: str = ""
     agent_state: dict[str, object] = Field(default_factory=dict)
     turns: list[SessionTurn] = Field(default_factory=list)
 
@@ -195,6 +211,11 @@ class SessionListItem(BaseModel):
     has_custom_title: bool = False
     preview: str = ""
     turn_count: int = 0
+    project_id: str = ""
+    project_title: str = ""
+    project_root: str = ""
+    git_branch: str = ""
+    cwd: str = ""
     updated_at: str = ""
     created_at: str = ""
 
@@ -203,13 +224,102 @@ class SessionListResponse(BaseModel):
     sessions: list[SessionListItem] = Field(default_factory=list)
 
 
+class ProjectDescriptor(BaseModel):
+    project_id: str
+    title: str
+    root_path: str
+    created_at: str = ""
+    updated_at: str = ""
+    last_opened_at: str = ""
+    pinned: bool = False
+    is_default: bool = False
+    git_root: str = ""
+    git_branch: str = ""
+    is_worktree: bool = False
+
+
+class ProjectListResponse(BaseModel):
+    projects: list[ProjectDescriptor] = Field(default_factory=list)
+
+
+class ProjectCreateRequest(BaseModel):
+    root_path: str = Field(min_length=1)
+    title: str = Field(default="", max_length=120)
+
+
+class ProjectUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
+    pinned: bool | None = None
+
+
+class ProjectDeleteResponse(BaseModel):
+    ok: bool
+    project_id: str
+
+
+class ToolDescriptor(BaseModel):
+    name: str
+    group: str
+    source: str
+    enabled: bool = True
+    read_only: bool = False
+    requires_evidence: bool = False
+    summary: str = ""
+
+
+class SkillDescriptor(BaseModel):
+    id: str
+    title: str
+    path: str
+    enabled: bool = False
+    bind_to: list[str] = Field(default_factory=list)
+    summary: str = ""
+    validation_status: str = "valid"
+    content: str = ""
+
+
+class SpecDescriptor(BaseModel):
+    name: str
+    path: str
+    editable: bool = True
+    validation_status: str = "valid"
+    content: str = ""
+
+
+class WorkbenchToolsResponse(BaseModel):
+    tools: list[ToolDescriptor] = Field(default_factory=list)
+
+
+class WorkbenchSkillsResponse(BaseModel):
+    skills: list[SkillDescriptor] = Field(default_factory=list)
+
+
+class WorkbenchSpecsResponse(BaseModel):
+    specs: list[SpecDescriptor] = Field(default_factory=list)
+
+
+class SkillUpsertRequest(BaseModel):
+    content: str = Field(min_length=1)
+
+
+class ToggleSkillRequest(BaseModel):
+    enabled: bool | None = None
+
+
+class SpecUpsertRequest(BaseModel):
+    content: str = Field(min_length=1)
+
+
 class HealthResponse(BaseModel):
     ok: bool
     app_title: str = ""
     app_version: str = ""
     build_version: str = ""
     default_model: str = ""
+    model_options: list[str] = Field(default_factory=list)
+    allow_custom_model: bool = True
     llm_provider: str = ""
+    provider_options: list[dict[str, object]] = Field(default_factory=list)
     auth_mode: str = ""
     execution_mode_default: Literal["host", "docker"] = "host"
     docker_available: bool = False
@@ -220,6 +330,8 @@ class HealthResponse(BaseModel):
     max_upload_mb: int = 0
     web_allow_all_domains: bool = True
     web_allowed_domains: list[str] = Field(default_factory=list)
+    default_project_id: str = ""
+    projects: list[ProjectDescriptor] = Field(default_factory=list)
     runtime_status: dict[str, object] = Field(default_factory=dict)
     agent: dict[str, object] = Field(default_factory=dict)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import os
@@ -17,7 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.bootstrap import AgentOSRuntime, assemble_runtime
-from app.config import load_config
+from app.config import AppConfig, build_provider_config, list_provider_profiles, load_config, normalize_llm_provider_name
 from app.core.bootstrap import build_kernel_runtime
 from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
@@ -42,10 +43,20 @@ from app.models import (
     KernelRuntimeResponse,
     KernelShadowSmokeRequest,
     NewSessionResponse,
+    NewSessionRequest,
+    ProjectCreateRequest,
+    ProjectDescriptor,
+    ProjectDeleteResponse,
+    ProjectListResponse,
+    ProjectUpdateRequest,
     SessionDetailResponse,
     SessionListItem,
     SessionListResponse,
     SessionTurn,
+    SkillDescriptor,
+    SkillUpsertRequest,
+    SpecDescriptor,
+    SpecUpsertRequest,
     UpdateSessionTitleRequest,
     UpdateSessionTitleResponse,
     SandboxDrillRequest,
@@ -53,20 +64,28 @@ from app.models import (
     SandboxDrillStep,
     TokenStatsResponse,
     TokenTotals,
+    ToggleSkillRequest,
+    ToolDescriptor,
     ToolEvent,
     TokenUsage,
     UploadResponse,
+    WorkbenchSkillsResponse,
+    WorkbenchSpecsResponse,
+    WorkbenchToolsResponse,
 )
 from app.openai_auth import OpenAIAuthManager
 from app.operations_overview import build_platform_operations_overview
 from app.pricing import estimate_usage_cost
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
-from app.storage import SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
+from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
+from app.workbench import WorkbenchStore
 
 APP_TITLE = "Vintage Programmer"
 config = load_config()
+AGENT_DIR = Path(__file__).resolve().parent.parent / "agents" / "vintage_programmer"
+project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
 session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
@@ -80,9 +99,17 @@ agent_os_runtime: AgentOSRuntime = assemble_runtime(
 vintage_programmer_runtime = VintageProgrammerRuntime(
     config=config,
     kernel_runtime=kernel_runtime,
-    agent_dir=Path(__file__).resolve().parent.parent / "agents" / "vintage_programmer",
+    agent_dir=AGENT_DIR,
+)
+workbench_store = WorkbenchStore(
+    config=config,
+    agent_dir=AGENT_DIR,
 )
 APP_VERSION = "0.3.5"
+default_project = project_store.ensure_default_project()
+session_store.migrate_missing_project(default_project)
+_provider_runtime_lock = threading.Lock()
+_provider_runtime_cache: dict[str, VintageProgrammerRuntime] = {}
 
 
 def _git_value(*args: str) -> str:
@@ -104,7 +131,7 @@ def _git_value(*args: str) -> str:
 
 def _resolve_build_version() -> str:
     override = str(
-        os.environ.get("MULTI_AGENT_TEAM_BUILD_VERSION") or ""
+        os.environ.get("VP_BUILD_VERSION") or ""
     ).strip()
     if override:
         return override
@@ -191,6 +218,10 @@ def get_kernel_runtime():
     return kernel_runtime
 
 
+def get_project_store() -> ProjectStore:
+    return project_store
+
+
 def get_evolution_store() -> EvolutionStore:
     return evolution_store
 
@@ -201,6 +232,62 @@ def get_agent_os_runtime() -> AgentOSRuntime:
 
 def get_vintage_programmer_runtime() -> VintageProgrammerRuntime:
     return vintage_programmer_runtime
+
+
+def _provider_options_payload() -> list[dict[str, object]]:
+    options: list[dict[str, object]] = []
+    for item in list_provider_profiles(config):
+        provider = str(item.get("provider") or "").strip()
+        if not provider:
+            continue
+        provider_config = build_provider_config(config, provider)
+        auth_summary = OpenAIAuthManager(provider_config).auth_summary()
+        options.append(
+            {
+                "provider": provider,
+                "label": str(item.get("label") or provider),
+                "default_model": str(item.get("default_model") or provider_config.default_model or ""),
+                "model_options": list(item.get("model_options") or provider_config.model_options or []),
+                "auth_ready": bool(auth_summary.get("available")),
+                "auth_mode": str(auth_summary.get("mode") or ""),
+            }
+        )
+    return options
+
+
+def _provider_runtime(provider: str) -> tuple[AppConfig, VintageProgrammerRuntime]:
+    normalized = normalize_llm_provider_name(provider or config.llm_provider)
+    if normalized == config.llm_provider:
+        return config, vintage_programmer_runtime
+    with _provider_runtime_lock:
+        cached = _provider_runtime_cache.get(normalized)
+        if cached is None:
+            provider_config = build_provider_config(config, normalized)
+            cached = VintageProgrammerRuntime(
+                config=provider_config,
+                kernel_runtime=kernel_runtime,
+                agent_dir=AGENT_DIR,
+            )
+            _provider_runtime_cache[normalized] = cached
+        return build_provider_config(config, normalized), cached
+
+
+def _resolve_requested_provider(req: ChatRequest) -> str:
+    requested = normalize_llm_provider_name((req.settings.provider or "").strip() or config.llm_provider)
+    available = {
+        str(item.get("provider") or "").strip()
+        for item in _provider_options_payload()
+        if str(item.get("provider") or "").strip()
+    }
+    if not available:
+        return config.llm_provider
+    if requested not in available:
+        raise HTTPException(status_code=400, detail=f"Provider not configured in env: {requested}")
+    return requested
+
+
+def get_workbench_store() -> WorkbenchStore:
+    return workbench_store
 
 
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
@@ -237,41 +324,184 @@ def index() -> FileResponse:
 def health() -> HealthResponse:
     runtime = get_agent_os_runtime()
     docker_ok, docker_msg = runtime.legacy_tools().docker_status()
-    auth_summary = OpenAIAuthManager(config).auth_summary()
+    provider_options = _provider_options_payload()
+    active_provider = next(
+        (
+            item
+            for item in provider_options
+            if str(item.get("provider") or "").strip() == str(config.llm_provider or "").strip()
+        ),
+        provider_options[0] if provider_options else None,
+    )
+    active_provider_name = str((active_provider or {}).get("provider") or config.llm_provider or "")
+    active_provider_config = build_provider_config(config, active_provider_name)
+    auth_summary = OpenAIAuthManager(active_provider_config).auth_summary()
     agent_descriptor = get_vintage_programmer_runtime().descriptor()
+    projects = get_project_store().list_projects()
+    default_project = get_project_store().ensure_default_project()
+    effective_roots: list[str] = []
+    for raw_root in [*(str(path) for path in config.allowed_roots), *(str(item.get("root_path") or "") for item in projects)]:
+        if raw_root and raw_root not in effective_roots:
+            effective_roots.append(raw_root)
     if config.allow_any_path:
         permission_summary = "full filesystem access enabled"
     else:
-        root_names = [path.name or str(path) for path in config.allowed_roots[:4]]
-        permission_summary = f"{len(config.allowed_roots)} allowed roots: {', '.join(root_names)}"
+        root_names = [(Path(path).name or str(path)) for path in effective_roots[:4]]
+        permission_summary = f"{len(effective_roots)} allowed roots: {', '.join(root_names)}"
     return HealthResponse(
         ok=True,
         app_title=APP_TITLE,
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
-        default_model=str(agent_descriptor.get("default_model") or config.default_model),
-        llm_provider=str(auth_summary.get("provider") or config.llm_provider or ""),
+        default_model=str((active_provider or {}).get("default_model") or active_provider_config.default_model or agent_descriptor.get("default_model") or ""),
+        model_options=list((active_provider or {}).get("model_options") or active_provider_config.model_options or []),
+        allow_custom_model=True,
+        llm_provider=active_provider_name,
+        provider_options=provider_options,
         auth_mode=str(auth_summary.get("mode") or ""),
         execution_mode_default=config.execution_mode,
         docker_available=docker_ok,
         docker_message=docker_msg,
         platform_name=config.platform_name,
         workspace_root=str(config.workspace_root),
-        allowed_roots=[str(path) for path in config.allowed_roots],
+        allowed_roots=effective_roots,
         max_upload_mb=config.max_upload_mb,
         web_allow_all_domains=config.web_allow_all_domains,
         web_allowed_domains=config.web_allowed_domains,
+        default_project_id=str(default_project.get("project_id") or ""),
+        projects=[ProjectDescriptor(**item) for item in projects if isinstance(item, dict)],
         runtime_status={
             "execution_mode": config.execution_mode,
             "auth_ready": bool(auth_summary.get("available")),
             "auth_mode": str(auth_summary.get("mode") or ""),
+            "provider": active_provider_name,
             "permission_summary": permission_summary,
-            "workspace_label": config.workspace_root.name or str(config.workspace_root),
+            "workspace_label": str(default_project.get("title") or config.workspace_root.name or str(config.workspace_root)),
+            "project_root": str(default_project.get("root_path") or config.workspace_root),
+            "default_project_id": str(default_project.get("project_id") or ""),
             "git_branch": GIT_BRANCH,
             "build_version": BUILD_VERSION,
         },
         agent=agent_descriptor,
     )
+
+
+@app.get("/api/workbench/tools", response_model=WorkbenchToolsResponse)
+def workbench_tools() -> WorkbenchToolsResponse:
+    payload = get_vintage_programmer_runtime().descriptor()
+    tools = list((payload.get("tools") or []))
+    return WorkbenchToolsResponse(tools=[ToolDescriptor(**item) for item in tools if isinstance(item, dict)])
+
+
+@app.get("/api/projects", response_model=ProjectListResponse)
+def list_projects() -> ProjectListResponse:
+    rows = get_project_store().list_projects()
+    return ProjectListResponse(projects=[ProjectDescriptor(**item) for item in rows if isinstance(item, dict)])
+
+
+@app.post("/api/projects", response_model=ProjectDescriptor)
+def create_project(req: ProjectCreateRequest) -> ProjectDescriptor:
+    try:
+        project = get_project_store().create(root_path=req.root_path, title=req.title)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ProjectDescriptor(**project)
+
+
+@app.patch("/api/projects/{project_id}", response_model=ProjectDescriptor)
+def update_project(project_id: str, req: ProjectUpdateRequest) -> ProjectDescriptor:
+    try:
+        project = get_project_store().update(project_id, title=req.title, pinned=req.pinned)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ProjectDescriptor(**project)
+
+
+@app.delete("/api/projects/{project_id}", response_model=ProjectDeleteResponse)
+def delete_project(project_id: str) -> ProjectDeleteResponse:
+    try:
+        get_project_store().delete(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ProjectDeleteResponse(ok=True, project_id=project_id)
+
+
+@app.get("/api/workbench/skills", response_model=WorkbenchSkillsResponse)
+def workbench_skills() -> WorkbenchSkillsResponse:
+    skills = get_workbench_store().list_skills()
+    return WorkbenchSkillsResponse(skills=[SkillDescriptor(**item) for item in skills if isinstance(item, dict)])
+
+
+@app.get("/api/workbench/skills/{skill_id}", response_model=SkillDescriptor)
+def workbench_skill_detail(skill_id: str) -> SkillDescriptor:
+    try:
+        return SkillDescriptor(**get_workbench_store().get_skill(skill_id))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/workbench/skills", response_model=SkillDescriptor)
+def workbench_create_skill(req: SkillUpsertRequest) -> SkillDescriptor:
+    try:
+        return SkillDescriptor(**get_workbench_store().create_skill(req.content))
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/workbench/skills/{skill_id}", response_model=SkillDescriptor)
+def workbench_write_skill(skill_id: str, req: SkillUpsertRequest) -> SkillDescriptor:
+    try:
+        return SkillDescriptor(**get_workbench_store().write_skill(skill_id, req.content))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/workbench/skills/{skill_id}/toggle", response_model=SkillDescriptor)
+def workbench_toggle_skill(skill_id: str, req: ToggleSkillRequest) -> SkillDescriptor:
+    try:
+        return SkillDescriptor(**get_workbench_store().toggle_skill(skill_id, enabled=req.enabled))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/workbench/specs", response_model=WorkbenchSpecsResponse)
+def workbench_specs() -> WorkbenchSpecsResponse:
+    specs = get_workbench_store().list_agent_specs()
+    return WorkbenchSpecsResponse(specs=[SpecDescriptor(**item) for item in specs if isinstance(item, dict)])
+
+
+@app.get("/api/workbench/specs/{name}", response_model=SpecDescriptor)
+def workbench_spec_detail(name: str) -> SpecDescriptor:
+    try:
+        return SpecDescriptor(**get_workbench_store().get_agent_spec(name))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/workbench/specs/{name}", response_model=SpecDescriptor)
+def workbench_write_spec(name: str, req: SpecUpsertRequest) -> SpecDescriptor:
+    try:
+        return SpecDescriptor(**get_workbench_store().write_agent_spec(name, req.content))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _kernel_runtime_response(
@@ -353,6 +583,20 @@ def _find_repair_run(run_id: str | None = None) -> dict[str, Any] | None:
     runtime = get_kernel_runtime()
     payload = runtime.find_repair_run(run_id)
     return payload if isinstance(payload, dict) and payload else None
+
+
+def _default_project() -> dict[str, Any]:
+    return get_project_store().ensure_default_project()
+
+
+def _resolve_project_or_default(project_id: str | None) -> dict[str, Any]:
+    wanted = str(project_id or "").strip()
+    if not wanted:
+        return _default_project()
+    project = get_project_store().get(wanted)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project not found: {wanted}")
+    return project
 
 
 @app.get("/api/kernel/runtime", response_model=KernelRuntimeResponse)
@@ -750,9 +994,11 @@ def kernel_shadow_self_upgrade(req: KernelShadowSelfUpgradeRequest) -> KernelRun
 
 
 @app.post("/api/session/new", response_model=NewSessionResponse)
-def create_session() -> NewSessionResponse:
-    session = session_store.create()
-    return NewSessionResponse(session_id=session["id"])
+def create_session(req: NewSessionRequest | None = None) -> NewSessionResponse:
+    project = _resolve_project_or_default((req.project_id if req else None))
+    get_project_store().touch(str(project.get("project_id") or ""))
+    session = session_store.create(project)
+    return NewSessionResponse(session_id=session["id"], project_id=str(project.get("project_id") or ""))
 
 
 @app.delete("/api/session/{session_id}", response_model=DeleteSessionResponse)
@@ -765,7 +1011,7 @@ def delete_session(session_id: str) -> DeleteSessionResponse:
 
 @app.patch("/api/session/{session_id}/title", response_model=UpdateSessionTitleResponse)
 def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> UpdateSessionTitleResponse:
-    loaded = session_store.load(session_id)
+    loaded = session_store.load(session_id, default_project=_default_project())
     if not loaded:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -777,7 +1023,7 @@ def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> Upd
 
 @app.get("/api/session/{session_id}", response_model=SessionDetailResponse)
 def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
-    loaded = session_store.load(session_id)
+    loaded = session_store.load(session_id, default_project=_default_project())
     if not loaded:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -803,14 +1049,19 @@ def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
         title=str(loaded.get("title") or ""),
         summary=str(loaded.get("summary") or ""),
         turn_count=len(turns_raw),
+        project_id=str(loaded.get("project_id") or ""),
+        project_title=str(loaded.get("project_title") or ""),
+        project_root=str(loaded.get("project_root") or ""),
+        git_branch=str(loaded.get("git_branch") or ""),
+        cwd=str(loaded.get("cwd") or ""),
         agent_state=dict(loaded.get("agent_state") or {}),
         turns=turns,
     )
 
 
 @app.get("/api/sessions", response_model=SessionListResponse)
-def list_sessions(limit: int = 50) -> SessionListResponse:
-    rows = session_store.list_sessions(limit=limit)
+def list_sessions(limit: int = 50, project_id: str | None = None) -> SessionListResponse:
+    rows = session_store.list_sessions(limit=limit, project_id=project_id, default_project=_default_project())
     return SessionListResponse(sessions=[SessionListItem(**row) for row in rows])
 
 
@@ -855,7 +1106,14 @@ def clear_stats() -> ClearStatsResponse:
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    return _process_chat_request(req)
+    try:
+        return _process_chat_request(req)
+    except HTTPException as exc:
+        payload = _normalize_chat_error_payload(exc.detail, status_code=exc.status_code)
+        raise HTTPException(status_code=int(payload["status_code"]), detail=payload) from exc
+    except Exception as exc:
+        payload = _normalize_chat_error_payload(exc)
+        raise HTTPException(status_code=int(payload["status_code"]), detail=payload) from exc
 
 
 def _resolve_execution_mode(requested_mode: str | None) -> str:
@@ -977,7 +1235,7 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
                 steps,
                 name="run_shell_python3_version",
                 ok=True,
-                detail="skipped: python3 is not in MULTI_AGENT_TEAM_ALLOWED_COMMANDS",
+                detail="skipped: python3 is not in VP_ALLOWED_COMMANDS",
                 started_at=started,
             )
 
@@ -1064,10 +1322,133 @@ def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: 
         pass
 
 
+def _stringify_error_detail(detail: Any) -> str:
+    if detail is None:
+        return ""
+    if isinstance(detail, str):
+        return detail
+    try:
+        return json.dumps(detail, ensure_ascii=False)
+    except Exception:
+        return str(detail)
+
+
+def _parse_error_detail(detail: Any) -> dict[str, Any] | None:
+    if isinstance(detail, dict):
+        return detail
+    raw_text = str(detail or "").strip()
+    if not raw_text or raw_text[:1] not in {"{", "["}:
+        return None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(raw_text)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    try:
+        normalized = int(str(value).strip())
+    except Exception:
+        return None
+    return normalized if normalized > 0 else None
+
+
+def _extract_provider_name(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    candidates = [
+        payload.get("provider"),
+        payload.get("provider_name"),
+        ((payload.get("metadata") or {}) if isinstance(payload.get("metadata"), dict) else {}).get("provider_name"),
+    ]
+    nested_error = payload.get("error")
+    if isinstance(nested_error, dict):
+        candidates.extend(
+            [
+                nested_error.get("provider"),
+                nested_error.get("provider_name"),
+                ((nested_error.get("metadata") or {}) if isinstance(nested_error.get("metadata"), dict) else {}).get("provider_name"),
+            ]
+        )
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _normalize_chat_error_payload(detail: Any, *, status_code: int | None = None) -> dict[str, Any]:
+    if isinstance(detail, dict) and {"kind", "summary", "detail"}.issubset(detail.keys()):
+        normalized = dict(detail)
+        normalized["status_code"] = _coerce_int(normalized.get("status_code")) or _coerce_int(status_code) or 500
+        normalized["detail"] = _stringify_error_detail(normalized.get("detail"))
+        normalized["summary"] = str(normalized.get("summary") or "请求失败，请稍后重试。")
+        normalized["kind"] = str(normalized.get("kind") or "unknown")
+        normalized["retryable"] = bool(normalized.get("retryable"))
+        normalized["provider"] = str(normalized.get("provider") or "")
+        return normalized
+
+    parsed = _parse_error_detail(detail)
+    nested_error = (parsed or {}).get("error") if isinstance((parsed or {}).get("error"), dict) else {}
+    raw_detail = _stringify_error_detail(detail)
+    message_text = str(
+        nested_error.get("message")
+        or (parsed or {}).get("message")
+        or (parsed or {}).get("detail")
+        or raw_detail
+    ).strip()
+    lowered = f"{raw_detail}\n{message_text}".lower()
+    extracted_status = (
+        _coerce_int(status_code)
+        or _coerce_int((parsed or {}).get("status_code"))
+        or _coerce_int(nested_error.get("status_code"))
+        or _coerce_int((parsed or {}).get("code"))
+        or _coerce_int(nested_error.get("code"))
+    )
+    provider = _extract_provider_name(parsed) or _extract_provider_name(nested_error)
+
+    if extracted_status == 429 or "rate limit" in lowered or "rate-limit" in lowered or "temporarily rate-limited upstream" in lowered or "too many requests" in lowered:
+        kind = "rate_limit"
+        summary = "模型提供方限流，请稍后重试。"
+        retryable = True
+        resolved_status = 429
+    elif extracted_status in {401, 403} or "unauthorized" in lowered or "forbidden" in lowered or "api key" in lowered or "credentials" in lowered or "authentication" in lowered:
+        kind = "auth"
+        summary = "认证失败，请检查 OpenRouter / OpenAI-compatible key。"
+        retryable = False
+        resolved_status = extracted_status or 401
+    elif extracted_status in {502, 503, 504} or "temporarily unavailable" in lowered or "timeout" in lowered or "timed out" in lowered or "upstream" in lowered:
+        kind = "upstream"
+        summary = "模型提供方暂时不可用，请稍后重试。"
+        retryable = True
+        resolved_status = extracted_status or 503
+    else:
+        kind = "unknown"
+        summary = "请求失败，请稍后重试或查看错误详情。"
+        retryable = False
+        resolved_status = extracted_status or 500
+
+    return {
+        "status_code": resolved_status,
+        "kind": kind,
+        "summary": summary,
+        "detail": raw_detail or message_text or "unknown error",
+        "retryable": retryable,
+        "provider": provider,
+    }
+
+
 def _process_chat_request(
     req: ChatRequest, progress_cb: Callable[[dict[str, Any]], None] | None = None
 ) -> ChatResponse:
-    auth_summary = OpenAIAuthManager(config).auth_summary()
+    requested_provider = _resolve_requested_provider(req)
+    provider_config, provider_runtime = _provider_runtime(requested_provider)
+    req.settings.provider = requested_provider
+    auth_summary = OpenAIAuthManager(provider_config).auth_summary()
     if not bool(auth_summary.get("available")):
         raise HTTPException(status_code=500, detail=str(auth_summary.get("reason") or "LLM credentials are required"))
     run_id = str(uuid.uuid4())
@@ -1082,7 +1463,12 @@ def _process_chat_request(
         run_id=run_id,
     )
 
-    seed_session = session_store.load_or_create(req.session_id)
+    requested_project = _resolve_project_or_default(req.project_id)
+    seed_session = session_store.load_or_create(
+        req.session_id,
+        project=requested_project,
+        default_project=_default_project(),
+    )
     session_id = str(seed_session.get("id") or "")
     if not session_id:
         raise HTTPException(status_code=500, detail="Session create failed")
@@ -1098,7 +1484,19 @@ def _process_chat_request(
                 run_id=run_id,
             )
 
-        session = session_store.load_or_create(session_id)
+        session = session_store.load_or_create(
+            session_id,
+            project=requested_project,
+            default_project=_default_project(),
+        )
+        session_project = get_project_store().get(str(session.get("project_id") or "")) or requested_project
+        get_project_store().touch(str(session_project.get("project_id") or ""))
+        session["project_id"] = str(session_project.get("project_id") or "")
+        session["project_title"] = str(session_project.get("title") or "")
+        session["project_root"] = str(session_project.get("root_path") or "")
+        session["git_branch"] = str(session_project.get("git_branch") or "")
+        if not str(session.get("cwd") or "").strip():
+            session["cwd"] = str(session_project.get("root_path") or "")
         _emit_progress(
             progress_cb,
             "stage",
@@ -1228,11 +1626,19 @@ def _process_chat_request(
             detail="开始通过 vintage_programmer 执行。",
             run_id=run_id,
         )
-        runtime_result = get_vintage_programmer_runtime().run(
+        runtime_result = provider_runtime.run(
             message=req.message,
             settings=req.settings,
             context={
                 "session_id": session_id,
+                "project": {
+                    "project_id": str(session_project.get("project_id") or ""),
+                    "project_title": str(session_project.get("title") or ""),
+                    "project_root": str(session_project.get("root_path") or ""),
+                    "git_branch": str(session_project.get("git_branch") or ""),
+                    "cwd": str(session.get("cwd") or session_project.get("root_path") or ""),
+                    "is_worktree": bool(session_project.get("is_worktree")),
+                },
                 "summary": session.get("summary", ""),
                 "history_turns": session.get("turns", []),
                 "route_state": route_state_input,
@@ -1305,21 +1711,41 @@ def _process_chat_request(
             attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
         )
         session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle)
+        inspector_run_state = (inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}
+        inspector_evidence = (inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}
+        inspector_loaded_skills = list(inspector.get("loaded_skills") or [])
+        tool_hits = [
+            {
+                "name": str(item.get("name") or ""),
+                "group": str(item.get("group") or item.get("module_group") or ""),
+                "status": str(item.get("status") or ""),
+            }
+            for item in tool_events
+            if isinstance(item, dict)
+        ]
         session["agent_state"] = {
             "agent_id": "vintage_programmer",
-            "current_goal": str(((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("goal") or req.message[:140]),
-            "phase": str(((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("phase") or "report"),
+            "goal": str(inspector_run_state.get("goal") or req.message[:140]),
+            "current_goal": str(inspector_run_state.get("goal") or req.message[:140]),
+            "phase": str(inspector_run_state.get("phase") or "report"),
             "last_run_id": run_id,
-            "last_model": effective_model or req.settings.model or config.default_model,
-            "tool_count": len(tool_events),
-            "tool_names": [
-                str(item.get("name") or "")
-                for item in tool_events
-                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            "last_provider": requested_provider,
+            "last_model": effective_model or req.settings.model or provider_config.default_model,
+            "project_id": str(session.get("project_id") or ""),
+            "project_root": str(session.get("project_root") or ""),
+            "cwd": str((((inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}).get("cwd")) or session.get("cwd") or ""),
+            "tool_hits": tool_hits,
+            "tool_count": len(tool_hits),
+            "tool_names": [str(item.get("name") or "") for item in tool_hits if str(item.get("name") or "").strip()],
+            "evidence_status": str(inspector_evidence.get("status") or "not_needed"),
+            "enabled_skill_ids": [
+                str(item.get("id") or "")
+                for item in inspector_loaded_skills
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
             ],
-            "evidence_status": str(((inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}).get("status") or "not_needed"),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        session["cwd"] = str(session["agent_state"].get("cwd") or session.get("project_root") or "")
         try:
             attachment_module.store_scoped_route_state(
                 session=session,
@@ -1354,7 +1780,7 @@ def _process_chat_request(
             run_id=run_id,
         )
 
-        selected_model = effective_model or req.settings.model or config.default_model
+        selected_model = effective_model or req.settings.model or provider_config.default_model
         pricing_meta = estimate_usage_cost(
             model=selected_model,
             input_tokens=token_usage.get("input_tokens", 0),
@@ -1426,6 +1852,9 @@ def _process_chat_request(
                     "agent_id": "vintage_programmer",
                     "session_id": session["id"],
                     "effective_model": selected_model,
+                    "project_id": str(session.get("project_id") or ""),
+                    "project_root": str(session.get("project_root") or ""),
+                    "cwd": str(session.get("cwd") or ""),
                     "attachment_context_mode": attachment_context_mode,
                     "attachment_context_key": resolved_attachment_context_key,
                     "effective_attachment_ids": resolved_attachment_ids,
@@ -1517,14 +1946,15 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
                 response = _process_chat_request(req, progress_cb=emit)
                 events.put({"event": "final", "payload": {"response": response.model_dump()}})
             except HTTPException as exc:
+                payload = _normalize_chat_error_payload(exc.detail, status_code=exc.status_code)
                 events.put(
                     {
                         "event": "error",
-                        "payload": {"status_code": exc.status_code, "detail": str(exc.detail or "HTTP error")},
+                        "payload": payload,
                     }
                 )
             except Exception as exc:
-                events.put({"event": "error", "payload": {"status_code": 500, "detail": str(exc)}})
+                events.put({"event": "error", "payload": _normalize_chat_error_payload(exc)})
             finally:
                 done_event.set()
                 events.put({"event": "done", "payload": {"ok": True}})

@@ -13,12 +13,19 @@ def test_workstation_shell_mounts_exist() -> None:
     required_tokens = [
         'id="appShell"',
         'id="threadSidebar"',
+        'id="projectSection"',
         'id="chatPane"',
         'id="messageList"',
+        'id="emptyPromptLine"',
         'id="composerShell"',
-        'id="detailDrawer"',
+        'id="composerError"',
+        'id="providerSelect"',
+        'id="modelPresetSelect"',
+        'id="modelInput"',
+        'id="projectModal"',
+        'id="workbenchDrawer"',
         'id="statusBar"',
-        'id="settingsModal"',
+        'id="settingsPanel"',
     ]
     for token in required_tokens:
         assert token in script, token
@@ -28,13 +35,29 @@ def test_workstation_shell_behaviors_are_wired() -> None:
     script = APP_JS.read_text()
     required_tokens = [
         "SESSION_STORAGE_KEY",
+        "PROJECT_STORAGE_KEY",
+        "PROVIDER_STORAGE_KEY",
+        "MODEL_STORAGE_KEY",
+        "CUSTOM_MODEL_VALUE",
         "parseSseChunk(",
+        "normalizeUiError(",
+        "resolvePresetModelValue(",
+        "updateProviderSelection(",
         'fetch("/api/chat/stream"',
-        'fetch("/api/upload"',
-        'fetch("/api/sessions?limit=80")',
+        '"/api/upload"',
+        'fetchJson("/api/projects")',
+        'fetchJson(`/api/sessions?limit=80${suffix}`)',
+        'fetchJson("/api/workbench/tools")',
+        'fetchJson("/api/workbench/skills")',
+        'fetchJson("/api/workbench/specs")',
+        "selectProject(",
         "setDrawerView(",
         "handleSelectFiles",
+        "status-alert",
+        "modelStorageKeyForProvider(",
+        "health && health.provider_options",
     ]
     for token in required_tokens:
         assert token in script, token
+    assert 'createMessage("system", `请求失败：${detail}`' not in script
     assert "/api/agent-plugins" not in script

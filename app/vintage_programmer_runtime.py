@@ -3,13 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 from typing import Any, Callable
-
-import yaml
 
 from app.config import AppConfig
 from app.models import ChatSettings, ToolEvent
 from app.openai_auth import OpenAIAuthManager
+from app.workbench import WorkbenchStore, build_tool_descriptors, split_frontmatter, tool_descriptor_by_name
 from packages.office_modules.office_agent_runtime import create_office_runtime_backend
 
 
@@ -38,9 +38,20 @@ _READ_ONLY_TOOL_NAMES = {
     "search_web",
     "list_sessions",
     "read_session_history",
+    "browser_open",
+    "browser_click",
+    "browser_type",
+    "browser_wait",
+    "browser_snapshot",
+    "browser_screenshot",
+    "view_image",
+    "list_skills",
+    "read_skill",
+    "list_agent_specs",
+    "read_agent_spec",
 }
 
-_TOOL_REQUIRED_HINTS = (
+_EXPLICIT_NETWORK_HINTS = (
     "最新",
     "news",
     "today",
@@ -49,43 +60,137 @@ _TOOL_REQUIRED_HINTS = (
     "search",
     "搜索",
     "检索",
-    "文件",
-    "附件",
-    "read",
-    "查看代码",
-    "codebase",
-    "代码库",
-    "run",
-    "执行",
-    "修复",
-    "fix",
-    "写入",
-    "保存",
-    "update",
+    "截图",
+    "screenshot",
+    "浏览器",
+    "playwright",
+    "image",
+    "http://",
+    "https://",
+    "www.",
 )
 
+_EXPLICIT_WORKSPACE_HINTS = (
+    "当前工作区",
+    "整个仓库",
+    "整个代码库",
+    "这个仓库",
+    "这个 repo",
+    "repo",
+    "codebase",
+    "目录",
+    "文件树",
+    "读取文件",
+    "打开文件",
+    "查看文件",
+    "修改文件",
+    "补丁",
+    "patch",
+    "skill",
+    "skills",
+    "soul.md",
+    "identity.md",
+    "agent.md",
+    "tools.md",
+    "终端",
+    "shell",
+    "命令行",
+    "命令",
+    "run shell",
+    "执行命令",
+)
 
-def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    raw = str(text or "")
-    if not raw.startswith("---\n"):
-        return {}, raw
-    end = raw.find("\n---\n", 4)
-    if end < 0:
-        return {}, raw
-    frontmatter = raw[4:end]
-    body = raw[end + 5 :]
-    try:
-        parsed = yaml.safe_load(frontmatter) or {}
-    except Exception as exc:
-        raise RuntimeError(f"agent.md frontmatter parse failed: {exc}") from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeError("agent.md frontmatter must be a mapping")
-    return parsed, body
+_INLINE_DOC_CODE_FENCE_HINTS = (
+    "```xml",
+    "```html",
+    "```json",
+    "```yaml",
+    "```yml",
+    "```rss",
+    "```atom",
+    "```python",
+    "```py",
+    "```ts",
+    "```tsx",
+    "```js",
+    "```jsx",
+)
 
 
 def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
     lowered = str(text or "").lower()
     return any(str(item).lower() in lowered for item in hints)
+
+
+def _looks_like_explicit_tool_request(text: str) -> bool:
+    raw = str(text or "").strip()
+    lowered = raw.lower()
+    if not raw:
+        return False
+    if _contains_any(lowered, _EXPLICIT_NETWORK_HINTS):
+        return True
+    if _contains_any(lowered, _EXPLICIT_WORKSPACE_HINTS):
+        return True
+    if re.search(r"(^|[\s`])(?:rg|grep|find|ls|cat|sed|head|tail|git|python|pytest|npm|pnpm|yarn)\s", lowered):
+        return True
+    if re.search(r"(?:^|[\s(])(?:[A-Za-z]:\\|/)[^\s]+", raw):
+        return True
+    if re.search(r"\b[\w./-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|md|txt|html|css|sh|ps1)\b", lowered):
+        return True
+    return False
+
+
+def _looks_like_inline_code_payload(text: str) -> bool:
+    raw = str(text or "").strip()
+    if len(raw) < 60:
+        return False
+    fenced_blocks = re.findall(r"```[A-Za-z0-9_+.-]*\n([\s\S]{80,}?)```", raw)
+    code_markers = (
+        "def ",
+        "class ",
+        "return ",
+        "import ",
+        "from ",
+        "const ",
+        "let ",
+        "function ",
+        "public ",
+        "private ",
+        "if (",
+        "=>",
+        "</",
+        "{",
+        "};",
+    )
+    if any(any(marker in block for marker in code_markers) for block in fenced_blocks[:3]):
+        return True
+    lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
+    if len(lines) < 6:
+        return False
+    marker_hits = sum(1 for line in lines[:40] if any(marker in line for marker in code_markers))
+    punctuation_hits = sum(1 for line in lines[:40] if line.count("{") + line.count("}") + line.count(";") >= 1)
+    return marker_hits >= 4 or (marker_hits >= 2 and punctuation_hits >= 4)
+
+
+def _looks_like_inline_document_payload(text: str) -> bool:
+    raw = str(text or "").strip()
+    lowered = raw.lower()
+    if any(marker in lowered for marker in _INLINE_DOC_CODE_FENCE_HINTS):
+        return True
+    if len(raw) < 60:
+        return False
+    if "<?xml" in lowered:
+        return True
+    if _looks_like_inline_code_payload(raw):
+        return True
+    xml_tag_matches = re.findall(r"</?[a-zA-Z_][\w:.-]*(?:\s[^<>]{0,200})?>", raw)
+    if len(xml_tag_matches) >= 6 and ("\n" in raw or len(raw) >= 240):
+        return True
+    json_key_count = len(re.findall(r'"[^"\n]{1,80}"\s*:', raw))
+    if json_key_count >= 4 and len(raw) >= 180:
+        return True
+    yaml_key_count = len(re.findall(r"(?m)^[A-Za-z0-9_.-]{1,60}:\s+\S", raw))
+    return yaml_key_count >= 5 and len(raw) >= 180
 
 
 def _coerce_string_list(value: Any, *, default: tuple[str, ...] = ()) -> tuple[str, ...]:
@@ -147,8 +252,8 @@ class VintageProgrammerSpec:
         capabilities = {
             "allowed_tools": list(self.allowed_tools),
             "tool_count": len(self.allowed_tools),
-            "can_network": any(name in {"search_web", "fetch_web", "download_web_file"} for name in self.allowed_tools),
-            "can_write": any("write" in name or "replace" in name or "append" in name for name in self.allowed_tools),
+            "can_network": any(name in {"search_web", "fetch_web", "download_web_file", "browser_open"} for name in self.allowed_tools),
+            "can_write": any(name in {"write_text_file", "append_text_file", "replace_in_file", "apply_patch", "write_skill", "toggle_skill", "write_agent_spec"} for name in self.allowed_tools),
         }
         workflow = {
             "phases": list(self.workflow_phases),
@@ -163,6 +268,14 @@ class VintageProgrammerSpec:
         network = {
             "mode": self.network_mode,
             "web_tool_contract": ["search_web", "fetch_web", "download_web_file"],
+            "browser_tool_contract": [
+                "browser_open",
+                "browser_click",
+                "browser_type",
+                "browser_wait",
+                "browser_snapshot",
+                "browser_screenshot",
+            ],
         }
         return {
             "agent_id": self.agent_id,
@@ -198,13 +311,15 @@ class VintageProgrammerRuntime:
             config,
             kernel_runtime=kernel_runtime,
         )
+        self._tool_specs = list(getattr(self._backend.tools, "tool_specs", []) or [])
         self._tool_specs_by_name = self._build_tool_spec_index()
-        self._spec = self._load_spec()
+        self._tool_descriptors = build_tool_descriptors(self._tool_specs)
+        self._tool_descriptors_by_name = tool_descriptor_by_name(self._tool_specs)
+        self._workbench = WorkbenchStore(config=config, agent_dir=self._agent_dir)
 
     def _build_tool_spec_index(self) -> dict[str, dict[str, Any]]:
-        specs = list(getattr(self._backend.tools, "tool_specs", []) or [])
         by_name: dict[str, dict[str, Any]] = {}
-        for item in specs:
+        for item in self._tool_specs:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name") or "").strip()
@@ -238,10 +353,13 @@ class VintageProgrammerRuntime:
         if tools_path.is_file():
             tools_text = tools_path.read_text(encoding="utf-8").strip()
 
-        frontmatter, agent_text = _split_frontmatter(agent_text_raw)
+        try:
+            frontmatter, agent_text = split_frontmatter(agent_text_raw)
+        except Exception as exc:
+            raise RuntimeError(f"agent.md frontmatter parse failed: {exc}") from exc
         agent_id = str(frontmatter.get("id") or "vintage_programmer").strip() or "vintage_programmer"
         title = str(frontmatter.get("title") or "Vintage Programmer").strip() or "Vintage Programmer"
-        default_model = str(frontmatter.get("default_model") or self._config.default_model).strip() or self._config.default_model
+        default_model = str(self._config.default_model or frontmatter.get("default_model") or "").strip() or self._config.default_model
         tool_policy = str(frontmatter.get("tool_policy") or "all").strip().lower() or "all"
         if tool_policy not in {"all", "read_only", "none"}:
             tool_policy = "all"
@@ -283,30 +401,57 @@ class VintageProgrammerRuntime:
             spec_files=tuple(spec_files),
         )
 
+    def _enabled_skills(self, agent_id: str) -> list[dict[str, Any]]:
+        return self._workbench.enabled_skills_for_agent(agent_id)
+
     def descriptor(self) -> dict[str, object]:
-        payload = self._spec.descriptor()
-        payload["capabilities"] = dict(payload.get("capabilities") or {})
-        payload["capabilities"]["tools"] = [
-            {
-                "name": name,
-                "description": str((self._tool_specs_by_name.get(name) or {}).get("description") or "").strip(),
-            }
-            for name in self._spec.allowed_tools
+        spec = self._load_spec()
+        loaded_skills = self._enabled_skills(spec.agent_id)
+        payload = spec.descriptor()
+        allowed_tool_descriptors = [
+            dict(self._tool_descriptors_by_name.get(name) or {"name": name, "group": "", "source": "", "enabled": True, "read_only": False, "requires_evidence": False, "summary": ""})
+            for name in spec.allowed_tools
         ]
-        payload["tool_count"] = len(self._spec.allowed_tools)
-        payload["tools"] = list(payload["capabilities"]["tools"])
+        payload["capabilities"] = dict(payload.get("capabilities") or {})
+        payload["capabilities"]["tools"] = allowed_tool_descriptors
+        payload["capabilities"]["tool_groups"] = sorted({str(item.get("group") or "") for item in allowed_tool_descriptors if str(item.get("group") or "")})
+        payload["tool_count"] = len(spec.allowed_tools)
+        payload["tools"] = allowed_tool_descriptors
+        payload["loaded_skills"] = [
+            {
+                "id": str(item.get("id") or ""),
+                "title": str(item.get("title") or ""),
+                "summary": str(item.get("summary") or ""),
+                "path": str(item.get("path") or ""),
+            }
+            for item in loaded_skills
+        ]
         return payload
 
-    def _render_system_prompt(self, settings: ChatSettings) -> str:
+    def _render_system_prompt(
+        self,
+        settings: ChatSettings,
+        *,
+        spec: VintageProgrammerSpec,
+        loaded_skills: list[dict[str, Any]],
+    ) -> str:
         parts = [
-            f"[soul.md]\n{self._spec.soul_text}",
-            f"[identity.md]\n{self._spec.identity_text}",
-            f"[agent.md]\n{self._spec.agent_text}",
+            f"[soul.md]\n{spec.soul_text}",
+            f"[identity.md]\n{spec.identity_text}",
+            f"[agent.md]\n{spec.agent_text}",
         ]
-        if self._spec.tools_text:
-            parts.append(f"[tools.md]\n{self._spec.tools_text}")
+        if spec.tools_text:
+            parts.append(f"[tools.md]\n{spec.tools_text}")
+        for skill in loaded_skills:
+            skill_id = str(skill.get("id") or "").strip()
+            skill_content = str(skill.get("content") or "").strip()
+            if skill_id and skill_content:
+                parts.append(f"[skill:{skill_id}]\n{skill_content}")
         parts.append(f"响应风格: {_STYLE_HINTS.get(settings.response_style, _STYLE_HINTS['normal'])}")
         parts.append("输出要求: 不输出思维链；不要虚构事实；不确定时明确说明；若已经使用工具，结论要基于工具结果。")
+        parts.append("当用户直接在消息里粘贴代码、XML、HTML、JSON、YAML 或长文本时，应先就地分析当前消息内容，不要默认追问 workspace 路径。")
+        parts.append("当用户贴出报错、代码片段、配置文本或日志时，默认把这些内容当作本轮要分析的对象；只有用户明确要求查看仓库文件、目录、网页或执行命令时，才优先调用工具。")
+        parts.append("如果 runtime_context_json 里已经给出 attachments 的 name/path，就把它们视为当前轮已提供上下文，不要先否认附件或要求用户重新描述路径。")
         return "\n\n".join(item for item in parts if str(item).strip())
 
     def _build_human_payload(self, *, message: str, context: dict[str, Any]) -> str:
@@ -321,6 +466,7 @@ class VintageProgrammerRuntime:
         ]
         payload = {
             "session_id": str(context.get("session_id") or ""),
+            "project": dict(context.get("project") or {}),
             "summary": str(context.get("summary") or "")[:4000],
             "route_state": dict(context.get("route_state") or {}),
             "attachments": list(context.get("attachments") or []),
@@ -385,20 +531,34 @@ class VintageProgrammerRuntime:
                 refs.append(value)
         return refs[:6]
 
-    def _build_tool_event(self, *, name: str, arguments: dict[str, Any], result: dict[str, Any]) -> ToolEvent:
+    def _build_tool_event(
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        result: dict[str, Any],
+    ) -> ToolEvent:
         result_json = json.dumps(result, ensure_ascii=False)
         source_refs = self._collect_source_refs(result)
         status = "ok" if bool(result.get("ok")) else "error"
         summary = str(result.get("summary") or result.get("error") or "").strip()
         if not summary:
             summary = self._backend._shorten(result_json, 180)
+        descriptor = dict(self._tool_descriptors_by_name.get(name) or {})
+        group = str(descriptor.get("group") or "")
+        source = str(descriptor.get("source") or "")
         return ToolEvent(
             name=name or "(unknown)",
             input=arguments,
             output_preview=self._backend._shorten(result_json, 1200),
             status=status,
+            group=group,
+            source=source,
             summary=summary,
             source_refs=source_refs,
+            project_root=str(result.get("project_root") or ""),
+            cwd=str(result.get("cwd") or ""),
+            module_group=group,
         )
 
     def _build_answer_bundle(
@@ -451,23 +611,32 @@ class VintageProgrammerRuntime:
             raise RuntimeError(str(auth_summary.get("reason") or "LLM credentials are required"))
 
         context_payload = dict(context or {})
-        requested_model = str(settings.model or self._spec.default_model or self._config.default_model).strip() or self._config.default_model
-        selected_tools = list(self._spec.allowed_tools if settings.enable_tools else ())
-        tool_round_limit = self._spec.max_tool_rounds if selected_tools else 0
-        expects_tools = bool(selected_tools) and _contains_any(prompt_message, _TOOL_REQUIRED_HINTS)
+        spec = self._load_spec()
+        loaded_skills = self._enabled_skills(spec.agent_id)
+        requested_model = str(settings.model or spec.default_model or self._config.default_model).strip() or self._config.default_model
+        selected_tools = list(spec.allowed_tools if settings.enable_tools else ())
+        tool_round_limit = spec.max_tool_rounds if selected_tools else 0
+        inline_document = _looks_like_inline_document_payload(prompt_message)
+        expects_tools = bool(selected_tools) and not inline_document and _looks_like_explicit_tool_request(prompt_message)
         current_goal = _truncate_goal(prompt_message)
-        active_phase = self._spec.workflow_phases[0] if self._spec.workflow_phases else "explore"
+        active_phase = spec.workflow_phases[0] if spec.workflow_phases else "explore"
+        project_context = dict(context_payload.get("project") or {})
+        project_root = str(project_context.get("project_root") or "").strip()
+        project_id = str(project_context.get("project_id") or "").strip()
+        effective_cwd = str(project_context.get("cwd") or project_root or "").strip()
 
         messages: list[Any] = [
-            self._backend._SystemMessage(content=self._render_system_prompt(settings)),
+            self._backend._SystemMessage(content=self._render_system_prompt(settings, spec=spec, loaded_skills=loaded_skills)),
             self._backend._HumanMessage(content=self._build_human_payload(message=prompt_message, context=context_payload)),
         ]
 
         usage_total = self._backend._empty_usage()
         notes: list[str] = [
-            f"agent_id:{self._spec.agent_id}",
-            f"tool_policy:{self._spec.tool_policy}",
+            f"agent_id:{spec.agent_id}",
+            f"tool_policy:{spec.tool_policy}",
         ]
+        if inline_document:
+            notes.append("inline_document_context")
         tool_events: list[ToolEvent] = []
         effective_model = requested_model
         self._emit_stage(
@@ -488,6 +657,9 @@ class VintageProgrammerRuntime:
             self._backend.tools.set_runtime_context(
                 execution_mode=settings.execution_mode,
                 session_id=str(context_payload.get("session_id") or ""),
+                project_id=project_id,
+                project_root=project_root,
+                cwd=effective_cwd,
             )
 
         try:
@@ -561,14 +733,15 @@ class VintageProgrammerRuntime:
                                 "source_refs": list(event.source_refs),
                                 "tool_round": round_idx + 1,
                                 "tool_index": call_idx,
-                                "agent_id": self._spec.agent_id,
+                                "group": event.group,
+                                "agent_id": spec.agent_id,
                             }
                         )
                     result_json = json.dumps(result, ensure_ascii=False)
                     messages.append(
                         self._backend._ToolMessage(
                             content=self._backend._shorten(result_json, 60000),
-                            tool_call_id=str(call.get("id") or f"{self._spec.agent_id}_{round_idx}_{call_idx}"),
+                            tool_call_id=str(call.get("id") or f"{spec.agent_id}_{round_idx}_{call_idx}"),
                             name=name or "unknown_tool",
                         )
                     )
@@ -624,10 +797,13 @@ class VintageProgrammerRuntime:
             "run_state": {
                 "goal": current_goal,
                 "phase": active_phase,
-                "workflow_phases": list(self._spec.workflow_phases),
+                "workflow_phases": list(spec.workflow_phases),
                 "requires_tools": expects_tools,
                 "tool_round_limit": tool_round_limit,
-                "network_mode": self._spec.network_mode,
+                "network_mode": spec.network_mode,
+                "inline_document": inline_document,
+                "project_root": project_root,
+                "cwd": effective_cwd,
             },
             "tool_timeline": [item.model_dump() for item in tool_events],
             "evidence": {
@@ -639,17 +815,31 @@ class VintageProgrammerRuntime:
             },
             "session": {
                 "session_id": str(context_payload.get("session_id") or ""),
+                "project_id": project_id,
+                "project_title": str(project_context.get("project_title") or ""),
+                "project_root": project_root,
+                "git_branch": str(project_context.get("git_branch") or ""),
+                "cwd": effective_cwd,
                 "history_turn_count": len(list(context_payload.get("history_turns") or [])),
                 "attachment_count": len(list(context_payload.get("attachments") or [])),
             },
             "token_usage": dict(usage_total),
+            "loaded_skills": [
+                {
+                    "id": str(item.get("id") or ""),
+                    "title": str(item.get("title") or ""),
+                    "summary": str(item.get("summary") or ""),
+                    "path": str(item.get("path") or ""),
+                }
+                for item in loaded_skills
+            ],
             "notes": self._dedup_notes(notes),
         }
 
         return {
             "ok": True,
-            "agent_id": self._spec.agent_id,
-            "agent_title": self._spec.title,
+            "agent_id": spec.agent_id,
+            "agent_title": spec.title,
             "text": raw_text,
             "effective_model": effective_model or requested_model,
             "tool_events": [item.model_dump() for item in tool_events],
@@ -657,11 +847,16 @@ class VintageProgrammerRuntime:
             "inspector": inspector,
             "answer_bundle": answer_bundle,
             "route_state": {
-                "agent_id": self._spec.agent_id,
-                "tool_policy": self._spec.tool_policy,
+                "agent_id": spec.agent_id,
+                "tool_policy": spec.tool_policy,
                 "phase": active_phase,
-                "network_mode": self._spec.network_mode,
+                "network_mode": spec.network_mode,
                 "evidence_status": evidence_status,
                 "tool_count": len(tool_events),
+                "loaded_skill_ids": [str(item.get("id") or "") for item in loaded_skills],
+                "inline_document": inline_document,
+                "project_id": project_id,
+                "project_root": project_root,
+                "cwd": effective_cwd,
             },
         }
