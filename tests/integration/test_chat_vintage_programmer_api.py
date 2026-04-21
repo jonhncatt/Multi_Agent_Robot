@@ -7,6 +7,7 @@ import threading
 from fastapi.testclient import TestClient
 
 import app.main as main_app
+import app.storage as storage_mod
 from app.evolution import EvolutionStore
 from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
 from app.workbench import WorkbenchStore
@@ -296,6 +297,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert response.status_code == 200
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
+    assert payload["app_version"] == "1.9.0"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
     assert "rapidocr_available" in payload["ocr_status"]
@@ -310,6 +312,64 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert payload["compaction_status"]["mode"] == "token_budget"
     assert "used_percent" in payload["context_meter"]
     assert "control_panel_topology" not in payload
+
+
+def test_health_endpoint_uses_live_project_branch_instead_of_startup_constant(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    live_project = {
+        "project_id": "project_live_branch",
+        "title": "Live Repo",
+        "root_path": str(tmp_path),
+        "created_at": "2026-04-22T00:00:00Z",
+        "updated_at": "2026-04-22T00:00:00Z",
+        "last_opened_at": "2026-04-22T00:00:00Z",
+        "pinned": True,
+        "is_default": True,
+        "git_root": str(tmp_path),
+        "git_branch": "feature/live-branch",
+        "is_worktree": False,
+    }
+    monkeypatch.setattr(main_app, "GIT_BRANCH", "stale-startup-branch", raising=False)
+    monkeypatch.setattr(main_app.project_store, "ensure_default_project", lambda: dict(live_project))
+    monkeypatch.setattr(main_app.project_store, "list_projects", lambda: [dict(live_project)])
+
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["runtime_status"]["git_branch"] == "feature/live-branch"
+    assert payload["runtime_status"]["git_branch"] != "stale-startup-branch"
+
+
+def test_projects_endpoint_returns_live_git_branch_from_project_store(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    repo_root = tmp_path / "repo-live"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    created = main_app.project_store.create(root_path=str(repo_root), title="Repo Live")
+    registry_payload = json.loads(main_app.project_store.registry_path.read_text(encoding="utf-8"))
+    registry_payload["projects"][created["project_id"]]["git_branch"] = "stale-branch"
+    registry_payload["projects"][created["project_id"]]["git_root"] = "/stale/root"
+    main_app.project_store.registry_path.write_text(json.dumps(registry_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    monkeypatch.setattr(
+        storage_mod,
+        "_git_metadata",
+        lambda root: {
+            "git_root": str(root),
+            "git_branch": "feature/live-project-list",
+            "is_worktree": True,
+        },
+    )
+
+    response = client.get("/api/projects")
+
+    assert response.status_code == 200
+    payload = response.json()
+    project_row = next(item for item in payload["projects"] if item["project_id"] == created["project_id"])
+    assert project_row["git_branch"] == "feature/live-project-list"
+    assert project_row["git_root"] == str(repo_root)
+    assert project_row["is_worktree"] is True
 
 
 def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) -> None:
@@ -604,6 +664,14 @@ def test_workbench_endpoints_list_and_edit_local_skills(monkeypatch, tmp_path: P
     toggle_response = client.post("/api/workbench/skills/repo_triage/toggle", json={"enabled": True})
     assert toggle_response.status_code == 200
     assert toggle_response.json()["enabled"] is True
+
+    delete_response = client.delete("/api/workbench/skills/repo_triage")
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"ok": True, "skill_id": "repo_triage"}
+
+    after_delete = client.get("/api/workbench/skills")
+    assert after_delete.status_code == 200
+    assert "repo_triage" not in {item["id"] for item in after_delete.json()["skills"]}
 
 
 def test_workbench_specs_endpoint_reads_and_writes_agent_specs(monkeypatch, tmp_path: Path) -> None:

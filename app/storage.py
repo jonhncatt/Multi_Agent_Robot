@@ -387,14 +387,28 @@ class ProjectStore:
             "last_opened_at": str(payload.get("last_opened_at") or payload.get("updated_at") or now_iso()),
             "pinned": bool(payload.get("pinned")),
             "is_default": bool(payload.get("is_default")),
-            "git_root": str(payload.get("git_root") or git_meta.get("git_root") or ""),
-            "git_branch": str(payload.get("git_branch") or git_meta.get("git_branch") or ""),
-            "is_worktree": bool(payload.get("is_worktree")) or bool(git_meta.get("is_worktree")),
+            "git_root": str(git_meta.get("git_root") or payload.get("git_root") or ""),
+            "git_branch": str(git_meta.get("git_branch") or payload.get("git_branch") or ""),
+            "is_worktree": bool(git_meta.get("is_worktree")) if git_meta.get("git_root") else bool(payload.get("is_worktree")),
         }
+
+    def _normalize_projects_map(self, projects: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], bool]:
+        normalized_projects: dict[str, dict[str, Any]] = {}
+        changed = False
+        for key, raw in (projects or {}).items():
+            if not isinstance(raw, dict):
+                changed = True
+                continue
+            normalized = self._normalize_record(raw)
+            normalized_projects[normalized["project_id"]] = normalized
+            if normalized["project_id"] != str(key) or normalized != raw:
+                changed = True
+        return normalized_projects, changed
 
     def ensure_default_project(self) -> dict[str, Any]:
         data = self._read()
-        projects = data.setdefault("projects", {})
+        projects, changed = self._normalize_projects_map(data.setdefault("projects", {}))
+        data["projects"] = projects
         default_id = str(data.get("default_project_id") or "").strip()
         expected = self._normalize_record(
             {
@@ -409,9 +423,14 @@ class ProjectStore:
         normalized = self._normalize_record({**expected, **(record or {})})
         normalized["pinned"] = True
         normalized["is_default"] = True
-        projects[normalized["project_id"]] = normalized
-        data["default_project_id"] = normalized["project_id"]
-        self._write(data)
+        if projects.get(normalized["project_id"]) != normalized:
+            projects[normalized["project_id"]] = normalized
+            changed = True
+        if str(data.get("default_project_id") or "").strip() != normalized["project_id"]:
+            data["default_project_id"] = normalized["project_id"]
+            changed = True
+        if changed:
+            self._write(data)
         return normalized
 
     def _sorted(self, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -429,7 +448,14 @@ class ProjectStore:
     def list_projects(self) -> list[dict[str, Any]]:
         default_project = self.ensure_default_project()
         data = self._read()
-        projects = [self._normalize_record(item) for item in (data.get("projects") or {}).values() if isinstance(item, dict)]
+        normalized_projects, changed = self._normalize_projects_map(data.get("projects") or {})
+        if normalized_projects.get(default_project["project_id"]) != default_project:
+            normalized_projects[default_project["project_id"]] = default_project
+            changed = True
+        if changed:
+            data["projects"] = normalized_projects
+            self._write(data)
+        projects = list(normalized_projects.values())
         by_id = {item["project_id"]: item for item in projects}
         by_id.setdefault(default_project["project_id"], default_project)
         return self._sorted(list(by_id.values()))

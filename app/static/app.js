@@ -38,6 +38,7 @@ const STARTER_PROMPTS = [
   "给我一个针对当前工作区的重构计划",
 ];
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
+const BRANCH_REFRESH_INTERVAL_MS = 15_000;
 const DEFAULT_SETTINGS = {
   provider: "",
   model: "",
@@ -171,6 +172,12 @@ function formatTokenCount(value) {
   if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(amount >= 10_000_000 ? 0 : 1)}M`;
   if (amount >= 1_000) return `${(amount / 1_000).toFixed(amount >= 100_000 ? 0 : 1)}k`;
   return String(Math.round(amount));
+}
+
+function normalizeReleaseVersion(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.startsWith("v") ? raw : `v${raw}`;
 }
 
 function normalizeContextMeter(raw) {
@@ -559,6 +566,10 @@ function App() {
   const composerDragDepthRef = useRef(0);
   const threadMenuRef = useRef(null);
   const threadLongPressRef = useRef({ timer: null, consumed: false });
+  const projectsRequestSeqRef = useRef(0);
+  const skillsRequestSeqRef = useRef(0);
+  const selectedSkillIdRef = useRef("");
+  const skillDraftModeRef = useRef(false);
   const providerOptions = useMemo(
     () => (Array.isArray((health && health.provider_options)) ? health.provider_options : []).filter((item) => item && item.provider),
     [health],
@@ -734,6 +745,39 @@ function App() {
     if (drawerView === "agent") refreshSpecs();
   }, [drawerView]);
 
+  useEffect(() => {
+    if (!bootReadyRef.current) return undefined;
+    let disposed = false;
+
+    const refreshBranches = async () => {
+      if (disposed || document.visibilityState === "hidden") return;
+      await Promise.all([refreshProjects(), refreshHealth()]);
+    };
+
+    const handleWindowFocus = () => {
+      refreshBranches();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshBranches();
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      refreshBranches();
+    }, BRANCH_REFRESH_INTERVAL_MS);
+
+    window.addEventListener("focus", handleWindowFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleWindowFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [projectId]);
+
   function clearUiError() {
     setUiError(null);
   }
@@ -798,6 +842,49 @@ function App() {
       pushLogWithLimit(setLogs, "error", `刷新状态失败：${nextError.summary}`);
       return null;
     }
+  }
+
+  function setSkillSelectionState(skillId, content, options = {}) {
+    const nextSkillId = String(skillId || "").trim();
+    selectedSkillIdRef.current = nextSkillId;
+    skillDraftModeRef.current = Boolean(options.draft) || !nextSkillId;
+    setSelectedSkillId(nextSkillId);
+    setSkillEditor(String(content || ""));
+  }
+
+  function startNewSkillDraft(content = defaultSkillTemplate()) {
+    setSkillSelectionState("", content, { draft: true });
+  }
+
+  function selectSkillFromList(skillId, list = skills) {
+    const sid = String(skillId || "").trim();
+    if (!sid) {
+      startNewSkillDraft();
+      return false;
+    }
+    const hit = shallowSkillList(list).find((item) => String(item.id || "") === sid);
+    if (!hit) return false;
+    clearUiError();
+    setSkillSelectionState(sid, String(hit.content || ""));
+    return true;
+  }
+
+  function syncSkillSelection(list, preferredSkillId) {
+    const safeList = shallowSkillList(list);
+    const explicitPreferred = typeof preferredSkillId === "string" ? String(preferredSkillId).trim() : null;
+    const activeSkillId = explicitPreferred !== null ? explicitPreferred : String(selectedSkillIdRef.current || "").trim();
+    if (activeSkillId && selectSkillFromList(activeSkillId, safeList)) {
+      return;
+    }
+    if ((explicitPreferred === "" || (explicitPreferred === null && skillDraftModeRef.current)) && !activeSkillId) {
+      startNewSkillDraft(skillEditor || defaultSkillTemplate());
+      return;
+    }
+    if (safeList.length) {
+      selectSkillFromList(String(safeList[0].id || ""), safeList);
+      return;
+    }
+    startNewSkillDraft(skillEditor || defaultSkillTemplate());
   }
 
   function clearLiveRunUi() {
@@ -869,13 +956,16 @@ function App() {
   }
 
   async function refreshProjects() {
+    const requestSeq = ++projectsRequestSeqRef.current;
     try {
       const data = await fetchJson("/api/projects");
       const list = Array.isArray(data.projects) ? data.projects : [];
+      if (requestSeq !== projectsRequestSeqRef.current) return list;
       clearUiError();
       setProjects(list);
       return list;
     } catch (err) {
+      if (requestSeq !== projectsRequestSeqRef.current) return [];
       const nextError = applyUiError(err, "刷新项目失败，请稍后重试。");
       pushLogWithLimit(setLogs, "error", `刷新项目失败：${nextError.summary}`);
       return [];
@@ -938,22 +1028,18 @@ function App() {
     }
   }
 
-  async function refreshSkills() {
+  async function refreshSkills(preferredSkillId) {
+    const requestSeq = ++skillsRequestSeqRef.current;
     try {
       const data = await fetchJson("/api/workbench/skills");
       const list = shallowSkillList(data.skills);
+      if (requestSeq !== skillsRequestSeqRef.current) return list;
       clearUiError();
       setSkills(list);
-      if (!selectedSkillId && list.length) {
-        setSelectedSkillId(String(list[0].id || ""));
-        setSkillEditor(String(list[0].content || ""));
-      }
-      if (selectedSkillId) {
-        const hit = list.find((item) => item.id === selectedSkillId);
-        if (hit) setSkillEditor(String(hit.content || ""));
-      }
+      syncSkillSelection(list, preferredSkillId);
       return list;
     } catch (err) {
+      if (requestSeq !== skillsRequestSeqRef.current) return [];
       const nextError = applyUiError(err, "刷新技能失败，请稍后重试。");
       pushLogWithLimit(setLogs, "error", `刷新技能失败：${nextError.summary}`);
       return [];
@@ -1471,20 +1557,6 @@ function App() {
     }
   }
 
-  async function loadSkillDetail(skillId) {
-    const sid = String(skillId || "").trim();
-    if (!sid) return;
-    try {
-      const payload = await fetchJson(`/api/workbench/skills/${encodeURIComponent(sid)}`);
-      clearUiError();
-      setSelectedSkillId(sid);
-      setSkillEditor(String(payload.content || ""));
-    } catch (err) {
-      const nextError = applyUiError(err, "读取技能失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `读取技能失败：${nextError.summary}`);
-    }
-  }
-
   async function loadSpecDetail(name) {
     const specName = String(name || "").trim();
     if (!specName) return;
@@ -1503,20 +1575,21 @@ function App() {
     if (!skillEditor.trim()) return;
     setSavingWorkbench(true);
     try {
-      const method = selectedSkillId ? "PUT" : "POST";
-      const url = selectedSkillId
-        ? `/api/workbench/skills/${encodeURIComponent(selectedSkillId)}`
+      const targetSkillId = String(selectedSkillIdRef.current || "").trim();
+      const method = targetSkillId ? "PUT" : "POST";
+      const url = targetSkillId
+        ? `/api/workbench/skills/${encodeURIComponent(targetSkillId)}`
         : "/api/workbench/skills";
       const payload = await fetchJson(url, {
         method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: skillEditor }),
       });
-      setSelectedSkillId(String(payload.id || ""));
-      setSkillEditor(String(payload.content || ""));
-      await Promise.all([refreshSkills(), refreshHealth()]);
+      const nextSkillId = String(payload.id || targetSkillId || "").trim();
+      setSkillSelectionState(nextSkillId, String(payload.content || ""));
+      await Promise.all([refreshSkills(nextSkillId), refreshHealth()]);
       clearUiError();
-      pushLogWithLimit(setLogs, "system", `技能已保存：${payload.id || selectedSkillId || "new_skill"}`);
+      pushLogWithLimit(setLogs, "system", `技能已保存：${nextSkillId || "new_skill"}`);
     } catch (err) {
       const nextError = applyUiError(err, "保存技能失败，请稍后重试。");
       pushLogWithLimit(setLogs, "error", `保存技能失败：${nextError.summary}`);
@@ -1526,21 +1599,50 @@ function App() {
   }
 
   async function toggleSelectedSkill(nextEnabled) {
-    if (!selectedSkillId) return;
+    const targetSkillId = String(selectedSkillIdRef.current || "").trim();
+    if (!targetSkillId) return;
     setSavingWorkbench(true);
     try {
-      const payload = await fetchJson(`/api/workbench/skills/${encodeURIComponent(selectedSkillId)}/toggle`, {
+      const payload = await fetchJson(`/api/workbench/skills/${encodeURIComponent(targetSkillId)}/toggle`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: nextEnabled }),
       });
-      setSkillEditor(String(payload.content || ""));
-      await Promise.all([refreshSkills(), refreshHealth()]);
+      const nextSkillId = String(payload.id || targetSkillId || "").trim();
+      setSkillSelectionState(nextSkillId, String(payload.content || ""));
+      await Promise.all([refreshSkills(nextSkillId), refreshHealth()]);
       clearUiError();
-      pushLogWithLimit(setLogs, "system", `技能已${payload.enabled ? "启用" : "停用"}：${selectedSkillId}`);
+      pushLogWithLimit(setLogs, "system", `技能已${payload.enabled ? "启用" : "停用"}：${nextSkillId}`);
     } catch (err) {
       const nextError = applyUiError(err, "切换技能失败，请稍后重试。");
       pushLogWithLimit(setLogs, "error", `切换技能失败：${nextError.summary}`);
+    } finally {
+      setSavingWorkbench(false);
+    }
+  }
+
+  async function handleDeleteSelectedSkill() {
+    const targetSkillId = String(selectedSkillIdRef.current || "").trim();
+    if (!targetSkillId) return;
+    const currentIndex = skills.findIndex((item) => String(item.id || "") === targetSkillId);
+    const fallbackSkillId =
+      String(((currentIndex >= 0 ? skills[currentIndex + 1] : null) || {}).id || "").trim() ||
+      String(((currentIndex > 0 ? skills[currentIndex - 1] : null) || {}).id || "").trim();
+    if (!window.confirm(`删除 skill “${targetSkillId}”？此操作不可恢复。`)) {
+      return;
+    }
+    setSavingWorkbench(true);
+    try {
+      await fetchJson(`/api/workbench/skills/${encodeURIComponent(targetSkillId)}`, { method: "DELETE" });
+      if (fallbackSkillId) {
+        skillDraftModeRef.current = false;
+      }
+      await Promise.all([refreshSkills(fallbackSkillId), refreshHealth()]);
+      clearUiError();
+      pushLogWithLimit(setLogs, "system", `技能已删除：${targetSkillId}`);
+    } catch (err) {
+      const nextError = applyUiError(err, "删除技能失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `删除技能失败：${nextError.summary}`);
     } finally {
       setSavingWorkbench(false);
     }
@@ -1652,6 +1754,7 @@ function App() {
   const contextMeterColor = resolveContextMeterColor(activeContextMeter);
   const groupedTools = useMemo(() => groupTools(workbenchTools), [workbenchTools]);
   const selectedSkill = skills.find((item) => item.id === selectedSkillId) || null;
+  const displayVersion = normalizeReleaseVersion((health && health.app_version) || "");
   const headTitle = sessionId ? sessionTitleFromList(sessions, sessionId) : (workspaceLabel || "开始构建");
   const headBreadcrumb = [
     workspaceLabel || "",
@@ -1671,7 +1774,10 @@ function App() {
           <div className="brand-mark">VP</div>
           <div>
             <div className="brand-title">Vintage Programmer</div>
-            <div className="brand-sub">${workspaceLabel || "选择一个项目开始工作"}</div>
+            <div className="brand-subline">
+              <div className="brand-sub">${workspaceLabel || "选择一个项目开始工作"}</div>
+              ${displayVersion ? html`<span className="brand-version-badge">${displayVersion}</span>` : null}
+            </div>
           </div>
           <button className="rail-close mobile-only" type="button" onClick=${() => setMobileThreadsOpen(false)}>×</button>
         </div>
@@ -2224,8 +2330,7 @@ function App() {
                     <div className="panel-title">Skills</div>
                     <div className="editor-actions">
                       <button className="ghost-btn" type="button" onClick=${() => {
-                        setSelectedSkillId("");
-                        setSkillEditor(defaultSkillTemplate());
+                        startNewSkillDraft();
                       }}>新建</button>
                       <button className="solid-btn" type="button" onClick=${saveSkill} disabled=${savingWorkbench || !skillEditor.trim()}>保存</button>
                       ${selectedSkill
@@ -2237,6 +2342,14 @@ function App() {
                               disabled=${savingWorkbench}
                             >
                               ${selectedSkill.enabled ? "停用" : "启用"}
+                            </button>
+                            <button
+                              className="ghost-btn danger-btn"
+                              type="button"
+                              onClick=${handleDeleteSelectedSkill}
+                              disabled=${savingWorkbench}
+                            >
+                              删除
                             </button>
                           `
                         : null}
@@ -2251,7 +2364,7 @@ function App() {
                               key=${item.id}
                               className=${`resource-row ${selectedSkillId === item.id ? "active" : ""}`}
                               type="button"
-                              onClick=${() => loadSkillDetail(item.id)}
+                              onClick=${() => selectSkillFromList(item.id)}
                             >
                               <div className="resource-row-title">${item.title || item.id}</div>
                               <div className="resource-row-meta">${item.enabled ? "enabled" : "disabled"} · ${item.validation_status}</div>

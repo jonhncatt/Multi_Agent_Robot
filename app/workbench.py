@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import shutil
 from typing import Any
 
 import yaml
@@ -257,6 +258,15 @@ class WorkbenchStore:
             parsed["body"],
         )
         return self.write_skill(skill_id, content)
+
+    def delete_skill(self, skill_id: str) -> None:
+        path = self._skill_file(skill_id)
+        self._ensure_within(path, self._skills_dir)
+        if not path.is_file():
+            raise FileNotFoundError(f"Skill not found: {skill_id}")
+        skill_dir = path.parent.resolve()
+        self._ensure_within(skill_dir, self._skills_dir)
+        shutil.rmtree(skill_dir)
 
     def enabled_skills_for_agent(self, agent_id: str) -> list[dict[str, Any]]:
         wanted = str(agent_id or "").strip()

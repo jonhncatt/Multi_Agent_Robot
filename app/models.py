@@ -312,6 +312,11 @@ class ProjectDeleteResponse(BaseModel):
     project_id: str
 
 
+class SkillDeleteResponse(BaseModel):
+    ok: bool
+    skill_id: str
+
+
 class ToolDescriptor(BaseModel):
     name: str
     group: str

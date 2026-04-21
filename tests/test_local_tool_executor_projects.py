@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import app.storage as storage_mod
 from app.config import load_config
 from app.local_tools import LocalToolExecutor
 from app.storage import ProjectStore
@@ -48,3 +50,59 @@ def test_local_tools_resolve_relative_paths_inside_selected_project(tmp_path: Pa
     assert list_result["ok"] is True
     assert Path(list_result["path"]) == project_root
     assert any(item["name"] == "notes.txt" for item in list_result["entries"])
+
+
+def test_project_store_list_projects_prefers_live_git_metadata_and_persists_registry(tmp_path: Path, monkeypatch) -> None:
+    app_root = tmp_path / "app-root"
+    repo_root = tmp_path / "repo-root"
+    app_root.mkdir(parents=True, exist_ok=True)
+    repo_root.mkdir(parents=True, exist_ok=True)
+    registry_path = tmp_path / "projects.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "projects": {
+                    "project_repo": {
+                        "project_id": "project_repo",
+                        "title": "Repo Root",
+                        "root_path": str(repo_root),
+                        "created_at": "2026-04-22T00:00:00Z",
+                        "updated_at": "2026-04-22T00:00:00Z",
+                        "last_opened_at": "2026-04-22T00:00:00Z",
+                        "pinned": False,
+                        "is_default": False,
+                        "git_root": "/stale/root",
+                        "git_branch": "stale-branch",
+                        "is_worktree": False,
+                    }
+                },
+                "default_project_id": "",
+                "updated_at": "2026-04-22T00:00:00Z",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    store = ProjectStore(registry_path, default_root=app_root)
+    monkeypatch.setattr(
+        storage_mod,
+        "_git_metadata",
+        lambda root: {
+            "git_root": str(root),
+            "git_branch": "feature/live-refresh",
+            "is_worktree": True,
+        },
+    )
+
+    projects = store.list_projects()
+
+    repo_project = next(item for item in projects if item["project_id"] == "project_repo")
+    assert repo_project["git_root"] == str(repo_root)
+    assert repo_project["git_branch"] == "feature/live-refresh"
+    assert repo_project["is_worktree"] is True
+
+    saved_payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert saved_payload["projects"]["project_repo"]["git_branch"] == "feature/live-refresh"
+    assert saved_payload["projects"]["project_repo"]["git_root"] == str(repo_root)
+    assert saved_payload["projects"]["project_repo"]["is_worktree"] is True

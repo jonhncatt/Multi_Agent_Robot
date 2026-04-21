@@ -60,6 +60,7 @@ from app.models import (
     SessionListItem,
     SessionListResponse,
     SessionTurn,
+    SkillDeleteResponse,
     SkillDescriptor,
     SkillUpsertRequest,
     SpecDescriptor,
@@ -113,7 +114,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.9.0"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -158,7 +159,6 @@ def _resolve_build_version() -> str:
 
 
 BUILD_VERSION = _resolve_build_version()
-GIT_BRANCH = _git_value("rev-parse", "--abbrev-ref", "HEAD")
 LEGACY_AGENT_DIR = Path(__file__).resolve().parent / "agents"
 
 
@@ -515,7 +515,7 @@ def health() -> HealthResponse:
             "workspace_label": str(default_project.get("title") or config.workspace_root.name or str(config.workspace_root)),
             "project_root": str(default_project.get("root_path") or config.workspace_root),
             "default_project_id": str(default_project.get("project_id") or ""),
-            "git_branch": GIT_BRANCH,
+            "git_branch": str(default_project.get("git_branch") or ""),
             "build_version": BUILD_VERSION,
         },
         ocr_status=ocr_status,
@@ -640,6 +640,17 @@ def workbench_toggle_skill(skill_id: str, req: ToggleSkillRequest) -> SkillDescr
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/workbench/skills/{skill_id}", response_model=SkillDeleteResponse)
+def workbench_delete_skill(skill_id: str) -> SkillDeleteResponse:
+    try:
+        get_workbench_store().delete_skill(skill_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SkillDeleteResponse(ok=True, skill_id=skill_id)
 
 
 @app.get("/api/workbench/specs", response_model=WorkbenchSpecsResponse)
