@@ -49,7 +49,7 @@ def test_workstation_shell_behaviors_are_wired() -> None:
         'fetch("/api/chat/stream"',
         '"/api/upload"',
         'fetchJson("/api/projects")',
-        'fetchJson(`/api/sessions?limit=80${suffix}`)',
+        'fetchJson(`/api/threads?limit=80${suffix}`)',
         'fetchJson("/api/workbench/tools")',
         'fetchJson("/api/workbench/skills")',
         "workbenchSpecUrl(",

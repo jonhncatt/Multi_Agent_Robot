@@ -1298,6 +1298,21 @@ class LocalToolExecutor:
         fallback_locale = str(getattr(self.config, "default_locale", "ja-JP") or "ja-JP")
         return normalize_locale(getattr(self._runtime_ctx, "locale", ""), fallback_locale)
 
+    @staticmethod
+    def _extract_outlook_msg_payload_compat(
+        extractor: Callable[..., dict[str, Any] | None],
+        path: str,
+        *,
+        max_chars: int,
+        locale: str,
+    ) -> dict[str, Any]:
+        try:
+            return dict(extractor(path, max_chars=max_chars, locale=locale) or {})
+        except TypeError as exc:
+            if "locale" not in str(exc):
+                raise
+            return dict(extractor(path, max_chars=max_chars) or {})
+
     def set_image_read_handler(self, handler: Callable[..., dict[str, Any]] | None) -> None:
         self._image_read_handler = handler
 
@@ -3454,11 +3469,12 @@ class LocalToolExecutor:
                 if suffix == ".msg":
                     from app.attachments import extract_outlook_msg_payload  # lazy import
 
-                    msg_payload = extract_outlook_msg_payload(
+                    msg_payload = self._extract_outlook_msg_payload_compat(
+                        extract_outlook_msg_payload,
                         str(real_path),
                         max_chars=1_000_000,
                         locale=locale_hint,
-                    ) or {}
+                    )
                     full_text = str(msg_payload.get("content") or "")
                 else:
                     from app.attachments import extract_document_text  # lazy import
@@ -3499,11 +3515,12 @@ class LocalToolExecutor:
 
                     if looks_like_outlook_msg_bytes(sniff):
                         source_format = "msg_text_extracted"
-                        msg_payload = extract_outlook_msg_payload(
+                        msg_payload = self._extract_outlook_msg_payload_compat(
+                            extract_outlook_msg_payload,
                             str(real_path),
                             max_chars=1_000_000,
                             locale=locale_hint,
-                        ) or {}
+                        )
                         full_text = str(msg_payload.get("content") or "")
                     else:
                         full_text = real_path.read_text(encoding="utf-8", errors="ignore")
