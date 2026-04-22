@@ -8,7 +8,9 @@ from fastapi.testclient import TestClient
 
 import app.main as main_app
 import app.storage as storage_mod
+from app.config import load_config
 from app.evolution import EvolutionStore
+from app.i18n import translate
 from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
 from app.workbench import WorkbenchStore
 
@@ -297,7 +299,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert response.status_code == 200
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
-    assert payload["app_version"] == "1.9.0"
+    assert payload["app_version"] == "2.0.0"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
     assert "rapidocr_available" in payload["ocr_status"]
@@ -514,7 +516,7 @@ def test_chat_endpoint_normalizes_provider_errors(monkeypatch, tmp_path: Path) -
     assert response.status_code == 429
     payload = response.json()
     assert payload["detail"]["kind"] == "rate_limit"
-    assert payload["detail"]["summary"] == "模型提供方限流，请稍后重试。"
+    assert payload["detail"]["summary"] == translate(load_config().default_locale, "error.rate_limit")
     assert payload["detail"]["provider"] == "Google AI Studio"
     assert payload["detail"]["retryable"] is True
 
@@ -543,7 +545,7 @@ def test_chat_stream_emits_structured_error_payload(monkeypatch, tmp_path: Path)
     error_payload = next(payload for name, payload in events if name == "error")
     assert error_payload["status_code"] == 429
     assert error_payload["kind"] == "rate_limit"
-    assert error_payload["summary"] == "模型提供方限流，请稍后重试。"
+    assert error_payload["summary"] == translate(load_config().default_locale, "error.rate_limit")
     assert error_payload["provider"] == "Google AI Studio"
     assert error_payload["retryable"] is True
 
@@ -618,6 +620,8 @@ def test_project_endpoints_and_project_scoped_sessions(monkeypatch, tmp_path: Pa
     session_b = client.post("/api/session/new", json={"project_id": project_b})
     assert session_a.status_code == 200
     assert session_b.status_code == 200
+    session_a_id = session_a.json()["session_id"]
+    session_b_id = session_b.json()["session_id"]
 
     list_a = client.get(f"/api/sessions?project_id={project_a}")
     list_b = client.get(f"/api/sessions?project_id={project_b}")
@@ -628,6 +632,36 @@ def test_project_endpoints_and_project_scoped_sessions(monkeypatch, tmp_path: Pa
 
     duplicate = client.post("/api/projects", json={"root_path": str(repo_a)})
     assert duplicate.status_code == 409
+
+    delete_a = client.delete(f"/api/projects/{project_a}")
+    assert delete_a.status_code == 200
+    assert delete_a.json()["ok"] is True
+    assert delete_a.json()["project_id"] == project_a
+    assert delete_a.json()["deleted_session_count"] == 1
+
+    projects_after_delete = client.get("/api/projects")
+    assert projects_after_delete.status_code == 200
+    assert project_a not in {item["project_id"] for item in projects_after_delete.json()["projects"]}
+    assert project_b in {item["project_id"] for item in projects_after_delete.json()["projects"]}
+
+    session_a_after_delete = client.get(f"/api/session/{session_a_id}")
+    session_b_after_delete = client.get(f"/api/session/{session_b_id}")
+    assert session_a_after_delete.status_code == 404
+    assert session_b_after_delete.status_code == 200
+
+    list_a_after_delete = client.get(f"/api/sessions?project_id={project_a}")
+    list_b_after_delete = client.get(f"/api/sessions?project_id={project_b}")
+    assert list_a_after_delete.status_code == 200
+    assert list_b_after_delete.status_code == 200
+    assert list_a_after_delete.json()["sessions"] == []
+    assert all(item["project_id"] == project_b for item in list_b_after_delete.json()["sessions"])
+
+    default_project_id = client.get("/api/health").json()["default_project_id"]
+    delete_default = client.delete(f"/api/projects/{default_project_id}")
+    assert delete_default.status_code == 400
+
+    delete_missing = client.delete("/api/projects/project_missing")
+    assert delete_missing.status_code == 404
 
 
 def test_workbench_endpoints_list_and_edit_local_skills(monkeypatch, tmp_path: Path) -> None:
@@ -677,18 +711,47 @@ def test_workbench_endpoints_list_and_edit_local_skills(monkeypatch, tmp_path: P
 def test_workbench_specs_endpoint_reads_and_writes_agent_specs(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)
+    localized_dir = tmp_path / "agents" / "vintage_programmer" / "locales" / "ja-JP"
+    localized_dir.mkdir(parents=True, exist_ok=True)
+    (localized_dir / "agent.md").write_text("---\nid: vintage_programmer\n---\nja-agent", encoding="utf-8")
 
-    specs_response = client.get("/api/workbench/specs")
+    specs_response = client.get("/api/workbench/specs", params={"locale": "ja-JP"})
     assert specs_response.status_code == 200
-    assert any(item["name"] == "agent.md" for item in specs_response.json()["specs"])
+    specs_payload = specs_response.json()["specs"]
+    agent_row = next(item for item in specs_payload if item["name"] == "agent.md")
+    tools_row = next(item for item in specs_payload if item["name"] == "tools.md")
+    assert agent_row["locale"] == "ja-JP"
+    assert agent_row["fallback_from_base"] is False
+    assert agent_row["path"].endswith("/agents/vintage_programmer/locales/ja-JP/agent.md")
+    assert agent_row["resolved_path"].endswith("/agents/vintage_programmer/locales/ja-JP/agent.md")
+    assert tools_row["locale"] == "ja-JP"
+    assert tools_row["fallback_from_base"] is True
+    assert tools_row["path"].endswith("/agents/vintage_programmer/locales/ja-JP/tools.md")
+    assert tools_row["resolved_path"].endswith("/agents/vintage_programmer/tools.md")
 
-    spec_response = client.get("/api/workbench/specs/agent.md")
+    spec_response = client.get("/api/workbench/specs/agent.md", params={"locale": "ja-JP"})
     assert spec_response.status_code == 200
-    assert "agent" in spec_response.json()["content"]
+    assert "ja-agent" in spec_response.json()["content"]
+    assert spec_response.json()["fallback_from_base"] is False
+
+    fallback_response = client.get("/api/workbench/specs/tools.md", params={"locale": "ja-JP"})
+    assert fallback_response.status_code == 200
+    assert fallback_response.json()["fallback_from_base"] is True
+    assert fallback_response.json()["content"] == "tools"
 
     update_response = client.put(
-        "/api/workbench/specs/tools.md",
+        "/api/workbench/specs/tools.md?locale=ja-JP",
         json={"content": "# Tools\n\nupdated"},
     )
     assert update_response.status_code == 200
     assert "updated" in update_response.json()["content"]
+    assert update_response.json()["path"].endswith("/agents/vintage_programmer/locales/ja-JP/tools.md")
+    assert update_response.json()["resolved_path"].endswith("/agents/vintage_programmer/locales/ja-JP/tools.md")
+    assert update_response.json()["fallback_from_base"] is False
+    assert (localized_dir / "tools.md").read_text(encoding="utf-8") == "# Tools\n\nupdated"
+    assert (tmp_path / "agents" / "vintage_programmer" / "tools.md").read_text(encoding="utf-8") == "tools"
+
+    base_response = client.get("/api/workbench/specs/tools.md", params={"locale": "zh-CN"})
+    assert base_response.status_code == 200
+    assert base_response.json()["content"] == "tools"
+    assert base_response.json()["fallback_from_base"] is False

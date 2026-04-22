@@ -8,11 +8,13 @@ from typing import Any
 import yaml
 
 from app.config import AppConfig
+from app.i18n import normalize_locale
 
 
 SPEC_FILE_NAMES = ("soul.md", "identity.md", "agent.md", "tools.md")
 SKILL_FILE_NAME = "SKILL.md"
 SKILL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+BASE_SPEC_LOCALE = "zh-CN"
 
 
 _TOOL_METADATA: dict[str, dict[str, Any]] = {
@@ -148,6 +150,50 @@ class WorkbenchStore:
         if path != root and root not in path.parents:
             raise ValueError("path escaped allowed workbench root")
 
+    def _normalize_spec_locale(self, locale: str | None) -> str:
+        fallback_locale = str(getattr(self._config, "default_locale", "ja-JP") or "ja-JP")
+        return normalize_locale(locale, fallback_locale)
+
+    def _base_spec_path(self, spec_name: str) -> Path:
+        path = (self._agent_dir / spec_name).resolve()
+        self._ensure_within(path, self._agent_dir)
+        return path
+
+    def _localized_spec_path(self, spec_name: str, locale: str) -> Path:
+        if locale == BASE_SPEC_LOCALE:
+            return self._base_spec_path(spec_name)
+        path = (self._agent_dir / "locales" / locale / spec_name).resolve()
+        self._ensure_within(path, self._agent_dir)
+        return path
+
+    def _resolve_spec_paths(self, spec_name: str, locale: str | None) -> dict[str, Any]:
+        normalized_locale = self._normalize_spec_locale(locale)
+        target_path = self._localized_spec_path(spec_name, normalized_locale)
+        if target_path.is_file():
+            return {
+                "locale": normalized_locale,
+                "path": str(target_path),
+                "resolved_path": str(target_path),
+                "fallback_from_base": False,
+                "validation_status": "valid",
+            }
+        base_path = self._base_spec_path(spec_name)
+        if normalized_locale != BASE_SPEC_LOCALE and base_path.is_file():
+            return {
+                "locale": normalized_locale,
+                "path": str(target_path),
+                "resolved_path": str(base_path),
+                "fallback_from_base": True,
+                "validation_status": "valid",
+            }
+        return {
+            "locale": normalized_locale,
+            "path": str(target_path),
+            "resolved_path": str(target_path),
+            "fallback_from_base": False,
+            "validation_status": "valid" if target_path.is_file() else "missing",
+        }
+
     def _parse_skill_content(self, text: str, *, expected_id: str | None = None) -> dict[str, Any]:
         meta, body = split_frontmatter(text)
         skill_id = validate_skill_id(str(meta.get("id") or expected_id or "").strip())
@@ -281,31 +327,34 @@ class WorkbenchStore:
                 out.append(item)
         return out
 
-    def list_agent_specs(self) -> list[dict[str, Any]]:
+    def list_agent_specs(self, *, locale: str | None = None) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for name in SPEC_FILE_NAMES:
-            path = (self._agent_dir / name).resolve()
-            self._ensure_within(path, self._agent_dir)
+            resolved = self._resolve_spec_paths(name, locale)
             out.append(
                 {
                     "name": name,
-                    "path": str(path),
+                    "path": str(resolved.get("path") or ""),
+                    "resolved_path": str(resolved.get("resolved_path") or ""),
+                    "locale": str(resolved.get("locale") or BASE_SPEC_LOCALE),
+                    "fallback_from_base": bool(resolved.get("fallback_from_base")),
                     "editable": True,
-                    "validation_status": "valid" if path.is_file() else "missing",
+                    "validation_status": str(resolved.get("validation_status") or "valid"),
                 }
             )
         return out
 
-    def get_agent_spec(self, name: str) -> dict[str, Any]:
+    def get_agent_spec(self, name: str, *, locale: str | None = None) -> dict[str, Any]:
         spec_name = str(name or "").strip()
         if spec_name not in SPEC_FILE_NAMES:
             raise ValueError(f"Unsupported spec: {spec_name}")
-        path = (self._agent_dir / spec_name).resolve()
-        self._ensure_within(path, self._agent_dir)
-        if not path.is_file():
+        resolved = self._resolve_spec_paths(spec_name, locale)
+        read_path = Path(str(resolved.get("resolved_path") or "")).resolve()
+        self._ensure_within(read_path, self._agent_dir)
+        if not read_path.is_file():
             raise FileNotFoundError(f"Spec not found: {spec_name}")
-        content = path.read_text(encoding="utf-8")
-        validation_status = "valid"
+        content = read_path.read_text(encoding="utf-8")
+        validation_status = str(resolved.get("validation_status") or "valid")
         if spec_name == "agent.md":
             try:
                 split_frontmatter(content)
@@ -313,13 +362,16 @@ class WorkbenchStore:
                 validation_status = "invalid"
         return {
             "name": spec_name,
-            "path": str(path),
+            "path": str(resolved.get("path") or ""),
+            "resolved_path": str(read_path),
+            "locale": str(resolved.get("locale") or BASE_SPEC_LOCALE),
+            "fallback_from_base": bool(resolved.get("fallback_from_base")),
             "editable": True,
             "validation_status": validation_status,
             "content": content,
         }
 
-    def write_agent_spec(self, name: str, content: str) -> dict[str, Any]:
+    def write_agent_spec(self, name: str, content: str, *, locale: str | None = None) -> dict[str, Any]:
         spec_name = str(name or "").strip()
         if spec_name not in SPEC_FILE_NAMES:
             raise ValueError(f"Unsupported spec: {spec_name}")
@@ -328,8 +380,9 @@ class WorkbenchStore:
             raise ValueError(f"{spec_name} cannot be empty")
         if spec_name == "agent.md":
             split_frontmatter(body)
-        path = (self._agent_dir / spec_name).resolve()
+        normalized_locale = self._normalize_spec_locale(locale)
+        path = self._localized_spec_path(spec_name, normalized_locale)
         self._ensure_within(path, self._agent_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body, encoding="utf-8")
-        return self.get_agent_spec(spec_name)
+        return self.get_agent_spec(spec_name, locale=normalized_locale)

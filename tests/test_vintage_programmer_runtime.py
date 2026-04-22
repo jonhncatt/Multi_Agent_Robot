@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from app.config import load_config
+from app.i18n import translate
 from app.models import ChatSettings
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
 
@@ -462,7 +463,7 @@ def test_runtime_cancels_turn_when_cancel_event_is_set(tmp_path: Path) -> None:
     )
 
     assert result["turn_status"] == "cancelled"
-    assert result["text"] == "已取消当前运行。"
+    assert result["text"] == translate(load_config().default_locale, "runtime.cancelled.text")
     assert len(result["tool_events"]) == 1
     assert "run_cancelled_by_user" in result["inspector"]["notes"]
 

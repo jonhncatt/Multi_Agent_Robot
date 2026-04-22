@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class ChatSettings(BaseModel):
     provider: str | None = None
     model: str | None = None
+    locale: str = "ja-JP"
     max_output_tokens: int = Field(default=128000, ge=120, le=128000)
     max_context_turns: int = Field(default=2000, ge=2, le=2000)
     enable_tools: bool = True
@@ -310,6 +311,7 @@ class ProjectUpdateRequest(BaseModel):
 class ProjectDeleteResponse(BaseModel):
     ok: bool
     project_id: str
+    deleted_session_count: int = 0
 
 
 class SkillDeleteResponse(BaseModel):
@@ -341,6 +343,9 @@ class SkillDescriptor(BaseModel):
 class SpecDescriptor(BaseModel):
     name: str
     path: str
+    resolved_path: str = ""
+    locale: str = "zh-CN"
+    fallback_from_base: bool = False
     editable: bool = True
     validation_status: str = "valid"
     content: str = ""
@@ -375,6 +380,8 @@ class HealthResponse(BaseModel):
     app_title: str = ""
     app_version: str = ""
     build_version: str = ""
+    default_locale: str = "ja-JP"
+    supported_locales: list[str] = Field(default_factory=list)
     default_model: str = ""
     model_options: list[str] = Field(default_factory=list)
     allow_custom_model: bool = True

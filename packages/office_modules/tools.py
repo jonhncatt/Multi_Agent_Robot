@@ -50,6 +50,7 @@ class ScopedToolExecutor:
         project_root: str | None = None,
         cwd: str | None = None,
         model: str | None = None,
+        locale: str | None = None,
     ) -> None:
         self._executor.set_runtime_context(
             execution_mode=execution_mode,
@@ -58,6 +59,7 @@ class ScopedToolExecutor:
             project_root=project_root,
             cwd=cwd,
             model=model,
+            locale=locale,
         )
 
     def set_image_read_handler(self, handler: Callable[..., dict[str, Any]] | None) -> None:

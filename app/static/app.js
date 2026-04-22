@@ -3,17 +3,18 @@ const ReactDomRuntime = window.ReactDOM;
 const htmRuntime = window.htm;
 const markedRuntime = window.marked;
 const DOMPurifyRuntime = window.DOMPurify;
+const I18nRuntime = window.VP_I18N;
 
-if (!ReactRuntime || !ReactDomRuntime || !htmRuntime || !markedRuntime || !DOMPurifyRuntime) {
+if (!ReactRuntime || !ReactDomRuntime || !htmRuntime || !markedRuntime || !DOMPurifyRuntime || !I18nRuntime) {
   const root = document.getElementById("root");
   if (root) {
     root.innerHTML = `
       <div style="padding:24px;font:14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;color:#1f2328;">
-        前端资源加载失败。请刷新页面；如果问题持续，请检查 /static/vendor 下的本地脚本是否可访问。
+        Frontend resources failed to load. Refresh the page and verify local static files are reachable.
       </div>
     `;
   }
-  throw new Error("Local frontend vendor scripts are unavailable.");
+  throw new Error("Local frontend runtime scripts are unavailable.");
 }
 
 const { useEffect, useMemo, useRef, useState } = ReactRuntime;
@@ -31,23 +32,43 @@ const SESSION_STORAGE_KEY = "vintage_programmer.session_id";
 const PROJECT_STORAGE_KEY = "vintage_programmer.project_id";
 const PROVIDER_STORAGE_KEY = "vintage_programmer.last_provider";
 const MODEL_STORAGE_KEY = "vintage_programmer.last_model";
+const LOCALE_STORAGE_KEY = "vintage_programmer.locale";
 const CUSTOM_MODEL_VALUE = "__custom__";
-const STARTER_PROMPTS = [
-  "帮我梳理这个仓库的主链路",
-  "把这个页面继续改得更像 Codex",
-  "给我一个针对当前工作区的重构计划",
-];
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const BRANCH_REFRESH_INTERVAL_MS = 15_000;
 const DEFAULT_SETTINGS = {
   provider: "",
   model: "",
+  locale: "",
   max_output_tokens: 128000,
   max_context_turns: 2000,
   enable_tools: true,
   collaboration_mode: "default",
   response_style: "normal",
 };
+
+function normalizeLocaleValue(raw, supportedLocales = I18nRuntime.SUPPORTED_LOCALES, fallbackLocale = "ja-JP") {
+  return I18nRuntime.normalizeLocale(raw, supportedLocales, fallbackLocale);
+}
+
+function translateUi(locale, key, replacements = null) {
+  return I18nRuntime.t(locale, key, replacements || undefined);
+}
+
+function translateUiList(locale, key) {
+  return I18nRuntime.list(locale, key);
+}
+
+function detectBrowserLocale(supportedLocales, fallbackLocale) {
+  const candidates = [];
+  if (Array.isArray(navigator.languages)) candidates.push(...navigator.languages);
+  candidates.push(navigator.language);
+  for (const candidate of candidates) {
+    const normalized = normalizeLocaleValue(candidate, supportedLocales, "");
+    if (normalized) return normalized;
+  }
+  return fallbackLocale;
+}
 
 function createMessage(role, text, options = {}) {
   return {
@@ -153,12 +174,12 @@ function ensureNamedUploadFile(file, index = 0) {
   }
 }
 
-function formatTime(raw) {
+function formatTime(raw, locale = "ja-JP") {
   const text = String(raw || "").trim();
   if (!text) return "";
   const date = new Date(text);
   if (Number.isNaN(date.getTime())) return text;
-  return date.toLocaleString("zh-CN", {
+  return date.toLocaleString(locale, {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
@@ -265,10 +286,10 @@ function parseSseChunk(chunk) {
   }
 }
 
-function roleLabel(role) {
-  if (role === "user") return "You";
-  if (role === "assistant") return "Vintage Programmer";
-  return "System";
+function roleLabel(role, locale) {
+  if (role === "user") return translateUi(locale, "role.user");
+  if (role === "assistant") return translateUi(locale, "role.assistant");
+  return translateUi(locale, "role.system");
 }
 
 function fileNameFromHealth(health) {
@@ -324,7 +345,8 @@ function stringifyErrorDetail(detail) {
   }
 }
 
-function normalizeUiError(source, fallbackSummary = "请求失败，请稍后重试。", fallback = {}) {
+function normalizeUiError(locale, source, fallbackSummary = null, fallback = {}) {
+  const fallbackText = String(fallbackSummary || translateUi(locale, "errors.request_failed")).trim();
   if (source && typeof source === "object" && source.uiError) {
     return { ...source.uiError };
   }
@@ -379,12 +401,12 @@ function normalizeUiError(source, fallbackSummary = "请求失败，请稍后重
   const summary =
     String((payload && typeof payload === "object" && payload.summary) || "").trim() ||
     (kind === "rate_limit"
-      ? "模型提供方限流，请稍后重试。"
+      ? translateUi(locale, "errors.rate_limit")
       : kind === "auth"
-        ? "认证失败，请检查 OpenRouter / OpenAI-compatible key。"
+        ? translateUi(locale, "errors.auth")
         : kind === "upstream"
-          ? "模型提供方暂时不可用，请稍后重试。"
-          : fallbackSummary);
+          ? translateUi(locale, "errors.upstream")
+          : fallbackText);
   const retryable =
     typeof (payload && typeof payload === "object" && payload.retryable) === "boolean"
       ? Boolean(payload.retryable)
@@ -400,7 +422,7 @@ function normalizeUiError(source, fallbackSummary = "请求失败，请稍后重
 }
 
 function errorWithUiError(uiError) {
-  const error = new Error(String((uiError && uiError.summary) || "请求失败，请稍后重试。"));
+  const error = new Error(String((uiError && uiError.summary) || "Request failed."));
   error.uiError = uiError;
   return error;
 }
@@ -421,31 +443,45 @@ function extractSessionMessages(data) {
   );
 }
 
-function defaultSkillTemplate() {
+function defaultSkillTemplate(locale) {
   return [
     "---",
     "id: new_skill",
-    "title: New Skill",
+    `title: ${translateUi(locale, "skill_template.title")}`,
     "enabled: false",
     "bind_to:",
     "  - vintage_programmer",
-    "summary: One-line summary for this skill.",
+    `summary: ${translateUi(locale, "skill_template.summary")}`,
     "---",
     "",
-    "# New Skill",
+    `# ${translateUi(locale, "skill_template.title")}`,
     "",
-    "适用场景：",
-    "- 说明什么时候使用这个 skill。",
+    translateUi(locale, "skill_template.scenario"),
+    translateUi(locale, "skill_template.scenario_item"),
     "",
-    "执行要求：",
-    "- 列出这个 skill 的步骤和边界。",
+    translateUi(locale, "skill_template.execution"),
+    translateUi(locale, "skill_template.execution_item"),
     "",
   ].join("\n");
 }
 
-function sessionTitleFromList(sessions, sessionId) {
+function sessionTitleFromList(sessions, sessionId, locale) {
   const hit = sessions.find((item) => item.session_id === sessionId);
-  return hit ? hit.title || "新线程" : "开始构建";
+  return hit ? hit.title || translateUi(locale, "labels.new_thread") : translateUi(locale, "labels.start_building");
+}
+
+function translateUiOrFallback(locale, key, fallback) {
+  const translated = translateUi(locale, key);
+  return translated === key ? fallback : translated;
+}
+
+function workbenchSpecUrl(specName, locale) {
+  const base = specName
+    ? `/api/workbench/specs/${encodeURIComponent(String(specName || "").trim())}`
+    : "/api/workbench/specs";
+  const normalizedLocale = String(locale || "").trim();
+  if (!normalizedLocale) return base;
+  return `${base}?locale=${encodeURIComponent(normalizedLocale)}`;
 }
 
 function shallowSkillList(skills) {
@@ -471,6 +507,82 @@ function stringifyCompactJson(value) {
   }
 }
 
+function formatValidationStatus(locale, status) {
+  const normalized = String(status || "").trim();
+  if (!normalized) return "-";
+  return translateUiOrFallback(locale, `validation.${normalized}`, normalized);
+}
+
+function formatLocaleLabel(locale, value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "-";
+  return translateUiOrFallback(locale, `settings.locale.${normalized}`, normalized);
+}
+
+function formatRunFieldLabel(locale, key) {
+  const normalized = String(key || "").trim();
+  return translateUiOrFallback(locale, `run.field.${normalized}`, normalized);
+}
+
+function formatRunEnum(locale, group, value, fallback = "-") {
+  const normalized = String(value || "").trim();
+  if (!normalized) return fallback;
+  return translateUiOrFallback(locale, `run.value.${group}.${normalized}`, normalized);
+}
+
+function formatRunBoolean(locale, value) {
+  return formatRunEnum(locale, "bool", String(Boolean(value)), String(Boolean(value)));
+}
+
+function formatToolGroupLabel(locale, value) {
+  const normalized = String(value || "").trim() || "tool";
+  return translateUiOrFallback(locale, `run.value.tool_group.${normalized}`, normalized);
+}
+
+function formatContextThresholdSource(locale, value) {
+  const normalized = String(value || "").trim() || "estimate";
+  return translateUiOrFallback(locale, `context_meter.source.${normalized}`, normalized);
+}
+
+function parseCompactionReason(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return null;
+  const budgetMatch = normalized.match(/^context_budget_exceeded:(\d+)\/(\d+)$/);
+  if (budgetMatch) {
+    return {
+      kind: "context_budget_exceeded",
+      estimated: Math.max(0, Number(budgetMatch[1] || 0) || 0),
+      limit: Math.max(0, Number(budgetMatch[2] || 0) || 0),
+    };
+  }
+  return null;
+}
+
+function formatCompactionReason(locale, value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  const parsed = parseCompactionReason(normalized);
+  if (parsed && parsed.kind === "context_budget_exceeded") {
+    return translateUi(locale, "run.compaction_reason.context_budget_exceeded", {
+      estimated: formatTokenCount(parsed.estimated),
+      limit: formatTokenCount(parsed.limit),
+    });
+  }
+  return normalized;
+}
+
+function formatCompactionWarning(locale, compactionStatus, contextMeter) {
+  const status = compactionStatus && typeof compactionStatus === "object" ? compactionStatus : {};
+  const meter = contextMeter && typeof contextMeter === "object" ? contextMeter : {};
+  const contextWindowKnown = Object.prototype.hasOwnProperty.call(status, "context_window_known")
+    ? Boolean(status.context_window_known)
+    : Boolean(meter.context_window_known);
+  if (!contextWindowKnown) {
+    return translateUi(locale, "run.compaction_warning.fallback_budget");
+  }
+  return String(status.warning || meter.warning || "").trim();
+}
+
 function mergeRunSnapshot(prev, snapshot) {
   const next = snapshot && typeof snapshot === "object" ? snapshot : {};
   return {
@@ -488,17 +600,17 @@ function mergeRunSnapshot(prev, snapshot) {
   };
 }
 
-function toolTimelineSummary(item) {
-  if (!item || typeof item !== "object") return "无摘要";
-  const base = String(item.summary || item.output_preview || "无摘要").trim();
+function toolTimelineSummary(item, locale) {
+  if (!item || typeof item !== "object") return translateUi(locale, "labels.no_summary");
+  const base = String(item.summary || item.output_preview || translateUi(locale, "labels.no_summary")).trim();
   const diagnostics = item.diagnostics && typeof item.diagnostics === "object" ? item.diagnostics : {};
   const visibleText = String(diagnostics.visible_text_preview || "").trim().replaceAll("\n", " / ");
   if (visibleText) return `${base} · ${visibleText}`;
-  return base || "无摘要";
+  return base || translateUi(locale, "labels.no_summary");
 }
 
-function starterPromptChips(setDraft, handleSend) {
-  return STARTER_PROMPTS.map((text) =>
+function starterPromptChips(locale, setDraft, handleSend) {
+  return translateUiList(locale, "starter.prompts").map((text) =>
     html`
       <button
         key=${text}
@@ -558,12 +670,15 @@ function App() {
   const [savingProject, setSavingProject] = useState(false);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [contextMeterOpen, setContextMeterOpen] = useState(false);
+  const [projectMenu, setProjectMenu] = useState(null);
   const [threadMenu, setThreadMenu] = useState(null);
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
   const contextMeterRef = useRef(null);
   const bootReadyRef = useRef(false);
   const composerDragDepthRef = useRef(0);
+  const projectMenuRef = useRef(null);
+  const projectLongPressRef = useRef({ timer: null, consumed: false });
   const threadMenuRef = useRef(null);
   const threadLongPressRef = useRef({ timer: null, consumed: false });
   const projectsRequestSeqRef = useRef(0);
@@ -599,6 +714,36 @@ function App() {
     [activeProviderProfile, health],
   );
   const allowCustomModel = !health || health.allow_custom_model !== false;
+  const supportedLocales = useMemo(
+    () => dedupeStrings(Array.isArray(health && health.supported_locales) ? health.supported_locales : I18nRuntime.SUPPORTED_LOCALES),
+    [health],
+  );
+  const defaultLocale = normalizeLocaleValue((health && health.default_locale) || "ja-JP", supportedLocales, "ja-JP");
+  const uiLocale = normalizeLocaleValue(chatSettings.locale || "", supportedLocales, defaultLocale);
+  const t = (key, replacements = null) => translateUi(uiLocale, key, replacements);
+  const currentTabLabel = (tab) => translateUi(uiLocale, `tabs.${tab}`);
+
+  useEffect(() => {
+    if (!health) return;
+    const storedLocale = window.localStorage.getItem(LOCALE_STORAGE_KEY) || "";
+    const browserLocale = detectBrowserLocale(supportedLocales, defaultLocale);
+    const preferredLocale = normalizeLocaleValue(
+      chatSettings.locale || storedLocale || browserLocale || defaultLocale,
+      supportedLocales,
+      defaultLocale,
+    );
+    setChatSettings((prev) => (
+      String(prev.locale || "").trim() === preferredLocale
+        ? prev
+        : { ...prev, locale: preferredLocale }
+    ));
+  }, [health, supportedLocales, defaultLocale, chatSettings.locale]);
+
+  useEffect(() => {
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, uiLocale);
+    document.documentElement.lang = uiLocale;
+    document.title = translateUi(uiLocale, "app.title");
+  }, [uiLocale]);
 
   useEffect(() => {
     if (!bootReadyRef.current) return;
@@ -619,6 +764,25 @@ function App() {
     }
     window.localStorage.setItem(storageKey, sessionId);
   }, [projectId, sessionId]);
+
+  useEffect(() => {
+    if (!projectMenu) return undefined;
+    const closeMenu = () => setProjectMenu(null);
+    const handlePointerDown = (event) => {
+      const node = projectMenuRef.current;
+      if (node && node.contains(event.target)) return;
+      closeMenu();
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [projectMenu]);
 
   useEffect(() => {
     if (!threadMenu) return undefined;
@@ -743,7 +907,7 @@ function App() {
     if (drawerView === "tools") refreshWorkbenchTools();
     if (drawerView === "skills") refreshSkills();
     if (drawerView === "agent") refreshSpecs();
-  }, [drawerView]);
+  }, [drawerView, uiLocale]);
 
   useEffect(() => {
     if (!bootReadyRef.current) return undefined;
@@ -782,8 +946,8 @@ function App() {
     setUiError(null);
   }
 
-  function applyUiError(errorLike, fallbackSummary = "请求失败，请稍后重试。", fallback = {}) {
-    const normalized = normalizeUiError(errorLike, fallbackSummary, fallback);
+  function applyUiError(errorLike, fallbackSummary = null, fallback = {}) {
+    const normalized = normalizeUiError(uiLocale, errorLike, fallbackSummary, fallback);
     setUiError(normalized);
     return normalized;
   }
@@ -822,8 +986,9 @@ function App() {
         payload = { detail: `${res.status}` };
       }
       const uiError = normalizeUiError(
+        uiLocale,
         payload && Object.prototype.hasOwnProperty.call(payload, "detail") ? payload.detail : payload,
-        "请求失败，请稍后重试。",
+        t("errors.request_failed"),
         { status_code: res.status },
       );
       throw errorWithUiError(uiError);
@@ -838,8 +1003,8 @@ function App() {
       setHealth(data);
       return data;
     } catch (err) {
-      const nextError = applyUiError(err, "刷新状态失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `刷新状态失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.refresh_state_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.refresh_state_failed", { summary: nextError.summary }));
       return null;
     }
   }
@@ -852,7 +1017,7 @@ function App() {
     setSkillEditor(String(content || ""));
   }
 
-  function startNewSkillDraft(content = defaultSkillTemplate()) {
+  function startNewSkillDraft(content = defaultSkillTemplate(uiLocale)) {
     setSkillSelectionState("", content, { draft: true });
   }
 
@@ -877,14 +1042,14 @@ function App() {
       return;
     }
     if ((explicitPreferred === "" || (explicitPreferred === null && skillDraftModeRef.current)) && !activeSkillId) {
-      startNewSkillDraft(skillEditor || defaultSkillTemplate());
+      startNewSkillDraft(skillEditor || defaultSkillTemplate(uiLocale));
       return;
     }
     if (safeList.length) {
       selectSkillFromList(String(safeList[0].id || ""), safeList);
       return;
     }
-    startNewSkillDraft(skillEditor || defaultSkillTemplate());
+    startNewSkillDraft(skillEditor || defaultSkillTemplate(uiLocale));
   }
 
   function clearLiveRunUi() {
@@ -904,6 +1069,62 @@ function App() {
     setThreadMenu(null);
   }
 
+  function closeProjectMenu() {
+    setProjectMenu(null);
+  }
+
+  function cancelProjectLongPress() {
+    const current = projectLongPressRef.current;
+    if (current && current.timer) {
+      window.clearTimeout(current.timer);
+    }
+    projectLongPressRef.current = { timer: null, consumed: Boolean(current && current.consumed) };
+  }
+
+  function openProjectMenuAt(position, item) {
+    if (!item || loadingSession || sending || item.is_default) return;
+    closeThreadMenu();
+    setProjectMenu({
+      projectId: String(item.project_id || ""),
+      title: String(item.title || item.project_id || ""),
+      x: Math.max(12, Number((position && position.x) || 0) || 0),
+      y: Math.max(12, Number((position && position.y) || 0) || 0),
+    });
+  }
+
+  function handleProjectContextMenu(event, item) {
+    event.preventDefault();
+    openProjectMenuAt({ x: event.clientX, y: event.clientY }, item);
+  }
+
+  function handleProjectTouchStart(event, item) {
+    if (loadingSession || sending || (item && item.is_default)) return;
+    cancelProjectLongPress();
+    const touch = (event.touches && event.touches[0]) || null;
+    projectLongPressRef.current = {
+      consumed: false,
+      timer: window.setTimeout(() => {
+        projectLongPressRef.current = { timer: null, consumed: true };
+        openProjectMenuAt(
+          {
+            x: touch ? touch.clientX : 24,
+            y: touch ? touch.clientY : 24,
+          },
+          item,
+        );
+      }, 480),
+    };
+  }
+
+  function handleProjectClick(event, targetProjectId) {
+    if (projectLongPressRef.current && projectLongPressRef.current.consumed) {
+      projectLongPressRef.current = { timer: null, consumed: false };
+      event.preventDefault();
+      return;
+    }
+    selectProject(targetProjectId);
+  }
+
   function cancelThreadLongPress() {
     const current = threadLongPressRef.current;
     if (current && current.timer) {
@@ -914,9 +1135,10 @@ function App() {
 
   function openThreadMenuAt(position, item) {
     if (!item || loadingSession || sending) return;
+    closeProjectMenu();
     setThreadMenu({
       sessionId: String(item.session_id || ""),
-      title: String(item.title || "新线程"),
+      title: String(item.title || t("labels.new_thread")),
       x: Math.max(12, Number((position && position.x) || 0) || 0),
       y: Math.max(12, Number((position && position.y) || 0) || 0),
     });
@@ -966,8 +1188,8 @@ function App() {
       return list;
     } catch (err) {
       if (requestSeq !== projectsRequestSeqRef.current) return [];
-      const nextError = applyUiError(err, "刷新项目失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `刷新项目失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.refresh_projects_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.refresh_projects_failed", { summary: nextError.summary }));
       return [];
     }
   }
@@ -981,8 +1203,8 @@ function App() {
       setSessions(list);
       return list;
     } catch (err) {
-      const nextError = applyUiError(err, "刷新线程失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `刷新线程失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.refresh_threads_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.refresh_threads_failed", { summary: nextError.summary }));
       return [];
     }
   }
@@ -997,6 +1219,7 @@ function App() {
     clearLiveRunUi();
     setStageTimeline([]);
     setMobileThreadsOpen(false);
+    closeProjectMenu();
     closeThreadMenu();
     clearUiError();
     const list = await refreshSessions(targetProjectId);
@@ -1010,7 +1233,7 @@ function App() {
       return true;
     }
     if (!options.fromBoot) {
-      pushLogWithLimit(setLogs, "system", `已切换项目 ${targetProjectId.slice(0, 8)}`);
+      pushLogWithLimit(setLogs, "system", t("log.project_switched", { project_id: targetProjectId.slice(0, 8) }));
     }
     return true;
   }
@@ -1022,8 +1245,8 @@ function App() {
       setWorkbenchTools(Array.isArray(data.tools) ? data.tools : []);
       return data;
     } catch (err) {
-      const nextError = applyUiError(err, "刷新工具库存失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `刷新工具库存失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.refresh_tools_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.refresh_tools_failed", { summary: nextError.summary }));
       return null;
     }
   }
@@ -1040,15 +1263,15 @@ function App() {
       return list;
     } catch (err) {
       if (requestSeq !== skillsRequestSeqRef.current) return [];
-      const nextError = applyUiError(err, "刷新技能失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `刷新技能失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.refresh_skills_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.refresh_skills_failed", { summary: nextError.summary }));
       return [];
     }
   }
 
   async function refreshSpecs() {
     try {
-      const data = await fetchJson("/api/workbench/specs");
+      const data = await fetchJson(workbenchSpecUrl("", uiLocale));
       const list = Array.isArray(data.specs) ? data.specs : [];
       clearUiError();
       setSpecs(list);
@@ -1058,8 +1281,8 @@ function App() {
       }
       return list;
     } catch (err) {
-      const nextError = applyUiError(err, "刷新 agent 规范失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `刷新 agent 规范失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.refresh_specs_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.refresh_specs_failed", { summary: nextError.summary }));
       return [];
     }
   }
@@ -1068,7 +1291,7 @@ function App() {
     const rootPath = String(projectPathDraft || "").trim();
     const title = String(projectTitleDraft || "").trim();
     if (!rootPath) {
-      setProjectFormError("请输入本地绝对路径。");
+      setProjectFormError(t("errors.absolute_path_required"));
       return;
     }
     setSavingProject(true);
@@ -1085,12 +1308,13 @@ function App() {
       setProjectDialogOpen(false);
       setProjectPathDraft("");
       setProjectTitleDraft("");
+      closeProjectMenu();
       await selectProject(String(payload.project_id || ""));
-      pushLogWithLimit(setLogs, "system", `已添加项目：${payload.title || payload.project_id}`);
+      pushLogWithLimit(setLogs, "system", t("log.project_added", { title: payload.title || payload.project_id }));
     } catch (err) {
-      const nextError = applyUiError(err, "添加项目失败，请检查项目路径。");
+      const nextError = applyUiError(err, t("errors.add_project_failed"));
       setProjectFormError(nextError.summary);
-      pushLogWithLimit(setLogs, "error", `添加项目失败：${nextError.summary}`);
+      pushLogWithLimit(setLogs, "error", t("errors.add_project_failed"));
     } finally {
       setSavingProject(false);
     }
@@ -1111,9 +1335,10 @@ function App() {
     setSessionAgentState({});
     clearLiveRunUi();
     clearUiError();
+    closeProjectMenu();
     closeThreadMenu();
     await refreshSessions(resolvedProjectId || targetProjectId);
-    pushLogWithLimit(setLogs, "system", `已创建新线程 ${sid.slice(0, 8)}`);
+    pushLogWithLimit(setLogs, "system", t("log.thread_created", { session_id: sid.slice(0, 8) }));
     return sid;
   }
 
@@ -1135,12 +1360,12 @@ function App() {
       clearLiveRunUi();
       closeThreadMenu();
       clearUiError();
-      pushLogWithLimit(setLogs, "system", `已载入线程 ${sid.slice(0, 8)}`);
+      pushLogWithLimit(setLogs, "system", t("log.thread_loaded", { session_id: sid.slice(0, 8) }));
       return true;
     } catch (err) {
       if (options.silentNotFound && String(err.message || "").includes("404")) return false;
-      const nextError = applyUiError(err, "载入线程失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `载入线程失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.load_thread_failed"));
+      pushLogWithLimit(setLogs, "error", t("errors.load_thread_failed"));
       return false;
     } finally {
       setLoadingSession(false);
@@ -1151,8 +1376,8 @@ function App() {
     try {
       await createSession(projectId);
     } catch (err) {
-      const nextError = applyUiError(err, "新线程创建失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `新线程失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.new_thread_failed"));
+      pushLogWithLimit(setLogs, "error", t("errors.new_thread_failed"));
     }
   }
 
@@ -1160,8 +1385,8 @@ function App() {
     const sid = String(targetSessionId || "").trim();
     if (!sid || loadingSession || sending) return;
     const item = sessions.find((entry) => String(entry.session_id || "") === sid) || null;
-    const title = String((item && item.title) || "新线程").trim() || "新线程";
-    if (!window.confirm(`删除线程“${title}”？此操作不可恢复。`)) {
+    const title = String((item && item.title) || t("labels.new_thread")).trim() || t("labels.new_thread");
+    if (!window.confirm(t("confirm.delete_thread", { title }))) {
       closeThreadMenu();
       return;
     }
@@ -1196,10 +1421,62 @@ function App() {
         }
       }
       clearUiError();
-      pushLogWithLimit(setLogs, "system", `已删除线程 ${sid.slice(0, 8)}`);
+      pushLogWithLimit(setLogs, "system", t("log.thread_deleted", { session_id: sid.slice(0, 8) }));
     } catch (err) {
-      const nextError = applyUiError(err, "删除线程失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `删除线程失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.delete_thread_failed"));
+      pushLogWithLimit(setLogs, "error", t("errors.delete_thread_failed"));
+    }
+  }
+
+  async function handleDeleteProject(targetProjectId) {
+    const pid = String(targetProjectId || "").trim();
+    if (!pid || loadingSession || sending) return;
+    const item = projects.find((entry) => String(entry.project_id || "") === pid) || null;
+    if (!item || item.is_default) {
+      closeProjectMenu();
+      return;
+    }
+    const title = String(item.title || item.project_id || pid).trim() || pid;
+    if (!window.confirm(t("confirm.delete_project", { title }))) {
+      closeProjectMenu();
+      return;
+    }
+    try {
+      const payload = await fetchJson(`/api/projects/${encodeURIComponent(pid)}`, { method: "DELETE" });
+      closeProjectMenu();
+      window.localStorage.removeItem(sessionStorageKeyForProject(pid));
+      const deletingCurrentProject = pid === String(projectId || "").trim();
+      const [healthData, list] = await Promise.all([refreshHealth(), refreshProjects()]);
+      if (deletingCurrentProject) {
+        window.localStorage.removeItem(PROJECT_STORAGE_KEY);
+        setSessionId("");
+        setMessages([]);
+        setSessionAgentState({});
+        setLogs([]);
+        clearLiveRunUi();
+        const nextProjectId =
+          String(((list || []).find((entry) => String(entry.project_id || "").trim() !== pid) || {}).project_id || "").trim() ||
+          String((healthData && healthData.default_project_id) || "").trim() ||
+          String((((list || [])[0] || {}).project_id) || "").trim();
+        if (nextProjectId) {
+          await selectProject(nextProjectId, { silentNotFound: true });
+        } else {
+          setProjectId("");
+          setSessions([]);
+        }
+      }
+      clearUiError();
+      pushLogWithLimit(
+        setLogs,
+        "system",
+        t("log.project_deleted", {
+          title,
+          deleted_session_count: Number((payload && payload.deleted_session_count) || 0) || 0,
+        }),
+      );
+    } catch (err) {
+      const nextError = applyUiError(err, t("errors.delete_project_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.delete_project_failed", { summary: nextError.summary }));
     }
   }
 
@@ -1223,11 +1500,16 @@ function App() {
       clearUiError();
       setPendingUploads((prev) => [...prev, ...uploaded]);
       const sourceLabel = String(options.source || "").trim();
-      const actionLabel = sourceLabel === "paste" ? "已粘贴" : "已添加";
-      pushLogWithLimit(setLogs, "system", `${actionLabel} ${uploaded.length} 个附件`);
+      pushLogWithLimit(
+        setLogs,
+        "system",
+        sourceLabel === "paste"
+          ? t("log.attachments_pasted", { count: uploaded.length })
+          : t("log.attachments_added", { count: uploaded.length }),
+      );
     } catch (err) {
-      const nextError = applyUiError(err, "附件上传失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `附件上传失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.upload_failed"));
+      pushLogWithLimit(setLogs, "error", t("errors.upload_failed"));
     }
   }
 
@@ -1294,12 +1576,12 @@ function App() {
         method: "POST",
       });
       const detail = Boolean(payload.cancelled)
-        ? "已请求停止当前运行。"
-        : "当前没有可停止的运行。";
+        ? t("log.stop_requested")
+        : t("log.stop_no_active_run");
       pushLogWithLimit(setLogs, "system", detail);
     } catch (err) {
-      const nextError = applyUiError(err, "停止运行失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `停止运行失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.stop_failed"));
+      pushLogWithLimit(setLogs, "error", t("errors.stop_failed"));
       setStoppingRun(false);
     }
   }
@@ -1326,7 +1608,7 @@ function App() {
       if (!sid) sid = await createSession(projectId);
 
       const userMessage = createMessage("user", messageText);
-      pendingMessage = createMessage("assistant", "正在准备上下文...", { pending: true });
+      pendingMessage = createMessage("assistant", t("labels.processing"), { pending: true });
       setMessages((prev) => [...prev, userMessage, pendingMessage]);
       setLiveTurnState({
         goal: messageText,
@@ -1369,14 +1651,15 @@ function App() {
         }
         throw errorWithUiError(
           normalizeUiError(
+            uiLocale,
             payload && Object.prototype.hasOwnProperty.call(payload, "detail") ? payload.detail : payload,
-            "请求失败，请稍后重试。",
+            t("errors.request_failed"),
             { status_code: res.status },
           ),
         );
       }
       if (!res.body) {
-        throw errorWithUiError(normalizeUiError({ detail: "stream body unavailable" }, "请求失败，请稍后重试。"));
+        throw errorWithUiError(normalizeUiError(uiLocale, { detail: "stream body unavailable" }, t("errors.request_failed")));
       }
 
       const reader = res.body.getReader();
@@ -1420,7 +1703,7 @@ function App() {
               applySnapshot(payload.run_snapshot);
             }
             if (event === "stage") {
-              const detail = String(payload.detail || payload.label || payload.code || "处理中...");
+              const detail = String(payload.detail || payload.label || payload.code || t("labels.processing"));
               replacePendingText(detail);
               pushLogWithLimit(setLogs, "stage", detail);
               pushLiveLog("stage", detail);
@@ -1433,7 +1716,10 @@ function App() {
             } else if (event === "tool") {
               const item = payload.item || {};
               const name = String(item.name || "tool");
-              const summary = toolTimelineSummary({ ...item, summary: payload.summary || item.summary || item.output_preview || "工具调用" });
+              const summary = toolTimelineSummary(
+                { ...item, summary: payload.summary || item.summary || item.output_preview || "tool" },
+                uiLocale,
+              );
               setToolTimeline((prev) => [item, ...prev].slice(0, 24));
               setLiveToolTimeline((prev) => [item, ...prev].slice(0, 24));
               pushLogWithLimit(setLogs, "tool", `${name}: ${summary}`);
@@ -1465,13 +1751,13 @@ function App() {
                 turn_status: String(payload.turn_status || "needs_user_input"),
                 pending_user_input: nextPending,
               }));
-              replacePendingText(String(nextPending.summary || "需要你的输入后我再继续。"));
+              replacePendingText(String(nextPending.summary || t("labels.pending_input")));
               pushLogWithLimit(setLogs, "system", String(nextPending.summary || "user input required"));
               pushLiveLog("system", String(nextPending.summary || "user input required"));
             } else if (event === "final") {
               finalPayload = payload.response || null;
             } else if (event === "error") {
-              throw errorWithUiError(normalizeUiError(payload, "请求失败，请稍后重试。"));
+              throw errorWithUiError(normalizeUiError(uiLocale, payload, t("errors.request_failed")));
             }
           }
           splitIndex = buffer.indexOf("\n\n");
@@ -1539,16 +1825,16 @@ function App() {
       pushLogWithLimit(
         setLogs,
         "response",
-        `收到回复，工具 ${Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0} 次`,
+        t("log.reply_received", { count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0 }),
       );
       pushLiveLog(
         "response",
-        `收到回复，工具 ${Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0} 次`,
+        t("log.reply_received", { count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0 }),
       );
       await Promise.all([refreshSessions(projectId), refreshHealth(), refreshWorkbenchTools(), refreshSkills(), refreshProjects()]);
     } catch (err) {
-      const nextError = applyUiError(err, "请求失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `发送失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.request_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.send_failed", { summary: nextError.summary }));
       setMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
     } finally {
       setSending(false);
@@ -1561,13 +1847,13 @@ function App() {
     const specName = String(name || "").trim();
     if (!specName) return;
     try {
-      const payload = await fetchJson(`/api/workbench/specs/${encodeURIComponent(specName)}`);
+      const payload = await fetchJson(workbenchSpecUrl(specName, uiLocale));
       clearUiError();
       setSelectedSpecName(specName);
       setSpecEditor(String(payload.content || ""));
     } catch (err) {
-      const nextError = applyUiError(err, "读取规范失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `读取规范失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.read_spec_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.spec_read_failed", { summary: nextError.summary }));
     }
   }
 
@@ -1589,10 +1875,10 @@ function App() {
       setSkillSelectionState(nextSkillId, String(payload.content || ""));
       await Promise.all([refreshSkills(nextSkillId), refreshHealth()]);
       clearUiError();
-      pushLogWithLimit(setLogs, "system", `技能已保存：${nextSkillId || "new_skill"}`);
+      pushLogWithLimit(setLogs, "system", t("log.skill_saved", { skill_id: nextSkillId || "new_skill" }));
     } catch (err) {
-      const nextError = applyUiError(err, "保存技能失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `保存技能失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.save_skill_failed"));
+      pushLogWithLimit(setLogs, "error", t("errors.save_skill_failed"));
     } finally {
       setSavingWorkbench(false);
     }
@@ -1612,10 +1898,17 @@ function App() {
       setSkillSelectionState(nextSkillId, String(payload.content || ""));
       await Promise.all([refreshSkills(nextSkillId), refreshHealth()]);
       clearUiError();
-      pushLogWithLimit(setLogs, "system", `技能已${payload.enabled ? "启用" : "停用"}：${nextSkillId}`);
+      pushLogWithLimit(
+        setLogs,
+        "system",
+        t("log.skill_toggled", {
+          status: payload.enabled ? t("skills.status.enabled") : t("skills.status.disabled"),
+          skill_id: nextSkillId,
+        }),
+      );
     } catch (err) {
-      const nextError = applyUiError(err, "切换技能失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `切换技能失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.toggle_skill_failed"));
+      pushLogWithLimit(setLogs, "error", t("errors.toggle_skill_failed"));
     } finally {
       setSavingWorkbench(false);
     }
@@ -1628,7 +1921,7 @@ function App() {
     const fallbackSkillId =
       String(((currentIndex >= 0 ? skills[currentIndex + 1] : null) || {}).id || "").trim() ||
       String(((currentIndex > 0 ? skills[currentIndex - 1] : null) || {}).id || "").trim();
-    if (!window.confirm(`删除 skill “${targetSkillId}”？此操作不可恢复。`)) {
+    if (!window.confirm(t("confirm.delete_skill", { skill_id: targetSkillId }))) {
       return;
     }
     setSavingWorkbench(true);
@@ -1639,10 +1932,10 @@ function App() {
       }
       await Promise.all([refreshSkills(fallbackSkillId), refreshHealth()]);
       clearUiError();
-      pushLogWithLimit(setLogs, "system", `技能已删除：${targetSkillId}`);
+      pushLogWithLimit(setLogs, "system", t("log.skill_deleted", { skill_id: targetSkillId }));
     } catch (err) {
-      const nextError = applyUiError(err, "删除技能失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `删除技能失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.delete_skill_failed"));
+      pushLogWithLimit(setLogs, "error", t("errors.delete_skill_failed"));
     } finally {
       setSavingWorkbench(false);
     }
@@ -1652,7 +1945,7 @@ function App() {
     if (!selectedSpecName || !specEditor.trim()) return;
     setSavingWorkbench(true);
     try {
-      const payload = await fetchJson(`/api/workbench/specs/${encodeURIComponent(selectedSpecName)}`, {
+      const payload = await fetchJson(workbenchSpecUrl(selectedSpecName, uiLocale), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: specEditor }),
@@ -1660,10 +1953,10 @@ function App() {
       setSpecEditor(String(payload.content || ""));
       await Promise.all([refreshSpecs(), refreshHealth()]);
       clearUiError();
-      pushLogWithLimit(setLogs, "system", `规范已保存：${selectedSpecName}`);
+      pushLogWithLimit(setLogs, "system", t("log.spec_saved", { spec_name: selectedSpecName }));
     } catch (err) {
-      const nextError = applyUiError(err, "保存规范失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `保存规范失败：${nextError.summary}`);
+      const nextError = applyUiError(err, t("errors.save_spec_failed"));
+      pushLogWithLimit(setLogs, "error", t("errors.save_spec_failed"));
     } finally {
       setSavingWorkbench(false);
     }
@@ -1751,11 +2044,14 @@ function App() {
     (health && health.compaction_status) ||
     {},
   );
+  const compactionWarningText = formatCompactionWarning(uiLocale, activeCompactionStatus, activeContextMeter);
+  const compactionReasonText = formatCompactionReason(uiLocale, activeCompactionStatus.last_compaction_reason);
   const contextMeterColor = resolveContextMeterColor(activeContextMeter);
   const groupedTools = useMemo(() => groupTools(workbenchTools), [workbenchTools]);
   const selectedSkill = skills.find((item) => item.id === selectedSkillId) || null;
+  const selectedSpec = specs.find((item) => String(item.name || "") === selectedSpecName) || null;
   const displayVersion = normalizeReleaseVersion((health && health.app_version) || "");
-  const headTitle = sessionId ? sessionTitleFromList(sessions, sessionId) : (workspaceLabel || "开始构建");
+  const headTitle = sessionId ? sessionTitleFromList(sessions, sessionId, uiLocale) : (workspaceLabel || t("labels.start_building"));
   const headBreadcrumb = [
     workspaceLabel || "",
     currentProjectRoot ? compactPath(currentProjectRoot) : "",
@@ -1775,7 +2071,7 @@ function App() {
           <div>
             <div className="brand-title">Vintage Programmer</div>
             <div className="brand-subline">
-              <div className="brand-sub">${workspaceLabel || "选择一个项目开始工作"}</div>
+              <div className="brand-sub">${workspaceLabel || t("brand.no_project_selected")}</div>
               ${displayVersion ? html`<span className="brand-version-badge">${displayVersion}</span>` : null}
             </div>
           </div>
@@ -1783,28 +2079,33 @@ function App() {
         </div>
 
         <div className="rail-actions">
-          <button className="solid-btn" type="button" onClick=${handleNewSession} disabled=${loadingSession || sending}>新线程</button>
-          <button className="ghost-btn" type="button" onClick=${() => refreshSessions(projectId)} disabled=${loadingSession || sending}>刷新</button>
+          <button className="solid-btn" type="button" onClick=${handleNewSession} disabled=${loadingSession || sending}>${t("buttons.new_thread")}</button>
+          <button className="ghost-btn" type="button" onClick=${() => refreshSessions(projectId)} disabled=${loadingSession || sending}>${t("buttons.refresh")}</button>
         </div>
 
         <section className="rail-section" id="projectSection">
           <div className="section-head">
             <span>Projects</span>
-            <button className="ghost-btn compact-btn" type="button" onClick=${() => setProjectDialogOpen(true)}>添加</button>
+            <button className="ghost-btn compact-btn" type="button" onClick=${() => setProjectDialogOpen(true)}>${t("buttons.add")}</button>
           </div>
           <div className="project-list">
-            ${projects.length
-              ? projects.map(
-                  (item) => html`
-                    <button
-                      key=${item.project_id}
-                      className=${`project-row ${item.project_id === projectId ? "active" : ""}`}
-                      type="button"
-                      onClick=${() => selectProject(item.project_id)}
-                      disabled=${loadingSession || sending}
-                    >
-                      <div className="project-row-title">${item.title || item.project_id}</div>
-                      <div className="project-row-meta">
+                ${projects.length
+                  ? projects.map(
+                      (item) => html`
+                        <button
+                          key=${item.project_id}
+                          className=${`project-row ${item.project_id === projectId ? "active" : ""}`}
+                          type="button"
+                          onClick=${(event) => handleProjectClick(event, item.project_id)}
+                          onContextMenu=${(event) => handleProjectContextMenu(event, item)}
+                          onTouchStart=${(event) => handleProjectTouchStart(event, item)}
+                          onTouchEnd=${cancelProjectLongPress}
+                          onTouchMove=${cancelProjectLongPress}
+                          onTouchCancel=${cancelProjectLongPress}
+                          disabled=${loadingSession || sending}
+                        >
+                          <div className="project-row-title">${item.title || item.project_id}</div>
+                          <div className="project-row-meta">
                         ${compactPath(item.root_path)}
                         ${item.git_branch ? ` · ${item.git_branch}` : ""}
                         ${item.is_worktree ? " · worktree" : ""}
@@ -1812,9 +2113,22 @@ function App() {
                     </button>
                   `,
                 )
-              : html`<div className="thread-empty">还没有项目，先添加一个本地文件夹。</div>`}
+              : html`<div className="thread-empty">${t("threads.none")}</div>`}
           </div>
         </section>
+        ${projectMenu
+          ? html`
+              <div
+                className="thread-context-menu"
+                ref=${projectMenuRef}
+                style=${{ left: `${projectMenu.x}px`, top: `${projectMenu.y}px` }}
+              >
+                <button className="thread-context-item danger" type="button" onClick=${() => handleDeleteProject(projectMenu.projectId)}>
+                  ${t("buttons.delete_project")}
+                </button>
+              </div>
+            `
+          : null}
 
         <section className="rail-section rail-section-fill">
           <div className="section-head">
@@ -1837,12 +2151,12 @@ function App() {
                           onTouchCancel=${cancelThreadLongPress}
                           disabled=${loadingSession || sending}
                         >
-                          <div className="thread-row-title">${item.title || "新线程"}</div>
-                          <div className="thread-row-meta">${formatTime(item.updated_at)} · ${item.turn_count || 0} 轮</div>
+                          <div className="thread-row-title">${item.title || t("labels.new_thread")}</div>
+                          <div className="thread-row-meta">${formatTime(item.updated_at, uiLocale)} · ${item.turn_count || 0}</div>
                         </button>
                   `,
                 )
-              : html`<div className="thread-empty">${workspaceLabel ? `项目 ${workspaceLabel} 还没有线程。` : "先选择一个项目。"}</div>`}
+              : html`<div className="thread-empty">${workspaceLabel ? t("threads.none_for_project", { workspace: workspaceLabel }) : t("threads.select_project_first")}</div>`}
           </div>
         </section>
         ${threadMenu
@@ -1853,7 +2167,7 @@ function App() {
                 style=${{ left: `${threadMenu.x}px`, top: `${threadMenu.y}px` }}
               >
                 <button className="thread-context-item danger" type="button" onClick=${() => handleDeleteSession(threadMenu.sessionId)}>
-                  删除线程
+                  ${t("buttons.delete_thread")}
                 </button>
               </div>
             `
@@ -1863,7 +2177,7 @@ function App() {
       <main className="workspace-main" id="chatPane">
         <header className="workspace-head">
           <div className="head-left">
-            <button className="ghost-btn mobile-only" type="button" onClick=${() => setMobileThreadsOpen(true)}>线程</button>
+            <button className="ghost-btn mobile-only" type="button" onClick=${() => setMobileThreadsOpen(true)}>${t("buttons.threads")}</button>
             <div className="head-stack">
               <div className="main-head-title">${headTitle}</div>
               <div className="main-head-sub" title=${currentProjectRoot || workspaceLabel || ""}>
@@ -1873,17 +2187,17 @@ function App() {
             </div>
           </div>
           <div className="head-actions">
-            <button className=${`mini-btn ${drawerView === "run" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "run" ? "" : "run")}>Run</button>
-            <button className=${`mini-btn ${drawerView === "tools" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "tools" ? "" : "tools")}>Tools</button>
+            <button className=${`mini-btn ${drawerView === "run" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "run" ? "" : "run")}>${currentTabLabel("run")}</button>
+            <button className=${`mini-btn ${drawerView === "tools" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "tools" ? "" : "tools")}>${currentTabLabel("tools")}</button>
             <button className=${`mini-btn ${drawerView === "skills" ? "active" : ""}`} type="button" onClick=${() => {
               setDrawerView(drawerView === "skills" ? "" : "skills");
               if (!skills.length) refreshSkills();
-            }}>Skills</button>
+            }}>${currentTabLabel("skills")}</button>
             <button className=${`mini-btn ${drawerView === "agent" ? "active" : ""}`} type="button" onClick=${() => {
               setDrawerView(drawerView === "agent" ? "" : "agent");
               if (!specs.length) refreshSpecs();
-            }}>Agent</button>
-            <button className=${`mini-btn ${drawerView === "settings" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "settings" ? "" : "settings")}>Settings</button>
+            }}>${currentTabLabel("agent")}</button>
+            <button className=${`mini-btn ${drawerView === "settings" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "settings" ? "" : "settings")}>${currentTabLabel("settings")}</button>
           </div>
         </header>
 
@@ -1893,8 +2207,8 @@ function App() {
                 (item) => html`
                   <article key=${item.id} className=${`message-article role-${item.role} ${item.pending ? "pending" : ""} ${item.error ? "error" : ""}`}>
                     <div className="message-meta">
-                      <span className="message-role">${roleLabel(item.role)}</span>
-                      ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt)}</span>` : null}
+                      <span className="message-role">${roleLabel(item.role, uiLocale)}</span>
+                      ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt, uiLocale)}</span>` : null}
                     </div>
                     <div className="message-card">
                       <div
@@ -1908,14 +2222,14 @@ function App() {
             : html`
                 <section className="empty-panel">
                   <div className="empty-kicker">OpenClaw-first Tools · Codex-style Workspace</div>
-                  <div className="empty-title" id="emptyPromptLine">已选择项目后可直接开线程，输入框始终在底部。</div>
+                  <div className="empty-title" id="emptyPromptLine">${t("empty.prompt_title")}</div>
                   <p className="empty-copy">
-                    当前项目：
-                    <strong>${workspaceLabel || "未选择"}</strong>
+                    ${t("labels.current_project")}
+                    <strong>${workspaceLabel || t("labels.unselected")}</strong>
                     ${currentProjectRoot ? ` · ${compactPath(currentProjectRoot)}` : ""}
-                    。主 agent 为 <strong>vintage_programmer</strong>，Workbench 负责 Run、Tools、Skills、Agent 和 Settings。
+                    ${t("empty.prompt_body")}<strong>vintage_programmer</strong>${t("empty.prompt_suffix")}
                   </p>
-                  <div className="starter-list">${starterPromptChips(setDraft, handleSend)}</div>
+                  <div className="starter-list">${starterPromptChips(uiLocale, setDraft, handleSend)}</div>
                 </section>
               `}
         </section>
@@ -1951,7 +2265,7 @@ function App() {
                     <div className="composer-error-meta">
                       ${uiError.status_code ? `HTTP ${uiError.status_code}` : ""}
                       ${uiError.provider ? ` · ${uiError.provider}` : ""}
-                      ${uiError.retryable ? " · 可重试" : ""}
+                      ${uiError.retryable ? ` · ${t("labels.retryable")}` : ""}
                     </div>
                   </div>
                   <div className="composer-error-actions">
@@ -1966,14 +2280,14 @@ function App() {
                               }
                             }}
                           >
-                            复制详情
+                            ${t("labels.copy_detail")}
                           </button>
                         `
                       : null}
                     ${uiError.detail
                       ? html`
                           <details className="composer-error-details">
-                            <summary>详情</summary>
+                            <summary>${t("labels.detail")}</summary>
                             <pre>${uiError.detail}</pre>
                           </details>
                         `
@@ -1992,7 +2306,7 @@ function App() {
               ${sending && activeRunId
                 ? html`
                     <button className="ghost-btn" type="button" onClick=${handleStopRun} disabled=${stoppingRun}>
-                      ${stoppingRun ? "停止中" : "停止"}
+                      ${stoppingRun ? t("buttons.stopping") : t("buttons.stop")}
                     </button>
                   `
                 : null}
@@ -2006,11 +2320,11 @@ function App() {
               onInput=${(event) => setDraft(event.currentTarget.value)}
               onKeyDown=${handleComposerKeyDown}
               onPaste=${handleComposerPaste}
-              placeholder="给 Vintage Programmer 一个清晰任务。也可以直接贴代码、配置或长文本。Enter 发送，Shift+Enter 换行。"
+              placeholder=${t("composer.placeholder")}
               disabled=${sending}
             ></textarea>
             <button className="send-btn" type="button" onClick=${() => handleSend()} disabled=${sending || !draft.trim()}>
-              ${sending ? "运行中" : "发送"}
+              ${sending ? t("buttons.running") : t("buttons.send")}
             </button>
           </div>
           <div className="status-bar status-inline" id="statusBar">
@@ -2029,7 +2343,7 @@ function App() {
                 <button
                   className="context-meter-trigger"
                   type="button"
-                  aria-label="查看背景信息窗口占用"
+                  aria-label=${t("context_meter.aria")}
                   aria-expanded=${contextMeterOpen ? "true" : "false"}
                   onClick=${(event) => {
                     event.stopPropagation();
@@ -2047,46 +2361,59 @@ function App() {
                 </button>
                 ${contextMeterOpen
                   ? html`
-                      <div className="context-meter-popover" role="dialog" aria-label="背景信息窗口">
-                        <div className="context-meter-title">背景信息窗口：</div>
+                      <div className="context-meter-popover" role="dialog" aria-label=${t("context_meter.title")}>
+                        <div className="context-meter-title">${t("context_meter.title")}</div>
                         <div className="context-meter-line">
-                          ${activeContextMeter.used_percent}% 已用（剩余 ${activeContextMeter.remaining_percent}%）
+                          ${t("context_meter.used", {
+                            used: activeContextMeter.used_percent,
+                            remaining: activeContextMeter.remaining_percent,
+                          })}
                         </div>
                         <div className="context-meter-line">
-                          已估算 ${formatTokenCount(activeContextMeter.estimated_tokens)} 标记，阈值 ${formatTokenCount(activeContextMeter.auto_compact_token_limit)}
+                          ${t("context_meter.tokens", {
+                            estimated: formatTokenCount(activeContextMeter.estimated_tokens),
+                            limit: formatTokenCount(activeContextMeter.auto_compact_token_limit),
+                          })}
                         </div>
                         ${activeContextMeter.context_window
                           ? html`
                               <div className="context-meter-line subtle">
-                                模型窗口 ${formatTokenCount(activeContextMeter.context_window)} · 来源 ${activeContextMeter.threshold_source || "estimate"}
+                                ${t("context_meter.window", {
+                                  window: formatTokenCount(activeContextMeter.context_window),
+                                  source: formatContextThresholdSource(uiLocale, activeContextMeter.threshold_source || "estimate"),
+                                })}
                               </div>
                             `
                           : null}
                         ${activeContextMeter.last_compacted_at
                           ? html`
                               <div className="context-meter-line subtle">
-                                最近压缩：${formatTime(activeContextMeter.last_compacted_at)}
+                                ${t("context_meter.last_compacted", { time: formatTime(activeContextMeter.last_compacted_at, uiLocale) })}
                               </div>
                             `
                           : null}
                         ${activeCompactionStatus.generation
                           ? html`
                               <div className="context-meter-line subtle">
-                                replacement history · generation ${activeCompactionStatus.generation}
-                                ${activeCompactionStatus.last_compaction_phase ? ` · ${activeCompactionStatus.last_compaction_phase}` : ""}
+                                ${t("context_meter.replacement_history", {
+                                  generation: activeCompactionStatus.generation,
+                                  phase: activeCompactionStatus.last_compaction_phase
+                                    ? ` · ${formatRunEnum(uiLocale, "compaction_phase", activeCompactionStatus.last_compaction_phase, activeCompactionStatus.last_compaction_phase)}`
+                                    : "",
+                                })}
                               </div>
                             `
                           : null}
-                        <div className="context-meter-line strong">达到阈值后自动压缩旧背景信息</div>
-                        ${activeContextMeter.warning
-                          ? html`<div className="context-meter-line subtle">${activeContextMeter.warning}</div>`
+                        <div className="context-meter-line strong">${t("context_meter.auto_compact")}</div>
+                        ${compactionWarningText
+                          ? html`<div className="context-meter-line subtle">${compactionWarningText}</div>`
                           : null}
                       </div>
                     `
                   : null}
               </div>
             </div>
-            ${uiError ? html`<span className="status-alert" title=${uiError.summary}>error</span>` : null}
+            ${uiError ? html`<span className="status-alert" title=${uiError.summary}>${t("labels.status_error")}</span>` : null}
           </div>
         </section>
       </main>
@@ -2095,9 +2422,9 @@ function App() {
         ? html`
             <div className="project-modal-backdrop" id="projectModal">
               <div className="project-modal">
-                <div className="panel-title">添加项目</div>
+                <div className="panel-title">${t("project_modal.title")}</div>
                 <label className="form-field">
-                  <span>本地绝对路径</span>
+                  <span>${t("project_modal.root_path")}</span>
                   <input
                     className="drawer-input"
                     type="text"
@@ -2108,21 +2435,21 @@ function App() {
                   />
                 </label>
                 <label className="form-field">
-                  <span>显示名称（可选）</span>
+                  <span>${t("project_modal.display_name")}</span>
                   <input
                     className="drawer-input"
                     type="text"
                     value=${projectTitleDraft}
-                    placeholder="目录名将作为默认标题"
+                    placeholder=${t("project_modal.display_name_placeholder")}
                     onInput=${(event) => setProjectTitleDraft(event.currentTarget.value)}
                     disabled=${savingProject}
                   />
                 </label>
-                <div className="path-hint">v1 采用路径输入 + 最近项目，不依赖系统文件夹选择器。</div>
+                <div className="path-hint">${t("project_modal.hint")}</div>
                 ${projectFormError ? html`<div className="status-error">${projectFormError}</div>` : null}
                 <div className="modal-actions">
-                  <button className="ghost-btn" type="button" onClick=${() => setProjectDialogOpen(false)} disabled=${savingProject}>取消</button>
-                  <button className="solid-btn" type="button" onClick=${createProjectFromDraft} disabled=${savingProject}>${savingProject ? "添加中" : "添加项目"}</button>
+                  <button className="ghost-btn" type="button" onClick=${() => setProjectDialogOpen(false)} disabled=${savingProject}>${t("buttons.cancel")}</button>
+                  <button className="solid-btn" type="button" onClick=${createProjectFromDraft} disabled=${savingProject}>${savingProject ? t("buttons.adding") : t("buttons.add_project")}</button>
                 </div>
               </div>
             </div>
@@ -2142,64 +2469,64 @@ function App() {
                   type="button"
                   onClick=${() => setDrawerView(tab)}
                 >
-                  ${tab}
+                  ${currentTabLabel(tab)}
                 </button>
               `,
             )}
           </div>
-          <button className="drawer-close" type="button" onClick=${() => setDrawerView("")}>关闭</button>
+          <button className="drawer-close" type="button" onClick=${() => setDrawerView("")}>${t("buttons.close")}</button>
         </div>
 
         ${drawerView === "run"
           ? html`
               <div className="workbench-scroll">
                 <section className="panel-card">
-                  <div className="panel-title">Run State</div>
-                  <div className="meta-line">goal: ${runState.goal || sessionAgentState.goal || sessionAgentState.current_goal || "-"}</div>
-                  <div className="meta-line">mode: ${activeCollaborationMode}</div>
-                  <div className="meta-line">turn_status: ${activeTurnStatus}</div>
-                  <div className="meta-line">evidence: ${evidence.status || sessionAgentState.evidence_status || "not_needed"}</div>
-                  <div className="meta-line">inline_document: ${String(Boolean(runState.inline_document))}</div>
-                  <div className="meta-line">ocr: ${ocrStatus.default_engine || "unavailable"}</div>
+                  <div className="panel-title">${t("run.title")}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${runState.goal || sessionAgentState.goal || sessionAgentState.current_goal || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "mode")}: ${formatRunEnum(uiLocale, "mode", activeCollaborationMode, "default")}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "turn_status")}: ${formatRunEnum(uiLocale, "turn_status", activeTurnStatus, "idle")}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "evidence")}: ${formatRunEnum(uiLocale, "evidence", evidence.status || sessionAgentState.evidence_status || "not_needed", "not_needed")}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "inline_document")}: ${formatRunBoolean(uiLocale, runState.inline_document)}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "ocr")}: ${formatRunEnum(uiLocale, "ocr_engine", ocrStatus.default_engine || "unavailable", "unavailable")}</div>
                   <div className="meta-line">
-                    compaction: ${activeCompactionStatus.mode || "token_budget"}
-                    ${activeCompactionStatus.last_compaction_phase ? ` · ${activeCompactionStatus.last_compaction_phase}` : ""}
+                    ${formatRunFieldLabel(uiLocale, "compaction")}: ${formatRunEnum(uiLocale, "compaction_mode", activeCompactionStatus.mode || "token_budget", "token_budget")}
+                    ${activeCompactionStatus.last_compaction_phase ? ` · ${formatRunEnum(uiLocale, "compaction_phase", activeCompactionStatus.last_compaction_phase, activeCompactionStatus.last_compaction_phase)}` : ""}
                   </div>
                   <div className="meta-line">
-                    context: ${formatTokenCount(activeCompactionStatus.estimated_context_tokens || activeContextMeter.estimated_tokens)}
+                    ${formatRunFieldLabel(uiLocale, "context")}: ${formatTokenCount(activeCompactionStatus.estimated_context_tokens || activeContextMeter.estimated_tokens)}
                     /
                     ${formatTokenCount(activeCompactionStatus.auto_compact_token_limit || activeContextMeter.auto_compact_token_limit)}
                   </div>
                   <div className="meta-line">
-                    generation: ${activeCompactionStatus.generation || 0}
-                    · retained_turns: ${activeCompactionStatus.retained_turn_count || 0}
+                    ${formatRunFieldLabel(uiLocale, "generation")}: ${activeCompactionStatus.generation || 0}
+                    · ${formatRunFieldLabel(uiLocale, "retained_turns")}: ${activeCompactionStatus.retained_turn_count || 0}
                   </div>
                   ${ocrStatus.warning ? html`<div className="timeline-detail">${ocrStatus.warning}</div>` : null}
-                  ${activeCompactionStatus.last_compaction_reason
-                    ? html`<div className="timeline-detail">${activeCompactionStatus.last_compaction_reason}</div>`
+                  ${compactionReasonText
+                    ? html`<div className="timeline-detail">${compactionReasonText}</div>`
                     : null}
-                  ${activeCompactionStatus.warning
-                    ? html`<div className="timeline-detail">${activeCompactionStatus.warning}</div>`
+                  ${compactionWarningText
+                    ? html`<div className="timeline-detail">${compactionWarningText}</div>`
                     : null}
                 </section>
 
                 <section className="panel-card">
-                  <div className="panel-title">Current Focus</div>
-                  <div className="meta-line">task_id: ${activeTaskCheckpoint.task_id || "-"}</div>
-                  <div className="meta-line">goal: ${activeTaskCheckpoint.goal || runState.goal || sessionAgentState.goal || "-"}</div>
-                  <div className="meta-line">cwd: ${activeTaskCheckpoint.cwd || sessionAgentState.cwd || "-"}</div>
-                  <div className="meta-line">next_action: ${activeTaskCheckpoint.next_action || "-"}</div>
+                  <div className="panel-title">${t("run.current_focus")}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "task_id")}: ${activeTaskCheckpoint.task_id || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${activeTaskCheckpoint.goal || runState.goal || sessionAgentState.goal || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "cwd")}: ${activeTaskCheckpoint.cwd || sessionAgentState.cwd || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "next_action")}: ${activeTaskCheckpoint.next_action || "-"}</div>
                   ${Array.isArray(activeTaskCheckpoint.active_files) && activeTaskCheckpoint.active_files.length
                     ? html`
                         <div className="timeline-detail">
-                          files: ${activeTaskCheckpoint.active_files.slice(0, 6).map((item) => compactPath(item)).join(" · ")}
+                          ${formatRunFieldLabel(uiLocale, "files")}: ${activeTaskCheckpoint.active_files.slice(0, 6).map((item) => compactPath(item)).join(" · ")}
                         </div>
                       `
                     : null}
                   ${Array.isArray(activeTaskCheckpoint.active_attachments) && activeTaskCheckpoint.active_attachments.length
                     ? html`
                         <div className="timeline-detail">
-                          attachments: ${activeTaskCheckpoint.active_attachments
+                          ${formatRunFieldLabel(uiLocale, "attachments")}: ${activeTaskCheckpoint.active_attachments
                             .slice(0, 6)
                             .map((item) => item.name || compactPath(item.path || item.id || "attachment"))
                             .join(" · ")}
@@ -2211,14 +2538,14 @@ function App() {
                 ${activePlan.length
                   ? html`
                       <section className="panel-card">
-                        <div className="panel-title">Checklist</div>
+                        <div className="panel-title">${t("run.checklist")}</div>
                         <div className="timeline-list">
                           ${activePlan.map(
                             (item) => html`
                               <div key=${`${item.step || "step"}-${item.status || ""}`} className="timeline-row">
                                 <div className="timeline-head">
                                   <span>${item.step || "step"}</span>
-                                  <span>${item.status || "pending"}</span>
+                                  <span>${formatRunEnum(uiLocale, "plan_status", item.status || "pending", item.status || "pending")}</span>
                                 </div>
                               </div>
                             `,
@@ -2231,14 +2558,14 @@ function App() {
                 ${Array.isArray(activePendingInput.questions) && activePendingInput.questions.length
                   ? html`
                       <section className="panel-card">
-                        <div className="panel-title">Pending Input</div>
+                        <div className="panel-title">${t("run.pending_input")}</div>
                         <div className="timeline-list">
                           ${activePendingInput.questions.map(
                             (item) => html`
                               <div key=${item.id || item.header || item.question} className="timeline-row">
                                 <div className="timeline-head">
                                   <span>${item.header || item.id || "question"}</span>
-                                  <span>${(item.options || []).length} options</span>
+                                  <span>${(item.options || []).length} ${formatRunFieldLabel(uiLocale, "options")}</span>
                                 </div>
                                 <div className="timeline-detail">${item.question || ""}</div>
                                 <div className="timeline-detail">
@@ -2253,7 +2580,7 @@ function App() {
                   : null}
 
                 <section className="panel-card">
-                  <div className="panel-title">Recent Tools</div>
+                  <div className="panel-title">${t("run.recent_tools")}</div>
                   <div className="timeline-list">
                     ${activeToolTimeline.length
                       ? activeToolTimeline.map(
@@ -2261,13 +2588,13 @@ function App() {
                             <div key=${`${item.name || "tool"}-${index}`} className="timeline-row">
                               <div className="timeline-head">
                                 <span>${item.name || "tool"}</span>
-                                <span>${item.group || item.module_group || "tool"}</span>
+                                <span>${formatToolGroupLabel(uiLocale, item.group || item.module_group || "tool")}</span>
                               </div>
-                              <div className="timeline-detail">${toolTimelineSummary(item)}</div>
+                              <div className="timeline-detail">${toolTimelineSummary(item, uiLocale)}</div>
                               ${item.diagnostics && typeof item.diagnostics === "object" && Object.keys(item.diagnostics).length
                                 ? html`
                                     <details className="timeline-details">
-                                      <summary>诊断</summary>
+                                      <summary>${t("run.diagnostics")}</summary>
                                       <pre>${stringifyCompactJson(item.diagnostics)}</pre>
                                     </details>
                                   `
@@ -2275,16 +2602,16 @@ function App() {
                             </div>
                           `,
                         )
-                      : html`<div className="empty-inline">这一轮没有工具调用。</div>`}
+                      : html`<div className="empty-inline">${t("run.no_tools")}</div>`}
                   </div>
                 </section>
 
                 <section className="panel-card">
-                  <div className="panel-title">Logs</div>
+                  <div className="panel-title">${t("run.logs")}</div>
                   <div className="timeline-list">
                     ${activeRunLogs.length
                       ? activeRunLogs.map((item) => html`<div key=${item.id} className=${`log-row tone-${item.type}`}>${item.text}</div>`)
-                      : html`<div className="empty-inline">暂无额外日志。</div>`}
+                      : html`<div className="empty-inline">${t("run.no_logs")}</div>`}
                   </div>
                 </section>
               </div>
@@ -2306,10 +2633,10 @@ function App() {
                                 <span className="tool-name">${item.name}</span>
                                 <span className="tool-source">${item.source}</span>
                               </div>
-                              <div className="tool-summary">${item.summary || "无摘要"}</div>
+                              <div className="tool-summary">${item.summary || t("tools.no_summary")}</div>
                               <div className="tool-flags">
-                                <span>${item.read_only ? "read-only" : "write"}</span>
-                                <span>${item.requires_evidence ? "evidence" : "no-evidence"}</span>
+                                <span>${item.read_only ? t("tool.read_only") : t("tool.write")}</span>
+                                <span>${item.requires_evidence ? t("tool.evidence") : t("tool.no_evidence")}</span>
                               </div>
                             </div>
                           `,
@@ -2327,12 +2654,12 @@ function App() {
               <div className="workbench-scroll">
                 <section className="panel-card">
                   <div className="editor-toolbar">
-                    <div className="panel-title">Skills</div>
+                    <div className="panel-title">${t("skills.title")}</div>
                     <div className="editor-actions">
                       <button className="ghost-btn" type="button" onClick=${() => {
                         startNewSkillDraft();
-                      }}>新建</button>
-                      <button className="solid-btn" type="button" onClick=${saveSkill} disabled=${savingWorkbench || !skillEditor.trim()}>保存</button>
+                      }}>${t("buttons.new")}</button>
+                      <button className="solid-btn" type="button" onClick=${saveSkill} disabled=${savingWorkbench || !skillEditor.trim()}>${t("buttons.save")}</button>
                       ${selectedSkill
                         ? html`
                             <button
@@ -2341,7 +2668,7 @@ function App() {
                               onClick=${() => toggleSelectedSkill(!selectedSkill.enabled)}
                               disabled=${savingWorkbench}
                             >
-                              ${selectedSkill.enabled ? "停用" : "启用"}
+                              ${selectedSkill.enabled ? t("buttons.disable") : t("buttons.enable")}
                             </button>
                             <button
                               className="ghost-btn danger-btn"
@@ -2349,7 +2676,7 @@ function App() {
                               onClick=${handleDeleteSelectedSkill}
                               disabled=${savingWorkbench}
                             >
-                              删除
+                              ${t("buttons.delete")}
                             </button>
                           `
                         : null}
@@ -2367,18 +2694,18 @@ function App() {
                               onClick=${() => selectSkillFromList(item.id)}
                             >
                               <div className="resource-row-title">${item.title || item.id}</div>
-                              <div className="resource-row-meta">${item.enabled ? "enabled" : "disabled"} · ${item.validation_status}</div>
+                              <div className="resource-row-meta">${item.enabled ? t("skills.status.enabled") : t("skills.status.disabled")} · ${formatValidationStatus(uiLocale, item.validation_status)}</div>
                             </button>
                           `,
                         )
-                      : html`<div className="empty-inline">还没有本地 skill，点“新建”开始。</div>`}
+                      : html`<div className="empty-inline">${t("skills.none")}</div>`}
                   </div>
 
                   <textarea
                     className="editor-textarea"
                     value=${skillEditor}
                     onInput=${(event) => setSkillEditor(event.currentTarget.value)}
-                    placeholder="完整编辑 SKILL.md 内容"
+                    placeholder=${t("skills.placeholder")}
                   ></textarea>
                 </section>
               </div>
@@ -2390,11 +2717,23 @@ function App() {
               <div className="workbench-scroll">
                 <section className="panel-card">
                   <div className="editor-toolbar">
-                    <div className="panel-title">Agent Specs</div>
+                    <div className="panel-title">${t("agent.title")}</div>
                     <div className="editor-actions">
-                      <button className="solid-btn" type="button" onClick=${saveSpec} disabled=${savingWorkbench || !specEditor.trim()}>保存</button>
+                      <button className="solid-btn" type="button" onClick=${saveSpec} disabled=${savingWorkbench || !specEditor.trim()}>${t("buttons.save")}</button>
                     </div>
                   </div>
+
+                  ${selectedSpec
+                    ? html`
+                        <div className="meta-line">${t("agent.editing_locale")}: ${formatLocaleLabel(uiLocale, selectedSpec.locale || uiLocale)}</div>
+                        <div className="meta-line">${t("agent.target_path")}: ${compactPath(selectedSpec.path || "-")}</div>
+                        <div className="timeline-detail">
+                          ${selectedSpec.fallback_from_base
+                            ? t("agent.source_fallback", { path: compactPath(selectedSpec.resolved_path || selectedSpec.path || "-") })
+                            : t("agent.source_localized", { path: compactPath(selectedSpec.resolved_path || selectedSpec.path || "-") })}
+                        </div>
+                      `
+                    : null}
 
                   <div className="resource-list">
                     ${specs.map(
@@ -2406,7 +2745,10 @@ function App() {
                           onClick=${() => loadSpecDetail(item.name)}
                         >
                           <div className="resource-row-title">${item.name}</div>
-                          <div className="resource-row-meta">${item.validation_status}</div>
+                          <div className="resource-row-meta">
+                            ${formatLocaleLabel(uiLocale, item.locale || uiLocale)} · ${formatValidationStatus(uiLocale, item.validation_status)}
+                            ${item.fallback_from_base ? ` · ${t("agent.badge.fallback")}` : ""}
+                          </div>
                         </button>
                       `,
                     )}
@@ -2416,7 +2758,7 @@ function App() {
                     className="editor-textarea"
                     value=${specEditor}
                     onInput=${(event) => setSpecEditor(event.currentTarget.value)}
-                    placeholder="完整编辑 agent 规范 markdown"
+                    placeholder=${t("agent.placeholder")}
                   ></textarea>
                 </section>
               </div>
@@ -2427,11 +2769,11 @@ function App() {
           ? html`
               <div className="workbench-scroll" id="settingsPanel">
                 <section className="panel-card">
-                  <div className="panel-title">Chat Settings</div>
+                  <div className="panel-title">${t("settings.title")}</div>
                   ${availableProviders.length
                     ? html`
                         <label className="form-field">
-                          <span>Provider</span>
+                          <span>${t("settings.provider")}</span>
                           <select
                             className="drawer-input"
                             id="providerSelect"
@@ -2448,7 +2790,7 @@ function App() {
                       `
                     : null}
                   <label className="form-field">
-                    <span>模型预设</span>
+                    <span>${t("settings.model_preset")}</span>
                     <select
                       className="drawer-input"
                       id="modelPresetSelect"
@@ -2462,11 +2804,23 @@ function App() {
                       }}
                     >
                       ${modelOptions.map((item) => html`<option key=${item} value=${item}>${item}</option>`)}
-                      ${allowCustomModel ? html`<option value=${CUSTOM_MODEL_VALUE}>Custom</option>` : null}
+                      ${allowCustomModel ? html`<option value=${CUSTOM_MODEL_VALUE}>${t("labels.custom")}</option>` : null}
                     </select>
                   </label>
                   <label className="form-field">
-                    <span>模型名称</span>
+                    <span>${t("settings.locale")}</span>
+                    <select
+                      className="drawer-input"
+                      value=${uiLocale}
+                      onChange=${(event) => setChatSettings((prev) => ({ ...prev, locale: event.currentTarget.value }))}
+                    >
+                      ${supportedLocales.map((item) => html`
+                        <option key=${item} value=${item}>${t(`settings.locale.${item}`)}</option>
+                      `)}
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span>${t("settings.model_name")}</span>
                     <input
                       className="drawer-input"
                       id="modelInput"
@@ -2476,7 +2830,7 @@ function App() {
                     />
                   </label>
                   <label className="form-field">
-                    <span>Collaboration Mode</span>
+                    <span>${t("settings.collaboration_mode")}</span>
                     <select
                       className="drawer-input"
                       value=${chatSettings.collaboration_mode}
@@ -2488,15 +2842,15 @@ function App() {
                     </select>
                   </label>
                   <label className="form-field">
-                    <span>响应风格</span>
+                    <span>${t("settings.response_style")}</span>
                     <select
                       className="drawer-input"
                       value=${chatSettings.response_style}
                       onChange=${(event) => setChatSettings((prev) => ({ ...prev, response_style: event.currentTarget.value }))}
                     >
-                      <option value="short">简短</option>
-                      <option value="normal">正常</option>
-                      <option value="long">详细</option>
+                      <option value="short">${t("settings.response_style.short")}</option>
+                      <option value="normal">${t("settings.response_style.normal")}</option>
+                      <option value="long">${t("settings.response_style.long")}</option>
                     </select>
                   </label>
                   <label className="tool-toggle drawer-toggle">
@@ -2505,10 +2859,10 @@ function App() {
                       checked=${chatSettings.enable_tools}
                       onChange=${(event) => setChatSettings((prev) => ({ ...prev, enable_tools: event.currentTarget.checked }))}
                     />
-                    Tools
+                    ${t("settings.enable_tools")}
                   </label>
                   <label className="form-field">
-                    <span>输出上限</span>
+                    <span>${t("settings.output_limit")}</span>
                     <input
                       className="drawer-input"
                       type="number"
@@ -2517,7 +2871,7 @@ function App() {
                     />
                   </label>
                   <label className="form-field">
-                    <span>上下文轮数</span>
+                    <span>${t("settings.context_turns")}</span>
                     <input
                       className="drawer-input"
                       type="number"

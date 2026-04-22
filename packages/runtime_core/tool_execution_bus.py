@@ -101,6 +101,7 @@ class ToolExecutionBus:
         project_root: str | None = None,
         cwd: str | None = None,
         model: str | None = None,
+        locale: str | None = None,
     ) -> None:
         for executor in self._unique_executors:
             setter = getattr(executor, "set_runtime_context", None)
@@ -114,6 +115,8 @@ class ToolExecutionBus:
                 }
                 if self._callable_accepts_kwarg(setter, "model"):
                     kwargs["model"] = model
+                if self._callable_accepts_kwarg(setter, "locale"):
+                    kwargs["locale"] = locale
                 setter(**kwargs)
 
     @staticmethod

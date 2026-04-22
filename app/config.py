@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from app.i18n import normalize_locale
+
 
 def _split_csv(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -387,6 +389,7 @@ class AppConfig:
     max_context_turns: int
     max_attachment_chars: int
     max_upload_mb: int
+    default_locale: str
     tool_result_soft_trim_chars: int
     tool_result_hard_clear_chars: int
     tool_result_head_chars: int
@@ -1224,9 +1227,13 @@ def load_config() -> AppConfig:
                 ),
             ),
         ),
-        max_upload_mb=max(
+    max_upload_mb=max(
             1,
             min(2048, int(_env("VP_MAX_UPLOAD_MB", default="200") or "200")),
+        ),
+        default_locale=normalize_locale(
+            _env("VP_DEFAULT_LOCALE", default="ja-JP") or "ja-JP",
+            fallback="ja-JP",
         ),
         tool_result_soft_trim_chars=max(2000, min(1_000_000, tool_result_soft_trim_chars)),
         tool_result_hard_clear_chars=max(4000, min(2_000_000, tool_result_hard_clear_chars)),

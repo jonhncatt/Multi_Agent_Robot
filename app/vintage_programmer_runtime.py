@@ -11,6 +11,7 @@ import uuid
 
 from app.config import AppConfig
 from app.context_meter import count_tokens
+from app.i18n import normalize_locale, response_style_hint, translate
 from app.models import ChatSettings, ToolEvent
 from app.openai_auth import OpenAIAuthManager
 from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
@@ -21,12 +22,6 @@ from packages.office_modules.intent_support import (
 )
 from packages.office_modules.office_agent_runtime import create_office_runtime_backend
 
-
-_STYLE_HINTS = {
-    "short": "回答尽量简短，先给结论，再给最多 3 条关键点。",
-    "normal": "回答清晰、可执行，避免冗长。",
-    "long": "回答可以更详细，但保持结构化，优先给行动建议。",
-}
 
 _READ_ONLY_TOOL_NAMES = {
     "read",
@@ -425,11 +420,22 @@ class VintageProgrammerRuntime:
             by_name[name] = dict(item)
         return by_name
 
-    def _load_required_file(self, name: str) -> str:
-        path = self._agent_dir / name
-        if not path.is_file():
-            raise RuntimeError(f"Missing required agent spec file: {path}")
-        return path.read_text(encoding="utf-8").strip()
+    def _load_required_file(self, name: str, *, locale: str | None = None) -> str:
+        normalized_locale = normalize_locale(locale, self._config.default_locale)
+        candidates: list[Path] = []
+        locale_family = normalized_locale.split("-", 1)[0]
+        for candidate in (
+            self._agent_dir / "locales" / normalized_locale / name,
+            self._agent_dir / "locales" / locale_family / name,
+            self._agent_dir / name,
+        ):
+            if candidate in candidates:
+                continue
+            candidates.append(candidate)
+        for path in candidates:
+            if path.is_file():
+                return path.read_text(encoding="utf-8").strip()
+        raise RuntimeError(f"Missing required agent spec file: {self._agent_dir / name}")
 
     def _resolve_allowed_tools(self, *, tool_policy: str, explicit_tools: list[str]) -> tuple[str, ...]:
         if explicit_tools:
@@ -441,14 +447,19 @@ class VintageProgrammerRuntime:
             return tuple(name for name in self._tool_specs_by_name if name in _READ_ONLY_TOOL_NAMES)
         return tuple(self._tool_specs_by_name.keys())
 
-    def _load_spec(self) -> VintageProgrammerSpec:
-        soul_text = self._load_required_file("soul.md")
-        identity_text = self._load_required_file("identity.md")
-        agent_text_raw = self._load_required_file("agent.md")
+    def _load_spec(self, *, locale: str | None = None) -> VintageProgrammerSpec:
+        soul_text = self._load_required_file("soul.md", locale=locale)
+        identity_text = self._load_required_file("identity.md", locale=locale)
+        agent_text_raw = self._load_required_file("agent.md", locale=locale)
         tools_text = ""
-        tools_path = self._agent_dir / "tools.md"
-        if tools_path.is_file():
-            tools_text = tools_path.read_text(encoding="utf-8").strip()
+        for tools_path in (
+            self._agent_dir / "locales" / normalize_locale(locale, self._config.default_locale) / "tools.md",
+            self._agent_dir / "locales" / normalize_locale(locale, self._config.default_locale).split("-", 1)[0] / "tools.md",
+            self._agent_dir / "tools.md",
+        ):
+            if tools_path.is_file():
+                tools_text = tools_path.read_text(encoding="utf-8").strip()
+                break
 
         try:
             frontmatter, agent_text = split_frontmatter(agent_text_raw)
@@ -504,8 +515,8 @@ class VintageProgrammerRuntime:
     def _enabled_skills(self, agent_id: str) -> list[dict[str, Any]]:
         return self._workbench.enabled_skills_for_agent(agent_id)
 
-    def descriptor(self) -> dict[str, object]:
-        spec = self._load_spec()
+    def descriptor(self, locale: str | None = None) -> dict[str, object]:
+        spec = self._load_spec(locale=locale)
         loaded_skills = self._enabled_skills(spec.agent_id)
         payload = spec.descriptor()
         allowed_tool_descriptors = [
@@ -535,6 +546,7 @@ class VintageProgrammerRuntime:
         spec: VintageProgrammerSpec,
         loaded_skills: list[dict[str, Any]],
     ) -> str:
+        locale = normalize_locale(getattr(settings, "locale", ""), self._config.default_locale)
         parts = [
             f"[soul.md]\n{spec.soul_text}",
             f"[identity.md]\n{spec.identity_text}",
@@ -547,15 +559,16 @@ class VintageProgrammerRuntime:
             skill_content = str(skill.get("content") or "").strip()
             if skill_id and skill_content:
                 parts.append(f"[skill:{skill_id}]\n{skill_content}")
-        parts.append(f"响应风格: {_STYLE_HINTS.get(settings.response_style, _STYLE_HINTS['normal'])}")
-        parts.append("输出要求: 不输出思维链；不要虚构事实；不确定时明确说明；若已经使用工具，结论要基于工具结果。")
-        parts.append("当用户直接在消息里粘贴代码、XML、HTML、JSON、YAML 或长文本时，应先就地分析当前消息内容，不要默认追问 workspace 路径。")
-        parts.append("当用户贴出报错、代码片段、配置文本或日志时，默认把这些内容当作本轮要分析的对象；只有用户明确要求查看仓库文件、目录、网页或执行命令时，才优先调用工具。")
-        parts.append("如果 runtime_context_json 里已经给出 attachments 的 name/path，就把它们视为当前轮已提供上下文，不要先否认附件或要求用户重新描述路径。")
-        parts.append("如果 runtime_context_json.current_task_focus 里已经给出 goal/cwd/active_files/active_attachments，就把它们当作当前任务的硬上下文继续推进；不要重复声称不知道目录、文件或附件。")
-        parts.append("如果 runtime_context_json.thread_memory.recent_tasks 或 recalled_context 里已经给出近期任务/附件回忆结果，回答'刚刚让我做什么'、'之前那张图'、'那封邮件'这类问题时必须优先基于这些结构化记忆。")
-        parts.append("如果附件是图片，需要优先使用 image_read(path=...) 读取可见文字和画面内容；不要只报元数据，也不要声称未配置 OCR 或无法看图。")
-        parts.append("如果附件是文档或 .msg，需要优先用 read/search_file/read_section/table_extract 等工具读取内容，不要只根据文件名猜测。")
+        parts.append(translate(locale, "runtime.system.language_instruction"))
+        parts.append(f"Response style: {response_style_hint(locale, settings.response_style)}")
+        parts.append(translate(locale, "runtime.system.output_requirements"))
+        parts.append(translate(locale, "runtime.system.inline_message_analysis"))
+        parts.append(translate(locale, "runtime.system.inline_error_analysis"))
+        parts.append(translate(locale, "runtime.system.attachment_context"))
+        parts.append(translate(locale, "runtime.system.focus_context"))
+        parts.append(translate(locale, "runtime.system.thread_memory"))
+        parts.append(translate(locale, "runtime.system.image_read"))
+        parts.append(translate(locale, "runtime.system.document_read"))
         return "\n\n".join(item for item in parts if str(item).strip())
 
     def _build_human_payload(self, *, message: str, context: dict[str, Any]) -> str:
@@ -980,37 +993,41 @@ class VintageProgrammerRuntime:
                 return True
         return False
 
-    def _build_attachment_tool_guidance(self, attachments: list[dict[str, Any]]) -> str:
+    def _build_attachment_tool_guidance(self, attachments: list[dict[str, Any]], *, locale: str) -> str:
         if not attachments:
             return ""
         lines: list[str] = [
-            "附件处理要求：如果 runtime_context_json 里存在 attachments，就把这些本地路径视为当前轮已提供材料。",
-            "不要只根据文件名、尺寸或 MIME 猜测内容；需要先调用合适工具再下结论。",
+            translate(locale, "runtime.attachment_guidance.intro"),
+            translate(locale, "runtime.attachment_guidance.no_guess"),
         ]
         image_paths = self._attachment_paths(attachments, kind="image")
         if image_paths:
+            lines.append(translate(locale, "runtime.attachment_guidance.image"))
             lines.append(
-                "图片附件优先使用 image_read(path=...) 获取可见文字和图像内容；"
-                "不要声称未配置 OCR、无法看图，且不要只返回图片元数据。"
+                translate(
+                    locale,
+                    "runtime.attachment_guidance.image_paths",
+                    paths=json.dumps(image_paths[:2], ensure_ascii=False),
+                )
             )
-            lines.append(f"本轮图片附件路径示例: {json.dumps(image_paths[:2], ensure_ascii=False)}")
         document_paths = self._attachment_paths(attachments, kind="document")
         if document_paths:
-            lines.append(
-                "文档附件优先使用 read、search_file、search_file_multi、read_section、table_extract 或 fact_check_file。"
-            )
-            lines.append("如果附件是 .msg，正文先用 read，附件再用 mail_extract_attachments。")
+            lines.append(translate(locale, "runtime.attachment_guidance.document"))
+            lines.append(translate(locale, "runtime.attachment_guidance.msg"))
         return "\n".join(lines)
 
-    def _build_act_now_steer(self, attachments: list[dict[str, Any]]) -> str:
-        lines = ["不要只给计划。立即采取下一步实际行动，先调用合适工具或直接执行变更，然后再汇报。"]
+    def _build_act_now_steer(self, attachments: list[dict[str, Any]], *, locale: str) -> str:
+        lines = [translate(locale, "runtime.act_now.default")]
         image_paths = self._attachment_paths(attachments, kind="image")
         if image_paths:
+            lines.append(translate(locale, "runtime.act_now.image"))
             lines.append(
-                "本轮存在图片附件。先调用 image_read(path=...) 读取可见文字和画面内容；"
-                "不要只返回尺寸/格式，也不要说未配置 OCR。"
+                translate(
+                    locale,
+                    "runtime.act_now.image_paths",
+                    paths=json.dumps(image_paths[:2], ensure_ascii=False),
+                )
             )
-            lines.append(f"优先处理这些图片路径之一: {json.dumps(image_paths[:2], ensure_ascii=False)}")
         return "\n".join(lines)
 
     @staticmethod
@@ -1087,6 +1104,7 @@ class VintageProgrammerRuntime:
         project_root: str,
         cwd: str,
         model: str,
+        locale: str,
     ) -> None:
         tools = getattr(self._backend, "tools", None)
         setter = getattr(tools, "set_runtime_context", None)
@@ -1101,6 +1119,8 @@ class VintageProgrammerRuntime:
         }
         if self._callable_accepts_kwarg(setter, "model"):
             kwargs["model"] = model
+        if self._callable_accepts_kwarg(setter, "locale"):
+            kwargs["locale"] = locale
         setter(**kwargs)
 
     def _resolve_attachment_argument_path(
@@ -1229,7 +1249,7 @@ class VintageProgrammerRuntime:
         return ai_msg, runner, effective_model, bool(result.get("ok")), invoke_notes
 
     @staticmethod
-    def _build_image_read_fallback_answer(result: dict[str, Any]) -> str:
+    def _build_image_read_fallback_answer(result: dict[str, Any], *, locale: str) -> str:
         payload = dict(result or {})
         visible_text = str(payload.get("visible_text") or "").strip()
         analysis = str(payload.get("analysis") or "").strip()
@@ -1241,26 +1261,26 @@ class VintageProgrammerRuntime:
         if not has_meaningful_content:
             return ""
 
-        lines: list[str] = ["我已经读取了这张图片。"]
+        lines: list[str] = [translate(locale, "runtime.image_read.intro")]
         if visible_text:
-            lines.append("识别到的可见文字如下：")
+            lines.append(translate(locale, "runtime.image_read.visible_text"))
             lines.append("")
             lines.append("```text")
             lines.append(visible_text)
             lines.append("```")
         if analysis and analysis.lower() != "extracted visible text from the image using local ocr.":
-            lines.append(f"图像说明：{analysis}")
+            lines.append(translate(locale, "runtime.image_read.analysis", analysis=analysis))
         elif not visible_text and analysis:
-            lines.append(f"图像说明：{analysis}")
+            lines.append(translate(locale, "runtime.image_read.analysis", analysis=analysis))
         meta_bits = [str(item) for item in (width, height) if item not in (None, "")]
         if mime or meta_bits:
             detail = " · ".join(
                 [item for item in [mime.upper() if mime else "", "x".join(meta_bits) if len(meta_bits) == 2 else ""] if item]
             )
             if detail:
-                lines.append(f"基础信息：{detail}")
+                lines.append(translate(locale, "runtime.image_read.basic_info", detail=detail))
         if warning:
-            lines.append(f"注意：{warning}")
+            lines.append(translate(locale, "runtime.image_read.warning", warning=warning))
         return "\n".join(item for item in lines if item is not None).strip()
 
     @staticmethod
@@ -1372,13 +1392,14 @@ class VintageProgrammerRuntime:
                 raise RuntimeError(str(auth_summary.get("reason") or "LLM credentials are required"))
 
         context_payload = dict(context or {})
+        locale = normalize_locale(getattr(settings, "locale", ""), self._config.default_locale)
         attachment_metas = [
             item for item in list(context_payload.get("attachments") or [])
             if isinstance(item, dict)
         ]
-        attachment_guidance = self._build_attachment_tool_guidance(attachment_metas)
+        attachment_guidance = self._build_attachment_tool_guidance(attachment_metas, locale=locale)
         has_image_attachments = has_image_attachments_helper(attachment_metas)
-        spec = self._load_spec()
+        spec = self._load_spec(locale=locale)
         loaded_skills = self._enabled_skills(spec.agent_id)
         requested_model = str(settings.model or spec.default_model or self._config.default_model).strip() or self._config.default_model
         requested_mode = str(
@@ -1469,6 +1490,7 @@ class VintageProgrammerRuntime:
             project_root=project_root,
             cwd=effective_cwd,
             model=requested_model,
+            locale=locale,
         )
 
         ai_msg: Any = None
@@ -1487,6 +1509,7 @@ class VintageProgrammerRuntime:
                 project_root=project_root,
                 cwd=effective_cwd,
                 model=effective_model,
+                locale=locale,
             )
             notes.extend(invoke_notes)
             usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
@@ -1507,13 +1530,13 @@ class VintageProgrammerRuntime:
             while True:
                 if self._cancel_requested(context_payload):
                     turn_status = "cancelled"
-                    forced_text = "已取消当前运行。"
+                    forced_text = translate(locale, "runtime.cancelled.text")
                     notes.append("run_cancelled_by_user")
                     self._emit_stage(
                         progress_cb,
                         phase="report",
-                        label="Cancelled",
-                        detail="用户已取消当前运行。",
+                        label=translate(locale, "runtime.cancelled.label"),
+                        detail=translate(locale, "runtime.cancelled.detail"),
                         status="cancelled",
                         run_snapshot=self._build_run_snapshot(
                             goal=current_goal,
@@ -1530,7 +1553,7 @@ class VintageProgrammerRuntime:
                     break
                 if max_turn_seconds and (time.monotonic() - turn_started_at) >= max_turn_seconds:
                     turn_status = "blocked"
-                    forced_text = "本轮已达到连续执行时间预算，先在这里停止。"
+                    forced_text = translate(locale, "runtime.budget.wall_clock")
                     notes.append("turn_budget_wall_clock_exceeded")
                     break
 
@@ -1552,7 +1575,7 @@ class VintageProgrammerRuntime:
                         messages.append(ai_msg)
                         messages.append(
                             self._backend._SystemMessage(
-                                content=self._build_act_now_steer(attachment_metas)
+                                content=self._build_act_now_steer(attachment_metas, locale=locale)
                             )
                         )
                         notes.append("strict_agentic_act_now_steer")
@@ -1571,6 +1594,7 @@ class VintageProgrammerRuntime:
                             project_root=project_root,
                             cwd=effective_cwd,
                             model=effective_model,
+                            locale=locale,
                         )
                         notes.extend(invoke_notes)
                         usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
@@ -1607,6 +1631,7 @@ class VintageProgrammerRuntime:
                             project_root=project_root,
                             cwd=effective_cwd,
                             model=effective_model,
+                            locale=locale,
                         )
                         notes.extend(rescue_notes)
                         usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
@@ -1629,13 +1654,13 @@ class VintageProgrammerRuntime:
                 for call_idx, call in enumerate(tool_calls[:8], start=1):
                     if self._cancel_requested(context_payload):
                         turn_status = "cancelled"
-                        forced_text = "已取消当前运行。"
+                        forced_text = translate(locale, "runtime.cancelled.text")
                         notes.append("run_cancelled_by_user")
                         stop_after_tools = True
                         break
                     if max_tool_calls_per_turn and tool_call_count >= max_tool_calls_per_turn:
                         turn_status = "blocked"
-                        forced_text = "本轮已达到工具调用预算，先在这里停止。"
+                        forced_text = translate(locale, "runtime.budget.tool_calls")
                         notes.append("turn_budget_tool_calls_exceeded")
                         stop_after_tools = True
                         break
@@ -1678,6 +1703,7 @@ class VintageProgrammerRuntime:
                         project_root=project_root,
                         cwd=effective_cwd,
                         model=effective_model,
+                        locale=locale,
                     )
                     tool_call_count += 1
                     if name == last_tool_name:
@@ -1781,18 +1807,18 @@ class VintageProgrammerRuntime:
                     )
                     if same_tool_repeat_count > max_same_tool_repeats:
                         if name == "image_read" and last_image_read_result:
-                            fallback_answer = self._build_image_read_fallback_answer(last_image_read_result)
+                            fallback_answer = self._build_image_read_fallback_answer(last_image_read_result, locale=locale)
                             if fallback_answer:
                                 turn_status = "completed"
                                 forced_text = fallback_answer
                                 notes.append("image_read_repeat_fallback_answer")
                             else:
                                 turn_status = "blocked"
-                                forced_text = "本轮多次重复同一工具且没有继续推进，先在这里停止。"
+                                forced_text = translate(locale, "runtime.budget.same_tool_repeat")
                                 notes.append("turn_budget_same_tool_repeats_exceeded")
                         else:
                             turn_status = "blocked"
-                            forced_text = "本轮多次重复同一工具且没有继续推进，先在这里停止。"
+                            forced_text = translate(locale, "runtime.budget.same_tool_repeat")
                             notes.append("turn_budget_same_tool_repeats_exceeded")
                         stop_after_tools = True
                         break
@@ -1801,7 +1827,7 @@ class VintageProgrammerRuntime:
                     break
                 if self._cancel_requested(context_payload):
                     turn_status = "cancelled"
-                    forced_text = "已取消当前运行。"
+                    forced_text = translate(locale, "runtime.cancelled.text")
                     notes.append("run_cancelled_by_user")
                     break
 
@@ -1816,7 +1842,7 @@ class VintageProgrammerRuntime:
                     last_round_signature = round_signature
                 if no_progress_cycles > max_no_progress_cycles:
                     turn_status = "blocked"
-                    forced_text = "本轮多次重复且没有新的有效进展，先在这里停止。"
+                    forced_text = translate(locale, "runtime.budget.no_progress")
                     notes.append("turn_budget_no_progress_exceeded")
                     break
 
@@ -1843,7 +1869,7 @@ class VintageProgrammerRuntime:
                         progress_cb(
                             {
                                 "event": "trace",
-                                "message": "本轮中间上下文已压缩，以支持更长的连续执行。",
+                                "message": translate(locale, "runtime.compaction.mid_turn"),
                                 "run_snapshot": {
                                     "compaction_status": dict(live_compaction_status),
                                 },
@@ -1865,6 +1891,7 @@ class VintageProgrammerRuntime:
                     project_root=project_root,
                     cwd=effective_cwd,
                     model=effective_model,
+                    locale=locale,
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
@@ -1874,13 +1901,17 @@ class VintageProgrammerRuntime:
 
         raw_text = forced_text or (self._backend._content_to_text(getattr(ai_msg, "content", "")).strip() if ai_msg is not None else "")
         if not raw_text:
-            raw_text = "需要你先提供补充输入后我再继续。" if pending_user_input else "(empty response)"
+            raw_text = (
+                translate(locale, "runtime.empty_response.pending_user_input")
+                if pending_user_input
+                else translate(locale, "runtime.empty_response.default")
+            )
         if (
             has_image_attachments
             and last_image_read_result
             and self._looks_like_generic_image_read_request(prompt_message)
         ):
-            fallback_answer = self._build_image_read_fallback_answer(last_image_read_result)
+            fallback_answer = self._build_image_read_fallback_answer(last_image_read_result, locale=locale)
             if fallback_answer:
                 raw_text = fallback_answer
                 if turn_status not in {"cancelled", "blocked"}:

@@ -30,6 +30,7 @@ from app.core.bootstrap import build_kernel_runtime
 from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
 from app.evolution import EvolutionStore
+from app.i18n import normalize_locale, supported_locales, translate
 from app.models import (
     ChatRequest,
     ChatResponse,
@@ -114,7 +115,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "1.9.0"
+APP_VERSION = "2.0.0"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -480,15 +481,22 @@ def health() -> HealthResponse:
         if raw_root and raw_root not in effective_roots:
             effective_roots.append(raw_root)
     if config.allow_any_path:
-        permission_summary = "full filesystem access enabled"
+        permission_summary = translate(config.default_locale, "health.permission_summary.full_filesystem")
     else:
         root_names = [(Path(path).name or str(path)) for path in effective_roots[:4]]
-        permission_summary = f"{len(effective_roots)} allowed roots: {', '.join(root_names)}"
+        permission_summary = translate(
+            config.default_locale,
+            "health.permission_summary.allowed_roots",
+            count=len(effective_roots),
+            root_names=", ".join(root_names),
+        )
     return HealthResponse(
         ok=True,
         app_title=APP_TITLE,
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
+        default_locale=config.default_locale,
+        supported_locales=supported_locales(),
         default_model=active_model,
         model_options=list((active_provider or {}).get("model_options") or active_provider_config.model_options or []),
         allow_custom_model=True,
@@ -590,12 +598,22 @@ def update_project(project_id: str, req: ProjectUpdateRequest) -> ProjectDescrip
 @app.delete("/api/projects/{project_id}", response_model=ProjectDeleteResponse)
 def delete_project(project_id: str) -> ProjectDeleteResponse:
     try:
+        project = get_project_store().get(project_id)
+        if not project:
+            raise FileNotFoundError(f"Project not found: {project_id}")
+        if bool(project.get("is_default")):
+            raise ValueError("Default project cannot be deleted")
+        deleted_session_count = session_store.delete_by_project(project_id)
         get_project_store().delete(project_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ProjectDeleteResponse(ok=True, project_id=project_id)
+    return ProjectDeleteResponse(
+        ok=True,
+        project_id=project_id,
+        deleted_session_count=deleted_session_count,
+    )
 
 
 @app.get("/api/workbench/skills", response_model=WorkbenchSkillsResponse)
@@ -654,15 +672,15 @@ def workbench_delete_skill(skill_id: str) -> SkillDeleteResponse:
 
 
 @app.get("/api/workbench/specs", response_model=WorkbenchSpecsResponse)
-def workbench_specs() -> WorkbenchSpecsResponse:
-    specs = get_workbench_store().list_agent_specs()
+def workbench_specs(locale: str | None = None) -> WorkbenchSpecsResponse:
+    specs = get_workbench_store().list_agent_specs(locale=locale)
     return WorkbenchSpecsResponse(specs=[SpecDescriptor(**item) for item in specs if isinstance(item, dict)])
 
 
 @app.get("/api/workbench/specs/{name}", response_model=SpecDescriptor)
-def workbench_spec_detail(name: str) -> SpecDescriptor:
+def workbench_spec_detail(name: str, locale: str | None = None) -> SpecDescriptor:
     try:
-        return SpecDescriptor(**get_workbench_store().get_agent_spec(name))
+        return SpecDescriptor(**get_workbench_store().get_agent_spec(name, locale=locale))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -670,9 +688,9 @@ def workbench_spec_detail(name: str) -> SpecDescriptor:
 
 
 @app.put("/api/workbench/specs/{name}", response_model=SpecDescriptor)
-def workbench_write_spec(name: str, req: SpecUpsertRequest) -> SpecDescriptor:
+def workbench_write_spec(name: str, req: SpecUpsertRequest, locale: str | None = None) -> SpecDescriptor:
     try:
-        return SpecDescriptor(**get_workbench_store().write_agent_spec(name, req.content))
+        return SpecDescriptor(**get_workbench_store().write_agent_spec(name, req.content, locale=locale))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1299,13 +1317,14 @@ def clear_stats() -> ClearStatsResponse:
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
+    locale = normalize_locale(getattr(req.settings, "locale", ""), config.default_locale)
     try:
         return _process_chat_request(req)
     except HTTPException as exc:
-        payload = _normalize_chat_error_payload(exc.detail, status_code=exc.status_code)
+        payload = _normalize_chat_error_payload(exc.detail, status_code=exc.status_code, locale=locale)
         raise HTTPException(status_code=int(payload["status_code"]), detail=payload) from exc
     except Exception as exc:
-        payload = _normalize_chat_error_payload(exc)
+        payload = _normalize_chat_error_payload(exc, locale=locale)
         raise HTTPException(status_code=int(payload["status_code"]), detail=payload) from exc
 
 
@@ -1604,12 +1623,18 @@ def _extract_provider_name(payload: dict[str, Any] | None) -> str:
     return ""
 
 
-def _normalize_chat_error_payload(detail: Any, *, status_code: int | None = None) -> dict[str, Any]:
+def _normalize_chat_error_payload(
+    detail: Any,
+    *,
+    status_code: int | None = None,
+    locale: str | None = None,
+) -> dict[str, Any]:
+    effective_locale = normalize_locale(locale, config.default_locale)
     if isinstance(detail, dict) and {"kind", "summary", "detail"}.issubset(detail.keys()):
         normalized = dict(detail)
         normalized["status_code"] = _coerce_int(normalized.get("status_code")) or _coerce_int(status_code) or 500
         normalized["detail"] = _stringify_error_detail(normalized.get("detail"))
-        normalized["summary"] = str(normalized.get("summary") or "请求失败，请稍后重试。")
+        normalized["summary"] = str(normalized.get("summary") or translate(effective_locale, "error.request_failed"))
         normalized["kind"] = str(normalized.get("kind") or "unknown")
         normalized["retryable"] = bool(normalized.get("retryable"))
         normalized["provider"] = str(normalized.get("provider") or "")
@@ -1636,22 +1661,22 @@ def _normalize_chat_error_payload(detail: Any, *, status_code: int | None = None
 
     if extracted_status == 429 or "rate limit" in lowered or "rate-limit" in lowered or "temporarily rate-limited upstream" in lowered or "too many requests" in lowered:
         kind = "rate_limit"
-        summary = "模型提供方限流，请稍后重试。"
+        summary = translate(effective_locale, "error.rate_limit")
         retryable = True
         resolved_status = 429
     elif extracted_status in {401, 403} or "unauthorized" in lowered or "forbidden" in lowered or "api key" in lowered or "credentials" in lowered or "authentication" in lowered:
         kind = "auth"
-        summary = "认证失败，请检查 OpenRouter / OpenAI-compatible key。"
+        summary = translate(effective_locale, "error.auth")
         retryable = False
         resolved_status = extracted_status or 401
     elif extracted_status in {502, 503, 504} or "temporarily unavailable" in lowered or "timeout" in lowered or "timed out" in lowered or "upstream" in lowered:
         kind = "upstream"
-        summary = "模型提供方暂时不可用，请稍后重试。"
+        summary = translate(effective_locale, "error.upstream")
         retryable = True
         resolved_status = extracted_status or 503
     else:
         kind = "unknown"
-        summary = "请求失败，请稍后重试或查看错误详情。"
+        summary = translate(effective_locale, "error.request_failed_detail")
         retryable = False
         resolved_status = extracted_status or 500
 
@@ -1668,6 +1693,8 @@ def _normalize_chat_error_payload(detail: Any, *, status_code: int | None = None
 def _process_chat_request(
     req: ChatRequest, progress_cb: Callable[[dict[str, Any]], None] | None = None
 ) -> ChatResponse:
+    req.settings.locale = normalize_locale(getattr(req.settings, "locale", ""), config.default_locale)
+    locale = req.settings.locale
     requested_provider = _resolve_requested_provider(req)
     provider_config, provider_runtime = _provider_runtime(requested_provider)
     req.settings.provider = requested_provider
@@ -1683,10 +1710,7 @@ def _process_chat_request(
             project=requested_project,
             default_project=_default_project(),
         )
-        fallback_text = (
-            "当前还没有可用的模型认证。请在 Settings 里补充当前 provider 的 API key，"
-            "或切换到一个已经配置好的 provider 后再继续。"
-        )
+        fallback_text = translate(locale, "chat.auth_missing")
         user_turn = {"role": "user", "text": req.message}
         assistant_turn = {
             "role": "assistant",
@@ -1788,7 +1812,12 @@ def _process_chat_request(
         phase="bootstrap",
         label="Bootstrap",
         status="running",
-        detail=f"后端已接收请求，开始处理。run_id={run_id}, auth_mode={auth_summary.get('mode')}",
+        detail=translate(
+            locale,
+            "chat.backend_start",
+            run_id=run_id,
+            auth_mode=auth_summary.get("mode"),
+        ),
         run_id=run_id,
     )
     try:
@@ -1810,7 +1839,7 @@ def _process_chat_request(
                 _emit_progress(
                     progress_cb,
                     "trace",
-                    message=f"当前会话存在并发请求，已排队等待 {queue_wait_ms} ms。",
+                    message=translate(locale, "chat.queue_wait", queue_wait_ms=queue_wait_ms),
                     run_id=run_id,
                 )
 
@@ -1841,7 +1870,7 @@ def _process_chat_request(
                 _emit_progress(
                     progress_cb,
                     "trace",
-                    message="检测到当前任务焦点切换，本轮会刷新 current_task_focus，但继续保留 thread 记忆。",
+                    message=translate(locale, "chat.focus_shift"),
                     run_id=run_id,
                 )
             _emit_progress(
@@ -1851,7 +1880,7 @@ def _process_chat_request(
                 phase="bootstrap",
                 label="Session",
                 status="completed",
-                detail=f"会话已就绪: {session.get('id')}",
+                detail=translate(locale, "chat.session_ready", session_id=session.get("id")),
                 run_id=run_id,
                 queue_wait_ms=queue_wait_ms,
                 run_snapshot=_build_run_snapshot(
@@ -1889,10 +1918,11 @@ def _process_chat_request(
             _emit_progress(
                 progress_cb,
                 "trace",
-                message=(
-                    "历史上下文已自动压缩为 replacement history。"
-                    f" generation={compaction_after.get('generation') or 0},"
-                    f" retained={compaction_after.get('retained_turn_count') or 0}"
+                message=translate(
+                    locale,
+                    "chat.replacement_history_compacted",
+                    generation=compaction_after.get("generation") or 0,
+                    retained_turn_count=compaction_after.get("retained_turn_count") or 0,
                 ),
                 run_id=run_id,
                 run_snapshot=_build_run_snapshot(
@@ -1966,9 +1996,12 @@ def _process_chat_request(
             phase="explore",
             label="Attachments",
             status="completed",
-            detail=(
-                f"附件检查完成: mode={attachment_context_mode}, "
-                f"请求 {len(effective_attachment_ids)} 个，命中 {len(attachments)} 个。"
+            detail=translate(
+                locale,
+                "chat.attachments_ready",
+                attachment_context_mode=attachment_context_mode,
+                requested_count=len(effective_attachment_ids),
+                resolved_count=len(attachments),
             ),
             run_id=run_id,
             run_snapshot=_build_run_snapshot(
@@ -2074,7 +2107,7 @@ def _process_chat_request(
             phase="execute",
             label="Agent Run",
             status="running",
-            detail="开始通过 vintage_programmer 执行。",
+            detail=translate(locale, "chat.agent_run_start"),
             run_id=run_id,
             run_snapshot=_build_run_snapshot(
                 goal=req.message,
@@ -2160,7 +2193,7 @@ def _process_chat_request(
             phase="report",
             label="Agent Run",
             status="completed",
-            detail="模型推理结束，开始写入会话与统计。",
+            detail=translate(locale, "chat.agent_run_done"),
             run_id=run_id,
             run_snapshot=_build_run_snapshot(
                 goal=str(((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("goal") or req.message),
@@ -2193,7 +2226,7 @@ def _process_chat_request(
         )
         inspector_notes = list(inspector.get("notes") or [])
         if missing_attachment_ids:
-            warning_msg = f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
+            warning_msg = translate(locale, "chat.missing_attachments_warning", missing_count=len(missing_attachment_ids))
             inspector_notes.append(warning_msg)
             _emit_progress(progress_cb, "trace", message=warning_msg, run_id=run_id)
 
@@ -2203,18 +2236,23 @@ def _process_chat_request(
             if str(item.get("id") or "") in set(auto_linked_attachment_ids)
         ]
         if auto_linked_attachment_names:
-            auto_link_msg = f"已自动关联历史附件: {', '.join(auto_linked_attachment_names[:6])}"
+            auto_link_msg = translate(
+                locale,
+                "chat.auto_linked_attachments",
+                attachment_names=", ".join(auto_linked_attachment_names[:6]),
+            )
             inspector_notes.append(auto_link_msg)
             _emit_progress(progress_cb, "trace", message=auto_link_msg, run_id=run_id)
         elif attachment_context_mode == "cleared" and not requested_attachment_ids:
-            cleared_msg = "已按用户指令清空历史附件关联。"
+            cleared_msg = translate(locale, "chat.cleared_attachment_context")
             inspector_notes.append(cleared_msg)
             _emit_progress(progress_cb, "trace", message=cleared_msg, run_id=run_id)
         inspector["notes"] = inspector_notes
 
         user_text = req.message.strip()
         if attachment_note:
-            user_text = f"{user_text}\n\n[附件] {attachment_note}"
+            attachment_label = "Attachments" if locale == "en" else ("添付" if locale == "ja-JP" else "附件")
+            user_text = f"{user_text}\n\n[{attachment_label}] {attachment_note}"
 
         session_store.append_turn(
             session,
@@ -2360,7 +2398,7 @@ def _process_chat_request(
             phase="report",
             label="Session",
             status="completed",
-            detail="会话已写入本地存储。",
+            detail=translate(locale, "chat.session_saved"),
             run_id=run_id,
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or req.message),
@@ -2385,15 +2423,17 @@ def _process_chat_request(
         token_usage = {**token_usage, **pricing_meta}
         inspector_notes = list(inspector.get("notes") or [])
         if pricing_meta.get("pricing_known"):
-            pricing_note = (
-                "费用估算: "
-                f"input ${pricing_meta.get('input_price_per_1m')}/1M, "
-                f"output ${pricing_meta.get('output_price_per_1m')}/1M."
+            pricing_note = translate(
+                locale,
+                "chat.token_usage_priced",
+                cost_usd=float(pricing_meta.get("estimated_cost_usd") or 0.0),
+                input_tokens=int(token_usage.get("input_tokens", 0) or 0),
+                output_tokens=int(token_usage.get("output_tokens", 0) or 0),
             )
             inspector_notes.append(pricing_note)
             _emit_progress(progress_cb, "trace", message=pricing_note, run_id=run_id)
         else:
-            pricing_note = f"费用估算未启用: 当前模型 {selected_model} 未匹配价格表。"
+            pricing_note = translate(locale, "chat.token_usage_unpriced", selected_model=selected_model)
             inspector_notes.append(pricing_note)
             _emit_progress(progress_cb, "trace", message=pricing_note, run_id=run_id)
         inspector["notes"] = inspector_notes
@@ -2411,7 +2451,7 @@ def _process_chat_request(
             phase="report",
             label="Usage",
             status="completed",
-            detail="Token 统计已更新。",
+            detail=translate(locale, "chat.token_stats_updated"),
             run_id=run_id,
         )
         try:
@@ -2428,15 +2468,18 @@ def _process_chat_request(
                 turn_count=len(session.get("turns", [])),
             )
             evolution_terms = list(evolution_event.get("domain_terms") or [])
-            evolution_note = (
-                "个体覆层已更新: "
-                f"intent={evolution_event.get('primary_intent') or 'standard'}"
-                + (f"，terms={', '.join(evolution_terms[:3])}" if evolution_terms else "")
+            evolution_note = translate(
+                locale,
+                "chat.overlay_updated",
+                overlay_path=(
+                    f"intent={evolution_event.get('primary_intent') or 'standard'}"
+                    + (f", terms={', '.join(evolution_terms[:3])}" if evolution_terms else "")
+                ),
             )
             inspector_notes.append(evolution_note)
             _emit_progress(progress_cb, "trace", message=evolution_note, run_id=run_id)
         except Exception as exc:
-            evolution_note = f"个体覆层更新失败: {exc}"
+            evolution_note = translate(locale, "chat.overlay_update_failed", error=exc)
             inspector_notes.append(evolution_note)
             _emit_progress(progress_cb, "trace", message=evolution_note, run_id=run_id)
         inspector["notes"] = inspector_notes
@@ -2477,7 +2520,7 @@ def _process_chat_request(
             _emit_progress(
                 progress_cb,
                 "trace",
-                message=f"shadow log 已写入: {shadow_path.name}",
+                message=translate(locale, "chat.shadow_log_written", name=shadow_path.name),
                 run_id=run_id,
             )
         session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
@@ -2525,7 +2568,7 @@ def _process_chat_request(
             phase="report",
             label="Ready",
             status="completed",
-            detail="本轮结果已准备完成。",
+            detail=translate(locale, "chat.result_ready"),
             run_id=run_id,
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or req.message),
@@ -2573,6 +2616,7 @@ def cancel_chat_run(run_id: str) -> dict[str, Any]:
 
 @app.post("/api/chat/stream")
 def chat_stream(req: ChatRequest) -> StreamingResponse:
+    locale = normalize_locale(getattr(req.settings, "locale", ""), config.default_locale)
     def event_stream():
         events: queue.Queue[dict[str, Any]] = queue.Queue()
         done_event = threading.Event()
@@ -2587,7 +2631,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
                 response = _process_chat_request(req, progress_cb=emit)
                 events.put({"event": "final", "payload": {"response": response.model_dump()}})
             except HTTPException as exc:
-                payload = _normalize_chat_error_payload(exc.detail, status_code=exc.status_code)
+                payload = _normalize_chat_error_payload(exc.detail, status_code=exc.status_code, locale=locale)
                 events.put(
                     {
                         "event": "error",
@@ -2595,7 +2639,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
                     }
                 )
             except Exception as exc:
-                events.put({"event": "error", "payload": _normalize_chat_error_payload(exc)})
+                events.put({"event": "error", "payload": _normalize_chat_error_payload(exc, locale=locale)})
             finally:
                 done_event.set()
                 events.put({"event": "done", "payload": {"ok": True}})

@@ -1306,6 +1306,7 @@ class OfficeAgent:
             execution_mode=requested_execution_mode,
             session_id=session_id,
             model=requested_model,
+            locale=getattr(settings, "locale", ""),
         )
 
         def emit_progress(event: str, **payload: Any) -> None:

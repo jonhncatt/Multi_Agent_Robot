@@ -26,6 +26,7 @@ from PIL import Image, ImageEnhance, ImageOps
 
 from app.browser_runtime import BrowserToolManager
 from app.config import AppConfig, get_access_roots
+from app.i18n import normalize_locale
 from app.document_text import (
     build_pdf_document_index,
     clear_pdf_cache_for_path,
@@ -1244,6 +1245,7 @@ class LocalToolExecutor:
         project_root: str | None = None,
         cwd: str | None = None,
         model: str | None = None,
+        locale: str | None = None,
     ) -> None:
         mode = (execution_mode or "").strip().lower()
         if mode not in {"host", "docker"}:
@@ -1255,9 +1257,10 @@ class LocalToolExecutor:
         self._runtime_ctx.project_root = str(project_root or "").strip()
         self._runtime_ctx.cwd = str(cwd or "").strip()
         self._runtime_ctx.model = str(model or "").strip()
+        self._runtime_ctx.locale = normalize_locale(locale, self.config.default_locale)
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "locale"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -1290,6 +1293,10 @@ class LocalToolExecutor:
 
     def _current_model_hint(self) -> str:
         return str(getattr(self._runtime_ctx, "model", "") or "").strip()
+
+    def _current_locale_hint(self) -> str:
+        fallback_locale = str(getattr(self.config, "default_locale", "ja-JP") or "ja-JP")
+        return normalize_locale(getattr(self._runtime_ctx, "locale", ""), fallback_locale)
 
     def set_image_read_handler(self, handler: Callable[..., dict[str, Any]] | None) -> None:
         self._image_read_handler = handler
@@ -3383,20 +3390,20 @@ class LocalToolExecutor:
 
     def list_agent_specs(self) -> dict[str, Any]:
         try:
-            specs = self._workbench.list_agent_specs()
+            specs = self._workbench.list_agent_specs(locale=self._current_locale_hint())
             return {"ok": True, "count": len(specs), "specs": specs}
         except Exception as exc:
             return {"ok": False, "error": f"list_agent_specs failed: {exc}"}
 
     def read_agent_spec(self, name: str) -> dict[str, Any]:
         try:
-            return {"ok": True, **self._workbench.get_agent_spec(name)}
+            return {"ok": True, **self._workbench.get_agent_spec(name, locale=self._current_locale_hint())}
         except Exception as exc:
             return {"ok": False, "error": f"read_agent_spec failed: {exc}"}
 
     def write_agent_spec(self, name: str, content: str) -> dict[str, Any]:
         try:
-            payload = self._workbench.write_agent_spec(name, content)
+            payload = self._workbench.write_agent_spec(name, content, locale=self._current_locale_hint())
             return {"ok": True, **payload, "summary": f"{name} saved"}
         except Exception as exc:
             return {"ok": False, "error": f"write_agent_spec failed: {exc}"}
@@ -3416,6 +3423,7 @@ class LocalToolExecutor:
             if not real_path.is_file():
                 return {"ok": False, "error": f"Not a file: {path}"}
             suffix = real_path.suffix.lower()
+            locale_hint = self._current_locale_hint()
             source_format = "text_utf8"
             full_text = ""
             msg_payload: dict[str, Any] | None = None
@@ -3446,12 +3454,20 @@ class LocalToolExecutor:
                 if suffix == ".msg":
                     from app.attachments import extract_outlook_msg_payload  # lazy import
 
-                    msg_payload = extract_outlook_msg_payload(str(real_path), max_chars=1_000_000) or {}
+                    msg_payload = extract_outlook_msg_payload(
+                        str(real_path),
+                        max_chars=1_000_000,
+                        locale=locale_hint,
+                    ) or {}
                     full_text = str(msg_payload.get("content") or "")
                 else:
                     from app.attachments import extract_document_text  # lazy import
 
-                    extracted = extract_document_text(str(real_path), max_chars=1_000_000) or ""
+                    extracted = extract_document_text(
+                        str(real_path),
+                        max_chars=1_000_000,
+                        locale=locale_hint,
+                    ) or ""
                     full_text = extracted
                 if suffix == ".docx":
                     source_format = "docx_text_extracted"
@@ -3483,7 +3499,11 @@ class LocalToolExecutor:
 
                     if looks_like_outlook_msg_bytes(sniff):
                         source_format = "msg_text_extracted"
-                        msg_payload = extract_outlook_msg_payload(str(real_path), max_chars=1_000_000) or {}
+                        msg_payload = extract_outlook_msg_payload(
+                            str(real_path),
+                            max_chars=1_000_000,
+                            locale=locale_hint,
+                        ) or {}
                         full_text = str(msg_payload.get("content") or "")
                     else:
                         full_text = real_path.read_text(encoding="utf-8", errors="ignore")
@@ -3492,10 +3512,18 @@ class LocalToolExecutor:
 
                     if looks_like_xlsx_file(real_path):
                         source_format = "xlsx_text_extracted"
-                        full_text = extract_document_text(str(real_path), max_chars=1_000_000) or ""
+                        full_text = extract_document_text(
+                            str(real_path),
+                            max_chars=1_000_000,
+                            locale=locale_hint,
+                        ) or ""
                     elif looks_like_pptx_file(real_path):
                         source_format = "pptx_text_extracted"
-                        full_text = extract_document_text(str(real_path), max_chars=1_000_000) or ""
+                        full_text = extract_document_text(
+                            str(real_path),
+                            max_chars=1_000_000,
+                            locale=locale_hint,
+                        ) or ""
                     else:
                         full_text = real_path.read_text(encoding="utf-8", errors="ignore")
                 else:

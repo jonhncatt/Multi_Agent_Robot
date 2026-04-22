@@ -52,7 +52,7 @@ def test_workstation_shell_behaviors_are_wired() -> None:
         'fetchJson(`/api/sessions?limit=80${suffix}`)',
         'fetchJson("/api/workbench/tools")',
         'fetchJson("/api/workbench/skills")',
-        'fetchJson("/api/workbench/specs")',
+        "workbenchSpecUrl(",
         "selectProject(",
         "setDrawerView(",
         "handleSelectFiles",

@@ -9,6 +9,7 @@ from html import unescape
 from pathlib import Path
 
 from app.document_text import extract_pdf_text_from_path, truncate_text
+from app.i18n import normalize_locale
 
 _OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _MSG_MARKERS_ASCII = (b"__substg1.0_", b"IPM.")
@@ -16,6 +17,157 @@ _MSG_MARKERS_UTF16 = tuple(marker.decode("ascii").encode("utf-16-le") for marker
 _XLSX_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 _PPTX_SUFFIXES = {".pptx", ".pptm"}
 _SAFE_IMAGE_MIMES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+
+_ATTACHMENT_TEXT: dict[str, dict[str, str]] = {
+    "zh-CN": {
+        "xlsx.missing_dependency": "解析 .xlsx 需要依赖 openpyxl。请执行 `pip install -r requirements.txt` 后重试。",
+        "xlsx.header": "[Excel 工作簿解析]",
+        "xlsx.empty": "[空表或无可读内容]",
+        "xlsx.truncated": "[内容已截断，工作簿内容较大]",
+        "pptx.invalid_zip": "[PPTX 解析失败: 文件不是合法 ZIP 容器]",
+        "pptx.empty": "[PPTX 解析结果为空: 未找到 slide XML]",
+        "pptx.header": "[PowerPoint 文档解析]",
+        "pptx.slide_count": "幻灯片数量: {count}",
+        "pptx.truncated": "[内容已截断，幻灯片内容较多]",
+        "pptx.no_text": "[未提取到文本（可能是纯图片页）]",
+        "xml.atom": "[Atom Feed 解析]",
+        "xml.rss": "[RSS Feed 解析]",
+        "xml.title": "标题: {value}",
+        "xml.subtitle": "副标题: {value}",
+        "xml.updated": "更新时间: {value}",
+        "xml.author": "作者: {value}",
+        "xml.description": "描述: {value}",
+        "xml.entries": "条目:",
+        "xml.time": "时间: {value}",
+        "xml.summary": "摘要: {value}",
+        "msg.nested_mail": "嵌套邮件: {value}",
+        "msg.header": "[Outlook MSG 邮件解析]",
+        "msg.class_type": "消息类型: {value}",
+        "msg.subject": "主题: {value}",
+        "msg.sender": "发件人: {value}",
+        "msg.to": "收件人: {value}",
+        "msg.cc": "抄送: {value}",
+        "msg.date": "时间: {value}",
+        "msg.attachments": "附件列表:",
+        "msg.body_separator": "--- 正文 ---",
+        "msg.no_body": "[未提取到可读正文：该邮件可能仅包含附件、图片或受限富文本内容]",
+        "msg.missing_dependency": "解析 .msg 需要依赖 extract-msg。请执行 `pip install -r requirements.txt` 后重试。",
+        "doc.unsupported_xls": "[暂不支持 .xls（二进制 Excel）直接解析，请先另存为 .xlsx 后再读取]",
+        "doc.unsupported_ppt": "[暂不支持 .ppt（二进制 PowerPoint）直接解析，请先另存为 .pptx 后再读取]",
+        "doc.parse_failed": "[文档解析失败: {error}]",
+        "image.heic_warning": "HEIC 未本地转码，已原始上传；若网关不支持 HEIC，请先转 JPG/PNG。",
+        "image.converted_warning": "检测到非标准图片类型({mime})，已转为 PNG 再发送。",
+        "image.unsupported_type": "不支持的图片类型({mime})，且转码失败: {error}",
+        "image.empty": "图片内容为空，无法编码为 data URL。",
+        "file.empty": "[空文件]",
+        "file.text_preview": "[文本预览，文件大小 {size} bytes]\\n{text}",
+        "file.binary_preview": "[二进制预览，文件大小 {size} bytes，前 {preview_size} bytes(hex)]\\n{hex_preview}",
+    },
+    "ja-JP": {
+        "xlsx.missing_dependency": ".xlsx の解析には openpyxl が必要です。`pip install -r requirements.txt` を実行してから再試行してください。",
+        "xlsx.header": "[Excel ブック解析]",
+        "xlsx.empty": "[空シート、または読み取れる内容がありません]",
+        "xlsx.truncated": "[内容を切り詰めました。ブックの内容が大きすぎます]",
+        "pptx.invalid_zip": "[PPTX 解析失敗: 正しい ZIP コンテナではありません]",
+        "pptx.empty": "[PPTX 解析結果なし: slide XML が見つかりません]",
+        "pptx.header": "[PowerPoint ドキュメント解析]",
+        "pptx.slide_count": "スライド数: {count}",
+        "pptx.truncated": "[内容を切り詰めました。スライド内容が多すぎます]",
+        "pptx.no_text": "[テキストを抽出できませんでした（画像のみのスライドの可能性があります）]",
+        "xml.atom": "[Atom フィード解析]",
+        "xml.rss": "[RSS フィード解析]",
+        "xml.title": "タイトル: {value}",
+        "xml.subtitle": "サブタイトル: {value}",
+        "xml.updated": "更新日時: {value}",
+        "xml.author": "作成者: {value}",
+        "xml.description": "説明: {value}",
+        "xml.entries": "項目:",
+        "xml.time": "時刻: {value}",
+        "xml.summary": "要約: {value}",
+        "msg.nested_mail": "ネストされたメール: {value}",
+        "msg.header": "[Outlook MSG メール解析]",
+        "msg.class_type": "メッセージ種別: {value}",
+        "msg.subject": "件名: {value}",
+        "msg.sender": "送信者: {value}",
+        "msg.to": "宛先: {value}",
+        "msg.cc": "CC: {value}",
+        "msg.date": "日時: {value}",
+        "msg.attachments": "添付一覧:",
+        "msg.body_separator": "--- 本文 ---",
+        "msg.no_body": "[読み取れる本文を抽出できませんでした。このメールには添付、画像、または制限付きリッチテキストのみが含まれている可能性があります]",
+        "msg.missing_dependency": ".msg の解析には extract-msg が必要です。`pip install -r requirements.txt` を実行してから再試行してください。",
+        "doc.unsupported_xls": "[.xls（バイナリ Excel）は直接解析できません。.xlsx に保存し直してから読み取ってください]",
+        "doc.unsupported_ppt": "[.ppt（バイナリ PowerPoint）は直接解析できません。.pptx に保存し直してから読み取ってください]",
+        "doc.parse_failed": "[ドキュメント解析失敗: {error}]",
+        "image.heic_warning": "HEIC はローカル変換できなかったため元の形式で送信しました。ゲートウェイが HEIC をサポートしない場合は JPG/PNG に変換してください。",
+        "image.converted_warning": "標準外の画像タイプ ({mime}) を検出したため、PNG に変換して送信しました。",
+        "image.unsupported_type": "未対応の画像タイプ ({mime}) で、変換にも失敗しました: {error}",
+        "image.empty": "画像内容が空のため data URL に変換できません。",
+        "file.empty": "[空ファイル]",
+        "file.text_preview": "[テキストプレビュー、ファイルサイズ {size} bytes]\\n{text}",
+        "file.binary_preview": "[バイナリプレビュー、ファイルサイズ {size} bytes、先頭 {preview_size} bytes(hex)]\\n{hex_preview}",
+    },
+    "en": {
+        "xlsx.missing_dependency": "Parsing .xlsx files requires openpyxl. Run `pip install -r requirements.txt` and try again.",
+        "xlsx.header": "[Excel Workbook Parse]",
+        "xlsx.empty": "[Empty sheet or no readable content]",
+        "xlsx.truncated": "[Content truncated because the workbook is too large]",
+        "pptx.invalid_zip": "[PPTX parse failed: file is not a valid ZIP container]",
+        "pptx.empty": "[PPTX parse returned no result: slide XML not found]",
+        "pptx.header": "[PowerPoint Document Parse]",
+        "pptx.slide_count": "Slide count: {count}",
+        "pptx.truncated": "[Content truncated because the slide deck is large]",
+        "pptx.no_text": "[No text extracted; this slide may contain only images]",
+        "xml.atom": "[Atom Feed Parse]",
+        "xml.rss": "[RSS Feed Parse]",
+        "xml.title": "Title: {value}",
+        "xml.subtitle": "Subtitle: {value}",
+        "xml.updated": "Updated: {value}",
+        "xml.author": "Author: {value}",
+        "xml.description": "Description: {value}",
+        "xml.entries": "Entries:",
+        "xml.time": "Time: {value}",
+        "xml.summary": "Summary: {value}",
+        "msg.nested_mail": "Nested email: {value}",
+        "msg.header": "[Outlook MSG Email Parse]",
+        "msg.class_type": "Message type: {value}",
+        "msg.subject": "Subject: {value}",
+        "msg.sender": "Sender: {value}",
+        "msg.to": "To: {value}",
+        "msg.cc": "CC: {value}",
+        "msg.date": "Date: {value}",
+        "msg.attachments": "Attachments:",
+        "msg.body_separator": "--- Body ---",
+        "msg.no_body": "[No readable body was extracted. The message may contain only attachments, images, or restricted rich text content.]",
+        "msg.missing_dependency": "Parsing .msg files requires extract-msg. Run `pip install -r requirements.txt` and try again.",
+        "doc.unsupported_xls": "[Binary .xls files are not directly supported. Save the file as .xlsx first, then read it again.]",
+        "doc.unsupported_ppt": "[Binary .ppt files are not directly supported. Save the file as .pptx first, then read it again.]",
+        "doc.parse_failed": "[Document parse failed: {error}]",
+        "image.heic_warning": "HEIC was uploaded without local conversion. If your gateway does not support HEIC, convert it to JPG/PNG first.",
+        "image.converted_warning": "A non-standard image type ({mime}) was detected and converted to PNG before sending.",
+        "image.unsupported_type": "Unsupported image type ({mime}), and conversion failed: {error}",
+        "image.empty": "The image is empty and cannot be encoded as a data URL.",
+        "file.empty": "[Empty file]",
+        "file.text_preview": "[Text preview, file size {size} bytes]\\n{text}",
+        "file.binary_preview": "[Binary preview, file size {size} bytes, first {preview_size} bytes(hex)]\\n{hex_preview}",
+    },
+}
+
+
+def _attachment_text(locale: str, key: str, **values: object) -> str:
+    normalized = normalize_locale(locale, fallback="zh-CN")
+    template = (
+        (_ATTACHMENT_TEXT.get(normalized) or {}).get(key)
+        or (_ATTACHMENT_TEXT.get("en") or {}).get(key)
+        or (_ATTACHMENT_TEXT.get("zh-CN") or {}).get(key)
+        or key
+    )
+    if not values:
+        return template
+    try:
+        return template.format(**values)
+    except Exception:
+        return template
 
 
 def _read_plain_text(path: Path, max_chars: int) -> str:
@@ -79,17 +231,15 @@ def looks_like_pptx_file(path: Path) -> bool:
         return False
 
 
-def _extract_xlsx(path: Path, max_chars: int) -> str:
+def _extract_xlsx(path: Path, max_chars: int, *, locale: str = "zh-CN") -> str:
     try:
         from openpyxl import load_workbook  # lazy import
     except Exception as exc:
-        raise RuntimeError(
-            "解析 .xlsx 需要依赖 openpyxl。请执行 `pip install -r requirements.txt` 后重试。"
-        ) from exc
+        raise RuntimeError(_attachment_text(locale, "xlsx.missing_dependency")) from exc
 
     wb = load_workbook(filename=str(path), read_only=True, data_only=True)
     try:
-        lines: list[str] = ["[Excel 工作簿解析]"]
+        lines: list[str] = [_attachment_text(locale, "xlsx.header")]
         total_chars = len(lines[0])
         truncated = False
         for sheet in wb.worksheets:
@@ -118,14 +268,14 @@ def _extract_xlsx(path: Path, max_chars: int) -> str:
                     break
 
             if sheet_rows == 0:
-                empty_line = "[空表或无可读内容]"
+                empty_line = _attachment_text(locale, "xlsx.empty")
                 lines.append(empty_line)
                 total_chars += len(empty_line)
             if truncated:
                 break
 
         if truncated:
-            lines.append("\n[内容已截断，工作簿内容较大]")
+            lines.append(f"\n{_attachment_text(locale, 'xlsx.truncated')}")
         return truncate_text("\n".join(lines), max_chars)
     finally:
         try:
@@ -172,9 +322,9 @@ def _ppt_xml_to_lines(raw_xml: bytes, per_slide_limit: int = 40) -> list[str]:
     return out
 
 
-def _extract_pptx(path: Path, max_chars: int) -> str:
+def _extract_pptx(path: Path, max_chars: int, *, locale: str = "zh-CN") -> str:
     if not zipfile.is_zipfile(path):
-        return "[PPTX 解析失败: 文件不是合法 ZIP 容器]"
+        return _attachment_text(locale, "pptx.invalid_zip")
 
     with zipfile.ZipFile(path, "r") as zf:
         names = zf.namelist()
@@ -184,7 +334,7 @@ def _extract_pptx(path: Path, max_chars: int) -> str:
             if name.startswith("ppt/slides/slide") and name.endswith(".xml")
         ]
         if not slide_names:
-            return "[PPTX 解析结果为空: 未找到 slide XML]"
+            return _attachment_text(locale, "pptx.empty")
 
         def sort_key(name: str) -> tuple[int, str]:
             m = re.search(r"slide(\d+)\.xml$", name)
@@ -192,8 +342,8 @@ def _extract_pptx(path: Path, max_chars: int) -> str:
 
         slide_names.sort(key=sort_key)
 
-        lines: list[str] = ["[PowerPoint 文档解析]"]
-        lines.append(f"幻灯片数量: {len(slide_names)}")
+        lines: list[str] = [_attachment_text(locale, "pptx.header")]
+        lines.append(_attachment_text(locale, "pptx.slide_count", count=len(slide_names)))
         total = sum(len(x) for x in lines) + 1
 
         for idx, slide_name in enumerate(slide_names, start=1):
@@ -204,15 +354,15 @@ def _extract_pptx(path: Path, max_chars: int) -> str:
             slide_lines = _ppt_xml_to_lines(raw_xml, per_slide_limit=36)
             header = f"\n--- Slide {idx} ---"
             if total + len(header) >= max_chars:
-                lines.append("\n[内容已截断，幻灯片内容较多]")
+                lines.append(f"\n{_attachment_text(locale, 'pptx.truncated')}")
                 break
             lines.append(header)
             total += len(header)
 
             if not slide_lines:
-                placeholder = "[未提取到文本（可能是纯图片页）]"
+                placeholder = _attachment_text(locale, "pptx.no_text")
                 if total + len(placeholder) >= max_chars:
-                    lines.append("\n[内容已截断，幻灯片内容较多]")
+                    lines.append(f"\n{_attachment_text(locale, 'pptx.truncated')}")
                     break
                 lines.append(placeholder)
                 total += len(placeholder)
@@ -221,7 +371,7 @@ def _extract_pptx(path: Path, max_chars: int) -> str:
             for line in slide_lines:
                 entry = f"- {line}"
                 if total + len(entry) + 1 >= max_chars:
-                    lines.append("\n[内容已截断，幻灯片内容较多]")
+                    lines.append(f"\n{_attachment_text(locale, 'pptx.truncated')}")
                     break
                 lines.append(entry)
                 total += len(entry) + 1
@@ -265,7 +415,7 @@ def _find_first_child_text(node: ET.Element, *names: str) -> str:
     return ""
 
 
-def _extract_xml_feed(path: Path, max_chars: int) -> str:
+def _extract_xml_feed(path: Path, max_chars: int, *, locale: str = "zh-CN") -> str:
     raw_text = path.read_text(encoding="utf-8", errors="ignore")
     if not raw_text.strip():
         return ""
@@ -279,7 +429,7 @@ def _extract_xml_feed(path: Path, max_chars: int) -> str:
     root_name = _xml_local_name(root.tag)
 
     if root_name == "feed":
-        lines.append("[Atom Feed 解析]")
+        lines.append(_attachment_text(locale, "xml.atom"))
         title = _find_first_child_text(root, "title")
         subtitle = _find_first_child_text(root, "subtitle", "tagline")
         updated = _find_first_child_text(root, "updated")
@@ -292,56 +442,56 @@ def _extract_xml_feed(path: Path, max_chars: int) -> str:
                     break
 
         if title:
-            lines.append(f"标题: {title}")
+            lines.append(_attachment_text(locale, "xml.title", value=title))
         if subtitle:
-            lines.append(f"副标题: {subtitle}")
+            lines.append(_attachment_text(locale, "xml.subtitle", value=subtitle))
         if updated:
-            lines.append(f"更新时间: {updated}")
+            lines.append(_attachment_text(locale, "xml.updated", value=updated))
         if author_name:
-            lines.append(f"作者: {author_name}")
+            lines.append(_attachment_text(locale, "xml.author", value=author_name))
         if feed_id:
             lines.append(f"Feed ID: {feed_id}")
 
         entries = [child for child in list(root) if _xml_local_name(child.tag) == "entry"]
         if entries:
-            lines.append("条目:")
+            lines.append(_attachment_text(locale, "xml.entries"))
         for idx, entry in enumerate(entries, start=1):
             entry_title = _find_first_child_text(entry, "title") or f"entry_{idx}"
             entry_updated = _find_first_child_text(entry, "updated", "published")
             entry_summary = _find_first_child_text(entry, "summary", "content")
             lines.append(f"{idx}. {entry_title}")
             if entry_updated:
-                lines.append(f"   更新时间: {entry_updated}")
+                lines.append(f"   {_attachment_text(locale, 'xml.updated', value=entry_updated)}")
             if entry_summary:
                 entry_summary_clean = re.sub(r"\s+", " ", entry_summary).strip()
-                lines.append(f"   摘要: {entry_summary_clean}")
+                lines.append(f"   {_attachment_text(locale, 'xml.summary', value=entry_summary_clean)}")
     elif root_name == "rss":
-        lines.append("[RSS Feed 解析]")
+        lines.append(_attachment_text(locale, "xml.rss"))
         channel = next((child for child in list(root) if _xml_local_name(child.tag) == "channel"), None)
         channel_node = channel or root
         title = _find_first_child_text(channel_node, "title")
         description = _find_first_child_text(channel_node, "description")
         updated = _find_first_child_text(channel_node, "lastbuilddate", "pubdate")
         if title:
-            lines.append(f"标题: {title}")
+            lines.append(_attachment_text(locale, "xml.title", value=title))
         if description:
-            lines.append(f"描述: {description}")
+            lines.append(_attachment_text(locale, "xml.description", value=description))
         if updated:
-            lines.append(f"更新时间: {updated}")
+            lines.append(_attachment_text(locale, "xml.updated", value=updated))
 
         items = [child for child in list(channel_node) if _xml_local_name(child.tag) == "item"]
         if items:
-            lines.append("条目:")
+            lines.append(_attachment_text(locale, "xml.entries"))
         for idx, item in enumerate(items, start=1):
             item_title = _find_first_child_text(item, "title") or f"item_{idx}"
             item_date = _find_first_child_text(item, "pubdate")
             item_desc = _find_first_child_text(item, "description", "summary")
             lines.append(f"{idx}. {item_title}")
             if item_date:
-                lines.append(f"   时间: {item_date}")
+                lines.append(f"   {_attachment_text(locale, 'xml.time', value=item_date)}")
             if item_desc:
                 item_desc_clean = re.sub(r"\s+", " ", item_desc).strip()
-                lines.append(f"   摘要: {item_desc_clean}")
+                lines.append(f"   {_attachment_text(locale, 'xml.summary', value=item_desc_clean)}")
     else:
         return truncate_text(raw_text, max_chars)
 
@@ -446,7 +596,7 @@ def _extract_msg_body(msg: object) -> str:
     return ""
 
 
-def _format_msg_attachment_line(att: object, idx: int) -> str:
+def _format_msg_attachment_line(att: object, idx: int, *, locale: str = "zh-CN") -> str:
     name = (
         (getattr(att, "longFilename", None) or "")
         or (getattr(att, "filename", None) or "")
@@ -474,7 +624,7 @@ def _format_msg_attachment_line(att: object, idx: int) -> str:
     else:
         nested_subject = (getattr(data, "subject", None) or "").strip() if data is not None else ""
         if nested_subject:
-            extras.append(f"嵌套邮件: {nested_subject}")
+            extras.append(_attachment_text(locale, "msg.nested_mail", value=nested_subject))
 
     if extras:
         return f"- {name} ({', '.join(extras)})"
@@ -515,40 +665,40 @@ def _render_outlook_msg_content(
     body: str,
     attachment_lines: list[str],
     max_chars: int,
+    locale: str = "zh-CN",
 ) -> str:
-    sections: list[str] = ["[Outlook MSG 邮件解析]"]
+    sections: list[str] = [_attachment_text(locale, "msg.header")]
     if class_type:
-        sections.append(f"消息类型: {class_type}")
+        sections.append(_attachment_text(locale, "msg.class_type", value=class_type))
     if subject:
-        sections.append(f"主题: {subject}")
+        sections.append(_attachment_text(locale, "msg.subject", value=subject))
     if sender:
-        sections.append(f"发件人: {sender}")
+        sections.append(_attachment_text(locale, "msg.sender", value=sender))
     if to:
-        sections.append(f"收件人: {to}")
+        sections.append(_attachment_text(locale, "msg.to", value=to))
     if cc:
-        sections.append(f"抄送: {cc}")
+        sections.append(_attachment_text(locale, "msg.cc", value=cc))
     if date:
-        sections.append(f"时间: {date}")
+        sections.append(_attachment_text(locale, "msg.date", value=date))
     if attachment_lines:
-        sections.append("附件列表:")
+        sections.append(_attachment_text(locale, "msg.attachments"))
         sections.extend(attachment_lines)
+    body_separator = _attachment_text(locale, "msg.body_separator")
     if body:
-        sections.append("\n--- 正文 ---\n")
+        sections.append(f"\n{body_separator}\n")
         sections.append(body)
     else:
-        sections.append("\n--- 正文 ---\n")
-        sections.append("[未提取到可读正文：该邮件可能仅包含附件、图片或受限富文本内容]")
+        sections.append(f"\n{body_separator}\n")
+        sections.append(_attachment_text(locale, "msg.no_body"))
 
     return truncate_text("\n".join(sections).strip(), max_chars)
 
 
-def _extract_outlook_msg_payload(path: Path, max_chars: int) -> dict[str, object]:
+def _extract_outlook_msg_payload(path: Path, max_chars: int, *, locale: str = "zh-CN") -> dict[str, object]:
     try:
         import extract_msg  # lazy import
     except Exception as exc:
-        raise RuntimeError(
-            "解析 .msg 需要依赖 extract-msg。请执行 `pip install -r requirements.txt` 后重试。"
-        ) from exc
+        raise RuntimeError(_attachment_text(locale, "msg.missing_dependency")) from exc
 
     msg = extract_msg.openMsg(str(path), strict=False, delayAttachments=False)
     try:
@@ -564,7 +714,7 @@ def _extract_outlook_msg_payload(path: Path, max_chars: int) -> dict[str, object
         attachment_lines: list[str] = []
         for idx, att in enumerate(getattr(msg, "attachments", []) or [], start=1):
             attachment_list.append(_extract_msg_attachment_payload(att, idx))
-            attachment_lines.append(_format_msg_attachment_line(att, idx))
+            attachment_lines.append(_format_msg_attachment_line(att, idx, locale=locale))
 
         email_meta = {
             "subject": subject,
@@ -584,6 +734,7 @@ def _extract_outlook_msg_payload(path: Path, max_chars: int) -> dict[str, object
             body=body,
             attachment_lines=attachment_lines,
             max_chars=max_chars,
+            locale=locale,
         )
         return {
             "content": content,
@@ -599,19 +750,19 @@ def _extract_outlook_msg_payload(path: Path, max_chars: int) -> dict[str, object
                 pass
 
 
-def extract_outlook_msg_payload(path: str, max_chars: int) -> dict[str, object] | None:
+def extract_outlook_msg_payload(path: str, max_chars: int, *, locale: str = "zh-CN") -> dict[str, object] | None:
     try:
-        return _extract_outlook_msg_payload(Path(path), max_chars)
+        return _extract_outlook_msg_payload(Path(path), max_chars, locale=locale)
     except Exception:
         return None
 
 
-def _extract_outlook_msg(path: Path, max_chars: int) -> str:
-    payload = _extract_outlook_msg_payload(path, max_chars)
+def _extract_outlook_msg(path: Path, max_chars: int, *, locale: str = "zh-CN") -> str:
+    payload = _extract_outlook_msg_payload(path, max_chars, locale=locale)
     return str(payload.get("content") or "")
 
 
-def extract_document_text(path: str, max_chars: int) -> str | None:
+def extract_document_text(path: str, max_chars: int, *, locale: str = "zh-CN") -> str | None:
     file_path = Path(path)
     suffix = file_path.suffix.lower()
 
@@ -636,7 +787,7 @@ def extract_document_text(path: str, max_chars: int) -> str | None:
 
     try:
         if suffix in {".atom", ".rss", ".xml"}:
-            return _extract_xml_feed(file_path, max_chars)
+            return _extract_xml_feed(file_path, max_chars, locale=locale)
         if suffix in plain_suffixes:
             return _read_plain_text(file_path, max_chars)
         if suffix == ".pdf":
@@ -644,22 +795,22 @@ def extract_document_text(path: str, max_chars: int) -> str | None:
         if suffix == ".docx":
             return _extract_docx(file_path, max_chars)
         if suffix in _XLSX_SUFFIXES:
-            return _extract_xlsx(file_path, max_chars)
+            return _extract_xlsx(file_path, max_chars, locale=locale)
         if suffix in _PPTX_SUFFIXES:
-            return _extract_pptx(file_path, max_chars)
+            return _extract_pptx(file_path, max_chars, locale=locale)
         if suffix == ".xls":
-            return "[暂不支持 .xls（二进制 Excel）直接解析，请先另存为 .xlsx 后再读取]"
+            return _attachment_text(locale, "doc.unsupported_xls")
         if suffix == ".ppt":
-            return "[暂不支持 .ppt（二进制 PowerPoint）直接解析，请先另存为 .pptx 后再读取]"
+            return _attachment_text(locale, "doc.unsupported_ppt")
         if suffix in {".zip", ".bin"} and looks_like_xlsx_file(file_path):
-            return _extract_xlsx(file_path, max_chars)
+            return _extract_xlsx(file_path, max_chars, locale=locale)
         if suffix in {".zip", ".bin"} and looks_like_pptx_file(file_path):
-            return _extract_pptx(file_path, max_chars)
+            return _extract_pptx(file_path, max_chars, locale=locale)
         if suffix == ".msg" or looks_like_outlook_msg_file(file_path):
-            payload = extract_outlook_msg_payload(str(file_path), max_chars)
+            payload = extract_outlook_msg_payload(str(file_path), max_chars, locale=locale)
             return str((payload or {}).get("content") or "")
     except Exception as exc:
-        return f"[文档解析失败: {exc}]"
+        return _attachment_text(locale, "doc.parse_failed", error=exc)
 
     return None
 
@@ -721,7 +872,7 @@ def _image_to_png_bytes(path: Path) -> bytes:
         return buffer.getvalue()
 
 
-def image_to_data_url_with_meta(path: str, mime: str) -> tuple[str, str | None]:
+def image_to_data_url_with_meta(path: str, mime: str, *, locale: str = "zh-CN") -> tuple[str, str | None]:
     """
     Returns (data_url, warning). For HEIC, fallback to original HEIC payload
     when local conversion is unavailable, so capable gateways can still consume it.
@@ -740,21 +891,21 @@ def image_to_data_url_with_meta(path: str, mime: str) -> tuple[str, str | None]:
         except Exception:
             raw = file_path.read_bytes()
             out_mime = "image/heic"
-            warning = "HEIC 未本地转码，已原始上传；若网关不支持 HEIC，请先转 JPG/PNG。"
+            warning = _attachment_text(locale, "image.heic_warning")
     else:
         if out_mime not in _SAFE_IMAGE_MIMES:
             original_mime = out_mime
             try:
                 raw = _image_to_png_bytes(file_path)
                 out_mime = "image/png"
-                warning = f"检测到非标准图片类型({original_mime})，已转为 PNG 再发送。"
+                warning = _attachment_text(locale, "image.converted_warning", mime=original_mime)
             except Exception as exc:
-                raise RuntimeError(f"不支持的图片类型({original_mime})，且转码失败: {exc}") from exc
+                raise RuntimeError(_attachment_text(locale, "image.unsupported_type", mime=original_mime, error=exc)) from exc
         else:
             raw = file_path.read_bytes()
 
     if not raw:
-        raise RuntimeError("图片内容为空，无法编码为 data URL。")
+        raise RuntimeError(_attachment_text(locale, "image.empty"))
 
     encoded = base64.b64encode(raw).decode("ascii")
     return f"data:{out_mime};base64,{encoded}", warning
@@ -765,13 +916,13 @@ def image_to_data_url(path: str, mime: str) -> str:
     return data_url
 
 
-def summarize_file_payload(path: str, max_bytes: int = 768, max_text_chars: int = 1200) -> str:
+def summarize_file_payload(path: str, max_bytes: int = 768, max_text_chars: int = 1200, *, locale: str = "zh-CN") -> str:
     file_path = Path(path)
     raw = file_path.read_bytes()
     head = raw[:max_bytes]
 
     if not head:
-        return "[空文件]"
+        return _attachment_text(locale, "file.empty")
 
     text_bytes = b"\n\r\t\b\f" + bytes(range(32, 127))
     non_text = sum(1 for b in head if b not in text_bytes)
@@ -780,10 +931,15 @@ def summarize_file_payload(path: str, max_bytes: int = 768, max_text_chars: int 
     if not is_binary:
         text = head.decode("utf-8", errors="ignore")
         text = text[:max_text_chars]
-        return f"[文本预览，文件大小 {len(raw)} bytes]\\n{text}"
+        return _attachment_text(locale, "file.text_preview", size=len(raw), text=text)
 
     hex_preview = " ".join(f"{b:02x}" for b in head[:128])
     return (
-        f"[二进制预览，文件大小 {len(raw)} bytes，前 {min(len(head),128)} bytes(hex)]\\n"
-        f"{hex_preview}"
+        _attachment_text(
+            locale,
+            "file.binary_preview",
+            size=len(raw),
+            preview_size=min(len(head), 128),
+            hex_preview=hex_preview,
+        )
     )

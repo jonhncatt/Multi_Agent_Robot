@@ -304,6 +304,27 @@ class SessionStore:
         except Exception:
             return False
 
+    def delete_by_project(self, project_id: str | None) -> int:
+        wanted = str(project_id or "").strip()
+        if not wanted:
+            return 0
+        deleted = 0
+        for path in sorted(self.sessions_dir.glob("*.json")):
+            try:
+                with self._lock:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if str(payload.get("project_id") or "").strip() != wanted:
+                continue
+            try:
+                with self._lock:
+                    path.unlink(missing_ok=False)
+                deleted += 1
+            except Exception:
+                continue
+        return deleted
+
     def migrate_missing_project(self, default_project: dict[str, Any]) -> int:
         migrated = 0
         for path in sorted(self.sessions_dir.glob("*.json")):
