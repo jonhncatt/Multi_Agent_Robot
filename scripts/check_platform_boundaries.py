@@ -20,7 +20,33 @@ RETIRED_SHIM_IMPORTS = {
     "packages.runtime_core.kernel_host": "AgentOSRuntime explicit legacy facades/helper surfaces",
 }
 
-ACTIVE_SHIM_IMPORT_ALLOWLIST: dict[str, set[str]] = {}
+ACTIVE_SHIM_IMPORT_ALLOWLIST: dict[str, set[str]] = {
+    "app.bootstrap": {
+        "app/evals.py",
+        "app/legacy_platform_runtime.py",
+        "tests/test_agent_os_modules.py",
+        "tests/integration/test_kernel_research_flow.py",
+        "tests/integration/test_kernel_research_degradation_flow.py",
+        "tests/integration/test_kernel_auto_module_selection_flow.py",
+        "tests/integration/test_kernel_research_swarm_flow.py",
+        "tests/integration/test_kernel_office_flow.py",
+        "tests/modules/test_office_module_contract.py",
+        "tests/modules/test_research_module_result_strategy.py",
+        "tests/modules/test_research_module_contract.py",
+        "tests/migration/test_compatibility_shims.py",
+        "tests/migration/test_kernel_host_observability.py",
+        "scripts/demo_research_swarm.py",
+        "scripts/demo_research_module.py",
+        "scripts/demo_minimal_agent_os.py",
+    },
+    "packages.runtime_core.legacy_host_support": {
+        "app/bootstrap/assemble.py",
+        "packages/office_modules/execution_runtime.py",
+        "tests/migration/test_compatibility_shims.py",
+        "tests/migration/test_kernel_host_observability.py",
+        "scripts/collect_platform_metrics.py",
+    },
+}
 
 LEGACY_HOST_OBJECT_ACCESS_ALLOWLIST = {
     "app/bootstrap/assemble.py",

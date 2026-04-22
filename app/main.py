@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.bootstrap import AgentOSRuntime, assemble_runtime
+from app.chat_product_runtime import ChatProductRuntime
 from app.config import AppConfig, build_provider_config, list_provider_profiles, load_config, normalize_llm_provider_name
 from app.context_meter import (
     build_compaction_status,
@@ -31,6 +31,7 @@ from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
 from app.evolution import EvolutionStore
 from app.i18n import normalize_locale, supported_locales, translate
+from app.legacy_platform_runtime import get_legacy_agent_os_runtime
 from app.models import (
     BootstrapResponse,
     ChatRequest,
@@ -109,10 +110,7 @@ token_stats_store = TokenStatsStore(config.token_stats_path)
 shadow_log_store = ShadowLogStore(config.shadow_logs_dir)
 evolution_store = EvolutionStore(config.overlay_profile_path, config.evolution_logs_dir)
 kernel_runtime = build_kernel_runtime(config)
-agent_os_runtime: AgentOSRuntime = assemble_runtime(
-    config,
-    kernel_runtime=kernel_runtime,
-)
+chat_product_runtime = ChatProductRuntime(config)
 vintage_programmer_runtime = VintageProgrammerRuntime(
     config=config,
     kernel_runtime=kernel_runtime,
@@ -273,8 +271,12 @@ def get_evolution_store() -> EvolutionStore:
     return evolution_store
 
 
-def get_agent_os_runtime() -> AgentOSRuntime:
-    return agent_os_runtime
+def get_chat_product_runtime() -> ChatProductRuntime:
+    return chat_product_runtime
+
+
+def get_agent_os_runtime() -> Any:
+    return get_legacy_agent_os_runtime(config=config, kernel_runtime=kernel_runtime)
 
 
 def get_vintage_programmer_runtime() -> VintageProgrammerRuntime:
@@ -764,10 +766,7 @@ def _resolve_project_or_default(project_id: str | None) -> dict[str, Any]:
 
 
 def _runtime_provider_payload() -> tuple[list[dict[str, Any]], dict[str, Any], str, Any, dict[str, Any], dict[str, Any]]:
-    runtime = get_agent_os_runtime()
-    legacy_tools = runtime.legacy_tools()
-    docker_ok, docker_msg = legacy_tools.docker_status()
-    ocr_status = legacy_tools.ocr_status() if hasattr(legacy_tools, "ocr_status") else {}
+    runtime_meta = get_chat_product_runtime().runtime_meta()
     provider_options = _provider_options_payload()
     active_provider = next(
         (
@@ -786,11 +785,7 @@ def _runtime_provider_payload() -> tuple[list[dict[str, Any]], dict[str, Any], s
         active_provider_name,
         active_provider_config,
         auth_summary,
-        {
-            "docker_available": docker_ok,
-            "docker_message": docker_msg,
-            "ocr_status": ocr_status,
-        },
+        runtime_meta,
     )
 
 
@@ -1578,7 +1573,7 @@ def _append_drill_step(
 def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
     run_id = str(uuid.uuid4())
     execution_mode = _resolve_execution_mode(req.execution_mode)
-    tools = get_agent_os_runtime().legacy_tools()
+    tools = get_chat_product_runtime().tool_executor
     docker_ok, docker_msg = tools.docker_status()
     steps: list[SandboxDrillStep] = []
     failed = 0
