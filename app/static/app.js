@@ -682,6 +682,7 @@ function App() {
   const threadMenuRef = useRef(null);
   const threadLongPressRef = useRef({ timer: null, consumed: false });
   const projectsRequestSeqRef = useRef(0);
+  const sessionsRequestSeqRef = useRef(0);
   const skillsRequestSeqRef = useRef(0);
   const selectedSkillIdRef = useRef("");
   const skillDraftModeRef = useRef(false);
@@ -1194,19 +1195,33 @@ function App() {
     }
   }
 
-  async function refreshSessions(targetProjectId = projectId) {
+  async function refreshSessions(targetProjectId = projectId, options = {}) {
+    const requestSeq = ++sessionsRequestSeqRef.current;
+    const background = Boolean(options.background);
     try {
       const suffix = targetProjectId ? `&project_id=${encodeURIComponent(targetProjectId)}` : "";
       const data = await fetchJson(`/api/sessions?limit=80${suffix}`);
       const list = Array.isArray(data.sessions) ? data.sessions : [];
-      clearUiError();
+      if (requestSeq !== sessionsRequestSeqRef.current) return list;
+      if (!background) clearUiError();
       setSessions(list);
       return list;
     } catch (err) {
-      const nextError = applyUiError(err, t("errors.refresh_threads_failed"));
+      if (requestSeq !== sessionsRequestSeqRef.current) return [];
+      const nextError = background
+        ? normalizeUiError(uiLocale, err, t("errors.refresh_threads_failed"))
+        : applyUiError(err, t("errors.refresh_threads_failed"));
       pushLogWithLimit(setLogs, "error", t("log.refresh_threads_failed", { summary: nextError.summary }));
       return [];
     }
+  }
+
+  function scheduleSessionRefresh(targetProjectId) {
+    const resolvedProjectId = String(targetProjectId || "").trim();
+    if (!resolvedProjectId) return;
+    window.setTimeout(() => {
+      void refreshSessions(resolvedProjectId, { background: true });
+    }, 0);
   }
 
   async function selectProject(nextProjectId, options = {}) {
@@ -1831,7 +1846,10 @@ function App() {
         "response",
         t("log.reply_received", { count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0 }),
       );
-      await Promise.all([refreshSessions(projectId), refreshHealth(), refreshWorkbenchTools(), refreshSkills(), refreshProjects()]);
+      setSending(false);
+      setStoppingRun(false);
+      setActiveRunId("");
+      scheduleSessionRefresh(projectId);
     } catch (err) {
       const nextError = applyUiError(err, t("errors.request_failed"));
       pushLogWithLimit(setLogs, "error", t("log.send_failed", { summary: nextError.summary }));
