@@ -97,6 +97,24 @@ class ToolResultStore:
         with self._lock:
             shutil.rmtree(target, ignore_errors=True)
 
+    def delete_thread_tree(self, thread_id: str) -> None:
+        """Delete a Thread's results together with results from its Subagents."""
+
+        normalized_thread_id = str(thread_id or "").strip()
+        if not normalized_thread_id:
+            return
+        thread_dir_name = _safe_name(normalized_thread_id)
+        subagent_dir_prefix = f"{thread_dir_name}_subagent_"
+        with self._lock:
+            targets = [
+                path
+                for path in self.root.iterdir()
+                if path.is_dir()
+                and (path.name == thread_dir_name or path.name.startswith(subagent_dir_prefix))
+            ]
+            for target in targets:
+                shutil.rmtree(target, ignore_errors=True)
+
     def _prune_locked(self, thread_id: str) -> None:
         paths = sorted(
             self._thread_dir(thread_id).glob("tr_*.json"),

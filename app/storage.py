@@ -1428,7 +1428,7 @@ class SessionStore:
             self.session_meta_store.delete(session_id)
             self.run_artifact_store.delete_session(session_id)
             self.turn_trace_store.delete_thread(session_id)
-            self.tool_result_store.delete_thread(session_id)
+            self.tool_result_store.delete_thread_tree(session_id)
             return True
         except Exception:
             return False
@@ -1453,7 +1453,7 @@ class SessionStore:
                 self.session_meta_store.delete(sid)
                 self.run_artifact_store.delete_session(sid)
                 self.turn_trace_store.delete_thread(sid)
-                self.tool_result_store.delete_thread(sid)
+                self.tool_result_store.delete_thread_tree(sid)
                 deleted += 1
             except Exception:
                 continue

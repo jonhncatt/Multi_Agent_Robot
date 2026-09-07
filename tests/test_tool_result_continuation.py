@@ -7,6 +7,8 @@ from typing import Any
 from app.config import load_config
 from app.context_meter import count_tokens
 from app.local_tools import LocalToolExecutor
+from app.storage import SessionStore
+from app.tool_result_store import ToolResultStore
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
 
 
@@ -123,3 +125,49 @@ def test_small_tool_result_does_not_create_sidecar(monkeypatch, tmp_path: Path) 
 
     assert json.loads(message.content) == {"ok": True, "output": "small"}
     assert list((config.sessions_dir.parent / "tool_results").rglob("tr_*.json")) == []
+
+
+def _save_tool_result(store: ToolResultStore, *, thread_id: str, content: str) -> str:
+    return store.save(
+        thread_id=thread_id,
+        run_id="run-one",
+        call_id="call-one",
+        tool_name="exec_command",
+        content=content,
+        token_count=1,
+    )
+
+
+def test_delete_thread_tree_removes_subagent_results_without_touching_similar_threads(tmp_path: Path) -> None:
+    store = ToolResultStore(tmp_path / "tool_results")
+    parent_id = "thread-one"
+    child_id = f"{parent_id}:subagent:run-one:subagent:child-one"
+    similar_id = "thread-one-more"
+    parent_ref = _save_tool_result(store, thread_id=parent_id, content="parent")
+    child_ref = _save_tool_result(store, thread_id=child_id, content="child")
+    similar_ref = _save_tool_result(store, thread_id=similar_id, content="similar")
+
+    store.delete_thread_tree(parent_id)
+
+    assert store.load(thread_id=parent_id, result_ref=parent_ref) is None
+    assert store.load(thread_id=child_id, result_ref=child_ref) is None
+    assert store.load(thread_id=similar_id, result_ref=similar_ref) is not None
+
+
+def test_deleting_session_also_deletes_its_subagent_tool_results(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    session = store.create(
+        {
+            "project_id": "project-one",
+            "title": "Project One",
+            "root_path": str(tmp_path),
+            "git_branch": "main",
+        }
+    )
+    thread_id = str(session["id"])
+    child_id = f"{thread_id}:subagent:run-one:subagent:child-one"
+    child_ref = _save_tool_result(store.tool_result_store, thread_id=child_id, content="child")
+
+    assert store.delete(thread_id) is True
+
+    assert store.tool_result_store.load(thread_id=child_id, result_ref=child_ref) is None
